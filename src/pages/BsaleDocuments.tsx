@@ -183,8 +183,11 @@ export default function BsaleDocuments() {
         query = query.eq("status", statusFilter);
       }
       if (period !== "all") {
-        const startDate = startOfMonth(new Date(period + "-01"));
-        const endDate = endOfMonth(new Date(period + "-01"));
+        // Parse year/month directly to avoid UTC→local timezone shift
+        // (new Date("2026-06-01") is UTC midnight, which in Chile = May 31 local)
+        const [y, m] = period.split("-").map(Number);
+        const startDate = new Date(y, m - 1, 1);
+        const endDate = new Date(y, m, 0); // day 0 of next month = last day of this month
         query = query
           .gte("document_date", format(startDate, "yyyy-MM-dd"))
           .lte("document_date", format(endDate, "yyyy-MM-dd"));
@@ -215,8 +218,9 @@ export default function BsaleDocuments() {
       let baseQuery = supabase.from("tax_documents").select("id, document_type, status, sales_channel");
       
       if (period !== "all") {
-        const startDate = startOfMonth(new Date(period + "-01"));
-        const endDate = endOfMonth(new Date(period + "-01"));
+        const [y, m] = period.split("-").map(Number);
+        const startDate = new Date(y, m - 1, 1);
+        const endDate = new Date(y, m, 0);
         baseQuery = baseQuery
           .gte("document_date", format(startDate, "yyyy-MM-dd"))
           .lte("document_date", format(endDate, "yyyy-MM-dd"));
