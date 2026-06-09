@@ -64,7 +64,7 @@ export default function PageMeli() {
       // Page
       const { data } = await supabase
         .from("orders")
-        .select("id, order_id, order_date, gross_amount, status, customer_name, customer_tax_id, currency_id, shipping_mode, payment_method, raw_data, order_tax_documents(id)")
+        .select("id, order_id, order_date, gross_amount, net_amount, commission_percentage, commission_amount, settlement_amount, shipping_cost, discount_amount, installments, money_release_date, status, customer_name, customer_tax_id, currency_id, shipping_mode, payment_method, raw_data, order_tax_documents(id)")
         .gte("order_date", from_).lte("order_date", to_)
         .neq("status", "cancelled")
         .order("order_date", { ascending: false })
