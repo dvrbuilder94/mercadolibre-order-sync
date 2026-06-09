@@ -272,9 +272,7 @@ Deno.serve(async (req) => {
     while (hasMore && pageCount < max_pages) {
       const url = new URL(`${BSALE_API_URL}/v1/documents.json`);
       url.searchParams.set('emissiondaterange', `[${emissionDateFrom},${emissionDateTo}]`);
-      // FILTER: Only fetch tributary documents (Libro de Ventas)
-      url.searchParams.set('codesii', '33,34,39,41,61,56');
-      // EXPAND: Include references for order ID extraction
+      // NOTE: codesii comma-list not supported by all Bsale accounts — filtering done post-fetch
       url.searchParams.set('expand', '[details,client,document_type,references]');
       url.searchParams.set('limit', limit.toString());
       url.searchParams.set('offset', offset.toString());
