@@ -209,16 +209,30 @@ Deno.serve(async (req) => {
     let syncedCount = 0;
     let errorCount = 0;
     
+    // Normalize RUT: strip dots/dashes, uppercase K
+    const normalizeRut = (rut: string | null | undefined): string | null => {
+      if (!rut) return null;
+      const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+      return clean.length >= 7 ? clean : null; // sanity check
+    };
+
     for (const order of allOrders) {
       try {
         const buyer = order.buyer || {};
         const orderDate = new Date(order.date_created);
-        
+
+        // Extract RUT from billing_info — ML Chile returns this field for authenticated buyers
+        const billingInfo = buyer.billing_info || {};
+        const rawRut = billingInfo.doc_number || billingInfo.docNumber || null;
+        const customerTaxId = normalizeRut(rawRut);
+
         // Log detailed order information
         console.log(`\n--- Order ${order.id} ---`);
         console.log(`Status: ${order.status}`);
         console.log(`Total Amount: ${order.total_amount} ${order.currency_id}`);
         console.log(`Buyer: ${buyer.nickname || 'N/A'} (${buyer.email || 'no email'})`);
+        console.log(`Buyer billing_info:`, JSON.stringify(billingInfo));
+        console.log(`Customer RUT extracted: ${customerTaxId || 'null'}`);
         console.log(`Date: ${orderDate.toISOString()}`);
         console.log(`Items count: ${order.order_items?.length || 0}`);
         
@@ -300,6 +314,7 @@ Deno.serve(async (req) => {
           order_id: order.id.toString(),
           customer_name: buyer.nickname || 'Cliente',
           customer_email: buyer.email || null,
+          customer_tax_id: customerTaxId,
           order_date: orderDate.toISOString(),
           amount: order.total_amount || 0,
           status: status,
