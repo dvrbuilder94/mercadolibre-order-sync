@@ -151,7 +151,7 @@ export default function BsaleDocuments() {
   const [period, setPeriod] = useState("all");
   const [documentType, setDocumentType] = useState<DocumentType>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [salesChannel, setSalesChannel] = useState<SalesChannelFilter>("MARKETPLACE");
+  const [salesChannel, setSalesChannel] = useState<SalesChannelFilter>("all");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [syncing, setSyncing] = useState(false);
@@ -271,9 +271,10 @@ export default function BsaleDocuments() {
     try {
       const { data, error } = await supabase.functions.invoke("sync-bsale-docs");
       if (error) throw error;
+      const total = data?.summary?.total_upserted ?? data?.summary?.total_fetched ?? data?.synced ?? 0;
       toast({
         title: "Sincronización completada",
-        description: `Se sincronizaron ${data?.synced || 0} documentos`,
+        description: `Se procesaron ${total} documentos desde Bsale`,
       });
       refetch();
     } catch (e) {

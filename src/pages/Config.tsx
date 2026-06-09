@@ -227,7 +227,9 @@ export default function Config() {
       if (error) throw error;
       
       if (data.success) {
-        toast.success(`Sincronizado: ${data.summary?.created || 0} creados, ${data.summary?.updated || 0} actualizados`);
+        const total = data.summary?.total_upserted ?? data.summary?.total_fetched ?? 0;
+        const byType = data.summary?.by_type ? Object.entries(data.summary.by_type).map(([k, v]) => `${v} ${k}`).join(', ') : '';
+        toast.success(`Sincronizado: ${total} documentos${byType ? ` (${byType})` : ''}`);
       } else {
         toast.error(data.error || "Error en sincronización");
       }
