@@ -19,10 +19,12 @@ interface BsaleAccount {
   cpn_id: string | null
 }
 
-// Normalize RUT: remove dots, dashes, keep only digits and K
-function normalizeRut(rut: string | null | undefined): string | null {
-  if (!rut) return null;
-  return rut.replace(/[^0-9kK]/g, '').toUpperCase();
+// Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
+function splitRut(rut: string | null | undefined): { body: string | null; dv: string | null } {
+  if (!rut) return { body: null, dv: null };
+  const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+  if (clean.length < 2) return { body: null, dv: null };
+  return { body: clean.slice(0, -1), dv: clean.slice(-1) };
 }
 
 // Map Bsale document type using codeSii (same logic as sync-bsale-docs)
@@ -281,7 +283,8 @@ Deno.serve(async (req) => {
       client_name: document.client?.firstName 
         ? `${document.client.firstName} ${document.client.lastName || ''}`.trim()
         : document.client?.company || null,
-      client_tax_id: normalizeRut(document.client?.code),
+      client_tax_id: splitRut(document.client?.code).body,
+      client_tax_id_dv: splitRut(document.client?.code).dv,
       external_order_id: externalOrderId,
       external_url: document.urlPublicViewOriginal || document.urlPdf || null,
       status: document.state === 0 ? 'issued' : document.state === 1 ? 'voided' : 'issued',
