@@ -359,17 +359,20 @@ Deno.serve(async (req) => {
         name: 0
       };
 
-      // 1. RUT Match (+40)
+      // 1. RUT Match (+40 exact, +25 generic boleta, +20 order has no RUT (ML case))
       const orderRut = normalizeRut(order.customer_tax_id);
       const docRut = normalizeRut(doc.client_tax_id);
       if (orderRut && docRut && orderRut === docRut) {
         breakdown.rut = 40;
         score += 40;
       } else if (isGenericBoletaRut(doc.client_tax_id)) {
-        // Boleta a consumidor final: el RUT genérico (66666666-6) NO descarta el match.
-        // Otorgamos crédito parcial para permitir match por monto+fecha+nombre.
+        // Boleta a consumidor final: RUT genérico no descarta el match
         breakdown.rut = 25;
         score += 25;
+      } else if (!orderRut) {
+        // ML orders don't expose buyer RUT — don't penalize, allow amount+date to decide
+        breakdown.rut = 20;
+        score += 20;
       }
 
       // 2. Amount Match (+30 exact, +20 approximate ≤500)
@@ -546,16 +549,17 @@ Deno.serve(async (req) => {
       const docDate = new Date(doc.document_date);
       const docAmount = doc.total_amount || 0;
 
-      // GATEKEEPER: Document must have RUT
-      if (!docRut) {
-        return null;
+      // GATEKEEPER: only block truly generic consumer RUTs — not missing RUT (ML case)
+      // 66666666-6 is the Chilean "consumidor final" placeholder used for anonymous buyers
+      if (isGenericBoletaRut(docRut)) {
+        return null; // Can't group by generic RUT
       }
 
-      // Find candidate orders (same RUT, ±3 days, CLP, not cancelled, not linked)
+      // Find candidate orders (same RUT or no RUT (ML), ±3 days, CLP, not cancelled, not linked)
       const candidateOrders = allOrders.filter(order => {
-        // Same RUT
         const orderRut = normalizeRut(order.customer_tax_id);
-        if (!orderRut || orderRut !== docRut) return false;
+        // If document has RUT, order must match. If doc has no RUT, only match orders without RUT.
+        if (docRut && orderRut && orderRut !== docRut) return false;
 
         // Not already linked
         if (linkedOrderIds.has(order.id)) return false;
@@ -665,6 +669,9 @@ Deno.serve(async (req) => {
     // These are orders that have payment (money_release_date NOT NULL) but no linked tax document
     // IMPORTANT: Using supabaseAdmin to avoid RLS issues and adding proper pagination
     // Note: Supabase has a default limit of 1000 rows, we need to fetch all orders
+    // Include ALL non-cancelled orders — not just those with money_release_date.
+    // ML API sometimes doesn't return payment dates on first sync; excluding them
+    // causes orders to never be reconciled even when a Bsale doc exists.
     const { data: ordersWithPayment, error: ordersError } = await supabaseAdmin
       .from('orders')
       .select(`
@@ -672,15 +679,14 @@ Deno.serve(async (req) => {
         order_tax_documents(id)
       `)
       .neq('status', 'cancelled')
-      .not('money_release_date', 'is', null)
       .order('order_date', { ascending: false })
-      .limit(5000); // Increase limit to get more orders
-    
+      .limit(5000);
+
     if (ordersError) {
       console.error('Error fetching orders:', ordersError.message);
     }
-    
-    console.log(`Fetched ${ordersWithPayment?.length || 0} orders with payment (limit: 5000)`);
+
+    console.log(`Fetched ${ordersWithPayment?.length || 0} non-cancelled orders (limit: 5000)`);
 
     // Filter to orders with payment but no document
     const ordersNeedingDocs = (ordersWithPayment || []).filter(order => {

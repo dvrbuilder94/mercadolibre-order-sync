@@ -89,6 +89,9 @@ const SellerDashboard = () => {
   const [reconcileResult, setReconcileResult] = useState<any>(null);
   const [showReconcileResult, setShowReconcileResult] = useState(false);
   const [dataStatus, setDataStatus] = useState<'complete' | 'partial' | 'loading'>('loading');
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
 
   const fetchDashboardStats = useCallback(async (period: string): Promise<DashboardStats> => {
     const [year, month] = period.split("-").map(Number);
@@ -261,6 +264,20 @@ const SellerDashboard = () => {
       toast.error(error.message || 'Error al conciliar automáticamente');
     } finally {
       setReconciling(false);
+    }
+  };
+
+  const handleDiagnostic = async () => {
+    setDiagnosing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('pipeline-diagnostic');
+      if (error) throw error;
+      setDiagnosticResult(data);
+      setShowDiagnostic(true);
+    } catch (error: any) {
+      toast.error(error.message || 'Error al ejecutar diagnóstico');
+    } finally {
+      setDiagnosing(false);
     }
   };
 
@@ -474,6 +491,17 @@ const SellerDashboard = () => {
                   {reconciling ? 'Conciliando...' : 'Conciliar Automáticamente'}
                 </Button>
 
+                <Button
+                  onClick={handleDiagnostic}
+                  disabled={diagnosing}
+                  variant="ghost"
+                  size="sm"
+                  title="Diagnóstico del pipeline de datos"
+                >
+                  {diagnosing ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Info className="h-4 w-4 mr-1" />}
+                  Diagnóstico
+                </Button>
+
                 {isClosed ? (
                   <Button 
                     onClick={handleReopenPeriod} 
@@ -592,6 +620,85 @@ const SellerDashboard = () => {
           )}
           <DialogFooter>
             <Button onClick={() => setShowReconcileResult(false)}>Entendido</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de diagnóstico del pipeline */}
+      <Dialog open={showDiagnostic} onOpenChange={setShowDiagnostic}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Diagnóstico del Pipeline</DialogTitle>
+            <DialogDescription>Estado real de órdenes, documentos y vinculaciones</DialogDescription>
+          </DialogHeader>
+          {diagnosticResult && (
+            <div className="space-y-4 text-sm">
+              {/* Problems */}
+              {diagnosticResult.problems_detected?.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-1">
+                  <p className="font-semibold text-red-700 flex items-center gap-1"><AlertTriangle className="h-4 w-4" /> Problemas detectados</p>
+                  {diagnosticResult.problems_detected.map((p: string, i: number) => (
+                    <p key={i} className="text-red-600">• {p}</p>
+                  ))}
+                </div>
+              )}
+              {/* Recommendations */}
+              {diagnosticResult.recommendations?.length > 0 && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-1">
+                  <p className="font-semibold text-blue-700">Recomendaciones</p>
+                  {diagnosticResult.recommendations.map((r: string, i: number) => (
+                    <p key={i} className="text-blue-600">→ {r}</p>
+                  ))}
+                </div>
+              )}
+              {/* Orders */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-muted/40 rounded-lg p-3">
+                  <p className="font-semibold mb-2">Órdenes ML</p>
+                  <p>Total: <strong>{diagnosticResult.orders?.total}</strong></p>
+                  <p>Con fecha pago: <strong>{diagnosticResult.orders?.with_payment_date}</strong></p>
+                  <p>Sin fecha pago: <strong className={diagnosticResult.orders?.without_payment_date > 0 ? "text-orange-600" : ""}>{diagnosticResult.orders?.without_payment_date}</strong></p>
+                  <p>Vinculadas a doc: <strong className="text-green-600">{diagnosticResult.orders?.linked_to_doc}</strong></p>
+                  <p>Sin documento: <strong className={diagnosticResult.orders?.needing_doc > 0 ? "text-red-600" : "text-green-600"}>{diagnosticResult.orders?.needing_doc}</strong></p>
+                </div>
+                <div className="bg-muted/40 rounded-lg p-3">
+                  <p className="font-semibold mb-2">Documentos Bsale</p>
+                  <p>Total emitidos: <strong>{diagnosticResult.tax_documents?.total_issued}</strong></p>
+                  <p>Con ID orden: <strong className={diagnosticResult.tax_documents?.with_external_order_id > 0 ? "text-green-600" : "text-red-600"}>{diagnosticResult.tax_documents?.with_external_order_id}</strong></p>
+                  <p>Sin ID orden: <strong>{diagnosticResult.tax_documents?.without_external_order_id}</strong></p>
+                  <p>Con canal detectado: <strong>{diagnosticResult.tax_documents?.with_detected_channel}</strong></p>
+                  <p>Vinculados: <strong className="text-green-600">{diagnosticResult.tax_documents?.linked}</strong></p>
+                  <p>Sin vincular: <strong className={diagnosticResult.tax_documents?.unlinked > 0 ? "text-orange-600" : "text-green-600"}>{diagnosticResult.tax_documents?.unlinked}</strong></p>
+                </div>
+              </div>
+              {/* Links */}
+              <div className="bg-muted/40 rounded-lg p-3">
+                <p className="font-semibold mb-2">Vinculaciones ({diagnosticResult.links?.total} total)</p>
+                {diagnosticResult.links?.by_source && Object.entries(diagnosticResult.links.by_source).map(([src, count]: [string, any]) => (
+                  <p key={src}>{src}: <strong>{count}</strong></p>
+                ))}
+              </div>
+              {/* Phase 0 */}
+              <div className="bg-muted/40 rounded-lg p-3">
+                <p className="font-semibold mb-1">Análisis Phase 0 (match por ID de orden)</p>
+                <p className={diagnosticResult.phase0_analysis?.docs_matching_an_order > 0 ? "text-orange-600" : "text-green-600"}>
+                  {diagnosticResult.phase0_analysis?.note}
+                </p>
+                {diagnosticResult.phase0_analysis?.sample?.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <p className="text-xs text-muted-foreground">Muestra (primeros 5 docs sin vincular con external_order_id):</p>
+                    {diagnosticResult.phase0_analysis.sample.map((s: any, i: number) => (
+                      <p key={i} className="text-xs font-mono">
+                        ext_order_id: {s.external_order_id} | orden en DB: {s.order_exists_in_db ? '✅' : '❌'} | canal: {s.detected_channel || 'null'}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => setShowDiagnostic(false)}>Cerrar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
