@@ -1,4 +1,4 @@
-import { AlertTriangle, FileX, ReceiptText } from "lucide-react";
+import { FileX, ReceiptText, GitMerge } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
@@ -11,9 +11,11 @@ interface AccountingAlerts {
 interface DashboardAccountingAlertsProps {
   alerts: AccountingAlerts;
   loading: boolean;
+  onReconcile?: () => void;
+  reconciling?: boolean;
 }
 
-export function DashboardAccountingAlerts({ alerts, loading }: DashboardAccountingAlertsProps) {
+export function DashboardAccountingAlerts({ alerts, loading, onReconcile, reconciling }: DashboardAccountingAlertsProps) {
   const navigate = useNavigate();
 
   if (loading) return null;
@@ -27,18 +29,32 @@ export function DashboardAccountingAlerts({ alerts, loading }: DashboardAccounti
       {alerts.paidWithoutDoc > 0 && (
         <Alert className="border-red-500/50 bg-red-500/10">
           <FileX className="h-4 w-4 text-red-500" />
-          <AlertDescription className="flex items-center justify-between w-full">
+          <AlertDescription className="flex items-center justify-between w-full gap-2">
             <span className="text-red-700">
               {alerts.paidWithoutDoc} {alerts.paidWithoutDoc === 1 ? 'venta pagada' : 'ventas pagadas'} sin documento tributario {alerts.paidWithoutDoc === 1 ? 'bloquea' : 'bloquean'} el cierre del mes
             </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-red-700 hover:text-red-800 hover:bg-red-500/20"
-              onClick={() => navigate('/sales/issues?filter=PAGADA_SIN_DOCUMENTO')}
-            >
-              Ver ventas →
-            </Button>
+            <div className="flex items-center gap-2 shrink-0">
+              {onReconcile && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-red-700 hover:text-red-800 hover:bg-red-500/20"
+                  onClick={onReconcile}
+                  disabled={reconciling}
+                >
+                  <GitMerge className="h-3 w-3 mr-1" />
+                  {reconciling ? 'Conciliando...' : 'Conciliar'}
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-red-700 hover:text-red-800 hover:bg-red-500/20"
+                onClick={() => navigate('/sales?filter=without_doc')}
+              >
+                Ver ventas →
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
       )}

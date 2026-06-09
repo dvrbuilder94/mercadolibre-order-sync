@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { RefreshCw, Loader2, Lock, Info } from "lucide-react";
+import { RefreshCw, Loader2, Lock, Info, GitMerge, CheckCircle2, AlertTriangle } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -85,6 +85,9 @@ const SellerDashboard = () => {
   const [retainedSalesCount, setRetainedSalesCount] = useState(0);
   const [showObservationsDialog, setShowObservationsDialog] = useState(false);
   const [observations, setObservations] = useState("");
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState<any>(null);
+  const [showReconcileResult, setShowReconcileResult] = useState(false);
   const [dataStatus, setDataStatus] = useState<'complete' | 'partial' | 'loading'>('loading');
 
   const fetchDashboardStats = useCallback(async (period: string): Promise<DashboardStats> => {
@@ -246,6 +249,21 @@ const SellerDashboard = () => {
     }
   };
 
+  const handleAutoReconcile = async () => {
+    setReconciling(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('auto-reconcile');
+      if (error) throw error;
+      setReconcileResult(data);
+      setShowReconcileResult(true);
+      fetchAllData();
+    } catch (error: any) {
+      toast.error(error.message || 'Error al conciliar automáticamente');
+    } finally {
+      setReconciling(false);
+    }
+  };
+
   const handleClose = async (withObservations: boolean) => {
     if (withObservations && !observations.trim()) {
       toast.error("Ingresa las observaciones");
@@ -345,7 +363,12 @@ const SellerDashboard = () => {
             loading={loading}
           />
 
-          <DashboardAccountingAlerts alerts={accountingAlerts} loading={loading} />
+          <DashboardAccountingAlerts
+            alerts={accountingAlerts}
+            loading={loading}
+            onReconcile={handleAutoReconcile}
+            reconciling={reconciling}
+          />
 
           {/* Resumen Financiero */}
           <Card>
@@ -425,9 +448,9 @@ const SellerDashboard = () => {
           <Card>
             <CardContent className="pt-6">
               <div className="flex flex-wrap gap-3">
-                <Button 
-                  onClick={handleSync} 
-                  disabled={syncing}
+                <Button
+                  onClick={handleSync}
+                  disabled={syncing || reconciling}
                   variant="outline"
                 >
                   {syncing ? (
@@ -436,6 +459,19 @@ const SellerDashboard = () => {
                     <RefreshCw className="h-4 w-4 mr-2" />
                   )}
                   Sincronizar Datos
+                </Button>
+
+                <Button
+                  onClick={handleAutoReconcile}
+                  disabled={reconciling || syncing}
+                  variant="outline"
+                >
+                  {reconciling ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : (
+                    <GitMerge className="h-4 w-4 mr-2" />
+                  )}
+                  {reconciling ? 'Conciliando...' : 'Conciliar Automáticamente'}
                 </Button>
 
                 {isClosed ? (
@@ -501,6 +537,61 @@ const SellerDashboard = () => {
               {saving && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
               Confirmar Cierre
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de resultados de auto-reconcile */}
+      <Dialog open={showReconcileResult} onOpenChange={setShowReconcileResult}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-green-500" />
+              Conciliación Completada
+            </DialogTitle>
+            <DialogDescription>
+              Resultados del proceso automático de 4 etapas
+            </DialogDescription>
+          </DialogHeader>
+          {reconcileResult && (
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between py-2 border-b">
+                <span className="text-muted-foreground">Banco ↔ Liquidaciones</span>
+                <span className="font-semibold">{reconcileResult.stage1_bank_settlement ?? 0} vinculados</span>
+              </div>
+              <div className="flex justify-between py-2 border-b">
+                <span className="text-muted-foreground">Liquidación ↔ Orden</span>
+                <span className="font-semibold">{reconcileResult.stage2_settlement_order ?? 0} vinculados</span>
+              </div>
+              <div className="py-2 border-b space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Orden ↔ Documento tributario</span>
+                  <span className="font-semibold text-green-600">
+                    {(reconcileResult.stage3_order_taxdoc?.hard_linked ?? 0) +
+                     (reconcileResult.stage3_order_taxdoc?.auto_linked ?? 0) +
+                     (reconcileResult.stage3_order_taxdoc?.auto_soft ?? 0) +
+                     (reconcileResult.stage3_order_taxdoc?.auto_consolidated ?? 0)} vinculados
+                  </span>
+                </div>
+                {reconcileResult.stage3_order_taxdoc?.ambiguous > 0 && (
+                  <div className="flex items-center gap-1 text-amber-600">
+                    <AlertTriangle className="h-3 w-3" />
+                    <span>{reconcileResult.stage3_order_taxdoc.ambiguous} casos ambiguos requieren revisión manual</span>
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-between py-2 border-b">
+                <span className="text-muted-foreground">Devoluciones sin NC</span>
+                <span className="font-semibold">{reconcileResult.stage4_refunds_flagged ?? 0} marcadas</span>
+              </div>
+              <div className="flex justify-between pt-1 font-semibold">
+                <span>Total procesado</span>
+                <span className="text-primary">{reconcileResult.total ?? 0} registros</span>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => setShowReconcileResult(false)}>Entendido</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
