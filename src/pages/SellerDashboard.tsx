@@ -92,6 +92,9 @@ const SellerDashboard = () => {
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const [sampling, setSampling] = useState(false);
+  const [sampleResult, setSampleResult] = useState<any>(null);
+  const [showSample, setShowSample] = useState(false);
 
   const fetchDashboardStats = useCallback(async (period: string): Promise<DashboardStats> => {
     const [year, month] = period.split("-").map(Number);
@@ -264,6 +267,20 @@ const SellerDashboard = () => {
       toast.error(error.message || 'Error al conciliar automáticamente');
     } finally {
       setReconciling(false);
+    }
+  };
+
+  const handleSample = async () => {
+    setSampling(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('data-sample');
+      if (error) throw error;
+      setSampleResult(data);
+      setShowSample(true);
+    } catch (error: any) {
+      toast.error(error.message || 'Error al obtener muestra');
+    } finally {
+      setSampling(false);
     }
   };
 
@@ -492,6 +509,17 @@ const SellerDashboard = () => {
                 </Button>
 
                 <Button
+                  onClick={handleSample}
+                  disabled={sampling}
+                  variant="ghost"
+                  size="sm"
+                  title="Ver muestra de datos reales de ML y Bsale"
+                >
+                  {sampling ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Info className="h-4 w-4 mr-1" />}
+                  Ver Datos
+                </Button>
+
+                <Button
                   onClick={handleDiagnostic}
                   disabled={diagnosing}
                   variant="ghost"
@@ -620,6 +648,86 @@ const SellerDashboard = () => {
           )}
           <DialogFooter>
             <Button onClick={() => setShowReconcileResult(false)}>Entendido</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de muestra de datos */}
+      <Dialog open={showSample} onOpenChange={setShowSample}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Muestra de datos reales</DialogTitle>
+            <DialogDescription>Últimos 5 registros de ML y Bsale — campos clave para matching</DialogDescription>
+          </DialogHeader>
+          {sampleResult && (
+            <div className="space-y-6 text-xs font-mono">
+
+              {/* MELI */}
+              <div>
+                <p className="text-sm font-sans font-semibold mb-2">MercadoLibre — Campos del comprador (buyer)</p>
+                <div className="space-y-3">
+                  {(sampleResult.meli_orders || []).map((o: any, i: number) => (
+                    <div key={i} className="bg-slate-50 rounded p-2 border space-y-0.5">
+                      <p><span className="text-muted-foreground">order_id:</span> {o.order_id} | <span className="text-muted-foreground">fecha:</span> {o.order_date} | <span className="text-muted-foreground">monto:</span> ${o.gross_amount?.toLocaleString()}</p>
+                      <p><span className="text-muted-foreground">buyer.nickname:</span> {o.buyer_nickname || 'null'} | <span className="text-muted-foreground">email:</span> {o.buyer_email || 'null'}</p>
+                      <p><span className="text-muted-foreground">buyer.first_name:</span> {o.buyer_first_name || 'null'} | <span className="text-muted-foreground">last_name:</span> {o.buyer_last_name || 'null'}</p>
+                      <p className={o.billing_doc_number ? 'text-green-700 font-bold' : 'text-red-600'}>
+                        billing.doc_type: {o.billing_doc_type || 'null'} | billing.doc_number: {o.billing_doc_number || 'null'}
+                      </p>
+                      <p className="text-muted-foreground">buyer keys: [{(o.buyer_all_keys || []).join(', ')}]</p>
+                      <p className="text-muted-foreground">billing keys: [{(o.billing_all_keys || []).join(', ')}]</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* BSALE */}
+              <div>
+                <p className="text-sm font-sans font-semibold mb-2">Bsale — Campos del cliente y referencias</p>
+                <div className="space-y-3">
+                  {(sampleResult.bsale_docs || []).map((d: any, i: number) => (
+                    <div key={i} className="bg-slate-50 rounded p-2 border space-y-0.5">
+                      <p><span className="text-muted-foreground">doc:</span> {d.document_type} #{d.document_number} | <span className="text-muted-foreground">fecha:</span> {d.document_date} | <span className="text-muted-foreground">monto:</span> ${d.total_amount?.toLocaleString()}</p>
+                      <p className={d.client_tax_id ? 'text-green-700' : 'text-red-600'}>
+                        client_tax_id (RUT guardado): {d.client_tax_id || 'null'} | raw client.code: {d.raw_client_code || 'null'}
+                      </p>
+                      <p><span className="text-muted-foreground">client_name:</span> {d.client_name} | <span className="text-muted-foreground">company:</span> {d.raw_client_company || 'null'}</p>
+                      <p><span className="text-muted-foreground">client.note:</span> {d.raw_client_note || 'null'}</p>
+                      <p className={d.external_order_id ? 'text-green-700 font-bold' : 'text-orange-600'}>
+                        external_order_id: {d.external_order_id || 'null (no se extrajo número de orden ML)'} | canal: {d.detected_channel || 'null'}
+                      </p>
+                      <p><span className="text-muted-foreground">payment_method:</span> {d.payment_method_name || 'null'}</p>
+                      {d.references?.length > 0 && (
+                        <div>
+                          <span className="text-muted-foreground">referencias:</span>
+                          {d.references.map((r: any, ri: number) => (
+                            <p key={ri} className="ml-2">→ reason: "{r.reason}" | number: {r.number} | date: {r.date}</p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* CROSS CHECK */}
+              {sampleResult.cross_check?.length > 0 && (
+                <div>
+                  <p className="text-sm font-sans font-semibold mb-2">Cross-check: ¿external_order_id de Bsale existe en tabla orders?</p>
+                  <div className="space-y-1">
+                    {sampleResult.cross_check.map((c: any, i: number) => (
+                      <div key={i} className={`p-2 rounded border ${c.order_found_in_db ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                        <p>Boleta #{c.bsale_doc} (${c.bsale_amount?.toLocaleString()}) → ext_order_id: {c.external_order_id}</p>
+                        <p>{c.order_found_in_db ? '✅ Orden existe en DB' : '❌ Orden NO existe en DB (no sincronizada)'} | montos cuadran: {c.amounts_match ? '✅' : '❌'} (orden: ${c.order_amount?.toLocaleString()})</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => setShowSample(false)}>Cerrar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
