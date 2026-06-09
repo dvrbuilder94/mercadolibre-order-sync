@@ -505,6 +505,7 @@ export type Database = {
           customer_email: string | null
           customer_name: string
           customer_tax_id: string | null
+          customer_tax_id_dv: string | null
           date_delivered: string | null
           date_shipped: string | null
           discount_amount: number | null
@@ -564,6 +565,7 @@ export type Database = {
           customer_email?: string | null
           customer_name: string
           customer_tax_id?: string | null
+          customer_tax_id_dv?: string | null
           date_delivered?: string | null
           date_shipped?: string | null
           discount_amount?: number | null
@@ -623,6 +625,7 @@ export type Database = {
           customer_email?: string | null
           customer_name?: string
           customer_tax_id?: string | null
+          customer_tax_id_dv?: string | null
           date_delivered?: string | null
           date_shipped?: string | null
           discount_amount?: number | null
@@ -1053,6 +1056,7 @@ export type Database = {
         Row: {
           client_name: string | null
           client_tax_id: string | null
+          client_tax_id_dv: string | null
           created_at: string | null
           detected_channel: string | null
           document_date: string
@@ -1080,6 +1084,7 @@ export type Database = {
         Insert: {
           client_name?: string | null
           client_tax_id?: string | null
+          client_tax_id_dv?: string | null
           created_at?: string | null
           detected_channel?: string | null
           document_date: string
@@ -1107,6 +1112,7 @@ export type Database = {
         Update: {
           client_name?: string | null
           client_tax_id?: string | null
+          client_tax_id_dv?: string | null
           created_at?: string | null
           detected_channel?: string | null
           document_date?: string
