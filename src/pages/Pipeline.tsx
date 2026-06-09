@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck, ExternalLink } from "lucide-react";
 
 interface Stats {
   orders: number;
