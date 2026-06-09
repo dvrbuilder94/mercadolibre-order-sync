@@ -31,6 +31,18 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+function RowLink({ label, href }: { label: string; href: string }) {
+  return (
+    <div className="flex gap-2 py-0.5">
+      <span className="text-slate-400 shrink-0 w-44 text-xs">{label}</span>
+      <a href={href} target="_blank" rel="noopener noreferrer"
+        className="text-xs text-blue-500 hover:underline break-all">
+        Abrir ↗
+      </a>
+    </div>
+  );
+}
+
 export function DetailPanel({ title, data, onClose }: Props) {
   if (!data) return null;
 
@@ -121,23 +133,27 @@ export function DetailPanel({ title, data, onClose }: Props) {
           {isBsale && (
             <>
               <Section title="Documento">
+                <Row label="tipo"            value={raw?.typeName || data.document_type} />
                 <Row label="número"          value={data.document_number} />
-                <Row label="tipo"            value={data.document_type} />
                 <Row label="fecha"           value={data.document_date} />
                 <Row label="estado"          value={data.status} />
-                <Row label="canal detectado" value={data.detected_channel} />
-                <Row label="external_url"    value={data.external_url} />
+                {data.external_url && <RowLink label="ver en Bsale" href={data.external_url} />}
               </Section>
 
               <Section title="Financiero">
-                <Row label="monto total"     value={CLP(data.total_amount)}         highlight />
+                <Row label="neto"            value={CLP(data.net_amount)} />
+                <Row label="IVA"             value={CLP(data.tax_amount)} />
+                <Row label="total"           value={CLP(data.total_amount)}          highlight />
               </Section>
 
               <Section title="Cliente">
-                <Row label="nombre"          value={data.client_name}               highlight />
-                <Row label="client_tax_id"   value={data.client_tax_id}             highlight />
-                <Row label="método pago"     value={raw?.payment_method_name} />
-                <Row label="coin.name"       value={raw?.coin?.name} />
+                <Row label="RUT"             value={data.client_tax_id}              highlight />
+                <Row label="nombre"          value={data.client_name} />
+                {raw?.clientNote && <Row label="nota"   value={raw.clientNote} />}
+              </Section>
+
+              <Section title="Pago">
+                <Row label="método"          value={raw?.payment_method_name || raw?.coin?.name} />
               </Section>
 
               {refs.length > 0 && (
@@ -151,9 +167,21 @@ export function DetailPanel({ title, data, onClose }: Props) {
                 </Section>
               )}
 
+              {raw?.details?.length > 0 && (
+                <Section title={`Productos (${raw.details.length})`}>
+                  {raw.details.map((d: any, i: number) => (
+                    <div key={i} className="pl-2 border-l border-slate-100 mb-1.5">
+                      <Row label="descripción" value={d.description} />
+                      <Row label="cantidad"    value={d.quantity} />
+                      <Row label="neto u."     value={CLP(d.netAmount)} />
+                    </div>
+                  ))}
+                </Section>
+              )}
+
               {raw?.external_order_id && (
                 <Section title="Vinculación">
-                  <Row label="external_order_id" value={raw.external_order_id}      highlight />
+                  <Row label="order ML"      value={raw.external_order_id}           highlight />
                 </Section>
               )}
             </>

@@ -183,6 +183,7 @@ function transformBsaleDoc(doc: any, userId: string, batchId: string) {
       typeName: doc.document_type?.name,
       clientNote: doc.client?.note,
       references: doc.references,
+      coin: doc.coin || null,
       office: doc.office,
       external_order_id: externalOrderId,
       details: doc.details?.items?.map((d: any) => ({

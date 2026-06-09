@@ -32,7 +32,28 @@ const DOC_COLOR: Record<string, string> = {
 const CHANNEL_LABEL: Record<string, string> = {
   meli: "MercadoLibre", falabella: "Falabella", paris: "Paris",
   ripley: "Ripley", amazon: "Amazon", shopify: "Shopify",
+  linio: "Linio", rappi: "Rappi", walmart: "Walmart",
 };
+const CHANNEL_COLOR: Record<string, string> = {
+  meli:      "bg-yellow-100 text-yellow-800",
+  shopify:   "bg-blue-100 text-blue-700",
+  falabella: "bg-orange-100 text-orange-700",
+  paris:     "bg-pink-100 text-pink-700",
+  ripley:    "bg-purple-100 text-purple-700",
+  amazon:    "bg-amber-100 text-amber-800",
+  linio:     "bg-teal-100 text-teal-700",
+  rappi:     "bg-rose-100 text-rose-700",
+  walmart:   "bg-cyan-100 text-cyan-700",
+};
+
+function formatRut(rut: string | null | undefined): string {
+  if (!rut) return "—";
+  const digits = rut.replace(/[^0-9kK]/gi, "");
+  if (digits.length < 2) return rut;
+  const dv  = digits.slice(-1).toUpperCase();
+  const num = digits.slice(0, -1).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${num}-${dv}`;
+}
 
 export default function PageBsale() {
   const navigate = useNavigate();
@@ -64,7 +85,7 @@ export default function PageBsale() {
 
       const { data } = await supabase
         .from("tax_documents")
-        .select("id, document_number, document_type, document_date, total_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)")
+        .select("id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)")
         .gte("document_date", from).lte("document_date", to)
         .order("document_date", { ascending: false })
         .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
@@ -171,9 +192,9 @@ export default function PageBsale() {
                 <th className="text-left px-4 py-3 font-medium">Tipo</th>
                 <th className="text-left px-4 py-3 font-medium">Número</th>
                 <th className="text-left px-4 py-3 font-medium">Fecha</th>
-                <th className="text-left px-4 py-3 font-medium">Cliente</th>
-                <th className="text-right px-4 py-3 font-medium">Monto</th>
                 <th className="text-left px-4 py-3 font-medium">Canal</th>
+                <th className="text-right px-4 py-3 font-medium">Monto</th>
+                <th className="text-left px-4 py-3 font-medium">RUT</th>
                 <th className="text-left px-4 py-3 font-medium">Vinculado</th>
                 <th className="w-8 px-4 py-3"></th>
               </tr>
@@ -204,11 +225,16 @@ export default function PageBsale() {
                     </td>
                     <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{d.document_number}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-500">{d.document_date}</td>
-                    <td className="px-4 py-2.5 max-w-[150px] truncate text-sm">{d.client_name || "—"}</td>
-                    <td className="px-4 py-2.5 text-right font-mono">{CLP(d.total_amount)}</td>
-                    <td className="px-4 py-2.5 text-xs text-slate-500">
-                      {CHANNEL_LABEL[d.detected_channel] || (d.detected_channel ? d.detected_channel : "—")}
+                    <td className="px-4 py-2.5">
+                      {d.detected_channel
+                        ? <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[d.detected_channel] || "bg-slate-100 text-slate-600"}`}>
+                            {CHANNEL_LABEL[d.detected_channel] || d.detected_channel}
+                          </span>
+                        : <span className="text-xs text-slate-300">—</span>
+                      }
                     </td>
+                    <td className="px-4 py-2.5 text-right font-mono">{CLP(d.total_amount)}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{formatRut(d.client_tax_id)}</td>
                     <td className="px-4 py-2.5">
                       {isVoided
                         ? <span className="text-xs text-slate-300">Anulado</span>
