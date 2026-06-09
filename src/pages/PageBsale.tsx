@@ -60,6 +60,7 @@ export default function PageBsale() {
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [docs, setDocs] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
+  const [monthlyTotal, setMonthlyTotal] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -77,11 +78,20 @@ export default function PageBsale() {
     try {
       const { from, to } = periodRange(period);
 
-      const { count } = await supabase
-        .from("tax_documents")
-        .select("*", { count: "exact", head: true })
-        .gte("document_date", from).lte("document_date", to);
+      const [{ count }, { data: sumData }] = await Promise.all([
+        supabase
+          .from("tax_documents")
+          .select("*", { count: "exact", head: true })
+          .gte("document_date", from).lte("document_date", to),
+        supabase
+          .from("tax_documents")
+          .select("total_amount.sum()")
+          .gte("document_date", from).lte("document_date", to)
+          .eq("status", "issued")
+          .single(),
+      ]);
       setTotal(count || 0);
+      setMonthlyTotal((sumData as any)?.sum ?? null);
 
       const { data } = await supabase
         .from("tax_documents")
@@ -129,7 +139,6 @@ export default function PageBsale() {
   const issued      = docs.filter(d => d.status === "issued");
   const linked      = issued.filter(d => (d.order_tax_documents as any[])?.length > 0);
   const unlinked    = issued.filter(d => !((d.order_tax_documents as any[])?.length > 0));
-  const totalAmount = issued.reduce((s, d) => s + (d.total_amount || 0), 0);
   const totalPages  = Math.ceil(total / PAGE_SIZE);
 
   return (
@@ -170,10 +179,10 @@ export default function PageBsale() {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[
-            { label: "Documentos",   value: loading ? "—" : total,           sub: "en el período" },
-            { label: "Total",        value: loading ? "—" : CLP(totalAmount), sub: "suma página actual" },
-            { label: "Vinculados",   value: loading ? "—" : linked.length,   sub: "con orden ML", color: "text-green-600" },
-            { label: "Sin vincular", value: loading ? "—" : unlinked.length, sub: "sin orden ML",
+            { label: "Documentos",   value: loading ? "—" : total,                                       sub: "en el período" },
+            { label: "Total",        value: loading || monthlyTotal === null ? "—" : CLP(monthlyTotal), sub: "facturado mensual" },
+            { label: "Vinculados",   value: loading ? "—" : linked.length,                              sub: "con orden ML", color: "text-green-600" },
+            { label: "Sin vincular", value: loading ? "—" : unlinked.length,                            sub: "sin orden ML",
               color: unlinked.length > 0 ? "text-orange-600" : "text-green-600" },
           ].map(({ label, value, sub, color }) => (
             <div key={label} className="bg-white border rounded-lg p-4">
