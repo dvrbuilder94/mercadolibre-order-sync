@@ -209,11 +209,12 @@ Deno.serve(async (req) => {
     let syncedCount = 0;
     let errorCount = 0;
     
-    // Normalize RUT: strip dots/dashes, uppercase K
-    const normalizeRut = (rut: string | null | undefined): string | null => {
-      if (!rut) return null;
+    // Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
+    const splitRut = (rut: string | null | undefined): { body: string | null; dv: string | null } => {
+      if (!rut) return { body: null, dv: null };
       const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
-      return clean.length >= 7 ? clean : null; // sanity check
+      if (clean.length < 7) return { body: null, dv: null };
+      return { body: clean.slice(0, -1), dv: clean.slice(-1) };
     };
 
     for (const order of allOrders) {
@@ -224,7 +225,7 @@ Deno.serve(async (req) => {
         // Extract RUT from billing_info — ML Chile returns this field for authenticated buyers
         const billingInfo = buyer.billing_info || {};
         const rawRut = billingInfo.doc_number || billingInfo.docNumber || null;
-        const customerTaxId = normalizeRut(rawRut);
+        const { body: customerTaxId, dv: customerTaxIdDv } = splitRut(rawRut);
 
         // Log detailed order information
         console.log(`\n--- Order ${order.id} ---`);
@@ -315,6 +316,7 @@ Deno.serve(async (req) => {
           customer_name: buyer.nickname || 'Cliente',
           customer_email: buyer.email || null,
           customer_tax_id: customerTaxId,
+          customer_tax_id_dv: customerTaxIdDv,
           order_date: orderDate.toISOString(),
           amount: order.total_amount || 0,
           status: status,

@@ -46,12 +46,8 @@ interface TaxDocument {
   external_url: string | null;
 }
 
-// Format RUT: solo números del cuerpo, sin DV
-const formatRut = (rut: string): string => {
-  const clean = rut.replace(/[^0-9kK]/g, '');
-  if (clean.length < 2) return rut;
-  return clean.slice(0, -1);
-};
+// DB ya guarda solo el cuerpo (sin DV). Mostrar tal cual, solo dígitos.
+const formatRut = (rut: string): string => rut.replace(/[^0-9]/g, '');
 
 const getStatusBadge = (status: string) => {
   switch (status) {

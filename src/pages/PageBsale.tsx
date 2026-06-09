@@ -46,13 +46,10 @@ const CHANNEL_COLOR: Record<string, string> = {
   walmart:   "bg-cyan-100 text-cyan-700",
 };
 
+// DB ya guarda solo el cuerpo (sin DV). Mostrar tal cual, solo dígitos.
 function formatRut(rut: string | null | undefined): string {
   if (!rut) return "—";
-  const digits = rut.replace(/[^0-9kK]/gi, "");
-  if (digits.length < 2) return rut;
-  const dv  = digits.slice(-1).toUpperCase();
-  const num = digits.slice(0, -1).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return `${num}-${dv}`;
+  return rut.replace(/[^0-9]/g, "");
 }
 
 export default function PageBsale() {
