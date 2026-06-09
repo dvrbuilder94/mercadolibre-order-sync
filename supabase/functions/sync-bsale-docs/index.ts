@@ -315,103 +315,43 @@ Deno.serve(async (req) => {
         
         console.log(`Page ${pageCount + 1}: Filtered ${validDocs.length} valid docs (ignored ${pageIgnored})`);
 
-        // Fetch references for each document (for channel detection)
-        const docsWithReferences = await Promise.all(
-          validDocs.map(async (doc: any, idx: number) => {
-            const refHref = doc.references?.href;
-            let referenceItems: any[] = [];
-            let referenceReason: string | null = null;
-            
-            if (refHref) {
-              try {
-                // Rate limit: small delay between reference fetches
-                if (idx > 0) {
-                  await new Promise(r => setTimeout(r, 50));
-                }
-                
-                const refResponse = await fetch(refHref, {
-                  headers: { 'access_token': bsaleToken }
-                });
-                
-                if (refResponse.ok) {
-                  const refData = await refResponse.json();
-                  referenceItems = refData.items || [];
-                  referenceReason = referenceItems[0]?.reason || null;
-                }
-              } catch (e) {
-                console.warn(`Failed to fetch references for doc ${doc.id}:`, e);
-              }
-            }
-            
-            return {
-              ...doc,
-              references: {
-                ...doc.references,
-                items: referenceItems,
-              },
-              _referenceReason: referenceReason,
-            };
-          })
-        );
-        
-        // Transform docs to our schema
-        const taxDocsToUpsert = docsWithReferences
+        // Transform docs to our schema (references already included via expand=[...,references])
+        const taxDocsToUpsert = validDocs
           .map((doc: any) => {
             const transformed = transformBsaleDoc(doc, user.id, batchId);
             if (transformed) {
-              const docType = transformed.document_type;
-              docTypeCounts[docType] = (docTypeCounts[docType] || 0) + 1;
-              // Add reference data to raw_data
-              (transformed.raw_data as any).reference_items = doc.references?.items || [];
-              (transformed.raw_data as any).reference_reason = doc._referenceReason;
+              docTypeCounts[transformed.document_type] = (docTypeCounts[transformed.document_type] || 0) + 1;
+              // Detect channel from references already expanded in main request
+              const refItems = doc.references?.items || [];
+              const referenceReason = refItems[0]?.reason || null;
+              const detectedChannel = detectChannelFromReference(referenceReason);
+              (transformed.raw_data as any).reference_reason = referenceReason;
+              return {
+                ...transformed,
+                sales_channel: 'MARKETPLACE', // Default: let auto-reconcile sort unmatched docs
+                detected_channel: detectedChannel,
+              };
             }
-            return { transformed, referenceReason: doc._referenceReason };
+            return null;
           })
-          .filter((item: any) => item.transformed !== null);
+          .filter((doc: any) => doc !== null);
 
         if (taxDocsToUpsert.length > 0) {
-          // Classify each document as MARKETPLACE or B2B
-          const classifiedDocs = await Promise.all(taxDocsToUpsert.map(async ({ transformed: doc, referenceReason }: any) => {
-            // Check reference reason first (primary criterion)
-            const detectedChannel = detectChannelFromReference(referenceReason);
-            
-            // If no channel from reference, check RUT in orders (secondary criterion)
-            let hasMatchingOrder = false;
-            if (!detectedChannel && doc.client_tax_id) {
-              const normalizedRut = doc.client_tax_id.toUpperCase();
-              const { data: matchingOrder } = await supabaseClient
-                .from('orders')
-                .select('id')
-                .filter('customer_tax_id', 'ilike', `%${normalizedRut.replace(/[^0-9K]/gi, '')}%`)
-                .limit(1);
-              hasMatchingOrder = !!(matchingOrder && matchingOrder.length > 0);
-            }
-            
-            return {
-              ...doc,
-              sales_channel: classifySalesChannel(referenceReason, hasMatchingOrder),
-              detected_channel: detectedChannel,
-            };
-          }));
-
-          // Batch upsert this page immediately
           const { data: upserted, error: upsertError } = await supabaseClient
             .from('tax_documents')
-            .upsert(classifiedDocs, {
+            .upsert(taxDocsToUpsert, {
               onConflict: 'user_id,external_system,external_id',
               ignoreDuplicates: false
             })
-            .select('id, sales_channel, detected_channel');
+            .select('id, detected_channel');
 
           if (upsertError) {
             console.error(`Page ${pageCount + 1} upsert error:`, upsertError.message);
             totalErrors += taxDocsToUpsert.length;
           } else {
             totalUpserted += (upserted?.length || 0);
-            const marketplaceCount = upserted?.filter(d => d.sales_channel === 'MARKETPLACE').length || 0;
-            const b2bCount = upserted?.filter(d => d.sales_channel === 'B2B').length || 0;
-            const meliCount = upserted?.filter(d => d.detected_channel === 'meli').length || 0;
-            console.log(`Page ${pageCount + 1}: Upserted ${upserted?.length || 0} documents (${marketplaceCount} marketplace [${meliCount} meli], ${b2bCount} B2B)`);
+            const meliCount = upserted?.filter((d: any) => d.detected_channel === 'meli').length || 0;
+            console.log(`Page ${pageCount + 1}: Upserted ${upserted?.length || 0} documents (${meliCount} meli detected)`);
           }
         }
 
