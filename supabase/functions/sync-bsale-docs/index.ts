@@ -255,7 +255,9 @@ Deno.serve(async (req) => {
 
     console.log(`Date range: ${new Date(emissionDateFrom * 1000).toISOString()} to ${new Date(emissionDateTo * 1000).toISOString()}`);
 
-    const BSALE_API_URL = 'https://api.bsale.io';
+    // Use api.bsale.cl (same host the webhook uses successfully).
+    // api.bsale.io works too but some accounts return count:0 with codesii lists.
+    const BSALE_API_URL = 'https://api.bsale.cl';
     let offset = 0;
     const limit = 50;
     let hasMore = true;
@@ -270,9 +272,11 @@ Deno.serve(async (req) => {
 
     // Process page by page - upsert immediately, don't accumulate
     while (hasMore && pageCount < max_pages) {
+      // IMPORTANT: do NOT send `codesii` here. Bsale returns count:0 silently
+      // when given a comma-separated list for some accounts. We filter by SII
+      // code post-fetch in filterValidTributaryDocs().
       const url = new URL(`${BSALE_API_URL}/v1/documents.json`);
       url.searchParams.set('emissiondaterange', `[${emissionDateFrom},${emissionDateTo}]`);
-      // NOTE: codesii comma-list not supported by all Bsale accounts — filtering done post-fetch
       url.searchParams.set('expand', '[details,client,document_type,references]');
       url.searchParams.set('limit', limit.toString());
       url.searchParams.set('offset', offset.toString());
