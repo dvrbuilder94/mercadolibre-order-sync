@@ -122,9 +122,8 @@ Deno.serve(async (req) => {
       .eq('channel', 'meli')
       .eq('channel_account_id', meliAccount.id)
       .is('customer_tax_id', null)
-      .not('money_release_date', 'is', null)
       .order('order_date', { ascending: false })
-      .limit(20); // Small batch to avoid timeout
+      .limit(150); // Larger batch; ~100ms each → ~15s
 
     if (ordersError) {
       console.error('Error fetching orders:', ordersError);
@@ -248,7 +247,7 @@ Deno.serve(async (req) => {
             failedCount++;
             errors.push(`Order ${order.order_id}: Update failed`);
           } else {
-            console.log(`✅ Enriched order ${order.order_id}: RUT=${normalizedRut}, Name=${fullName}`);
+            console.log(`✅ Enriched order ${order.order_id}: RUT=${rutBody}, Name=${fullName}`);
             enrichedCount++;
           }
         } else {
@@ -256,8 +255,8 @@ Deno.serve(async (req) => {
           failedCount++;
         }
 
-        // Rate limiting: 100ms delay between requests
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Rate limiting: 80ms delay between requests
+        await new Promise(resolve => setTimeout(resolve, 80));
 
       } catch (error) {
         console.error(`Error processing order ${order.order_id}:`, error);
@@ -272,13 +271,24 @@ Deno.serve(async (req) => {
       .select('*', { count: 'exact', head: true })
       .eq('channel', 'meli')
       .eq('channel_account_id', meliAccount.id)
-      .is('customer_tax_id', null)
-      .not('money_release_date', 'is', null);
+      .is('customer_tax_id', null);
 
     console.log(`\n=== ENRICHMENT SUMMARY ===`);
     console.log(`Enriched: ${enrichedCount}`);
     console.log(`Failed: ${failedCount}`);
     console.log(`Remaining: ${remainingCount || 0}`);
+
+    // Self-chain: if there's more to enrich, invoke ourselves (fire-and-forget)
+    if ((remainingCount || 0) > 0 && enrichedCount > 0) {
+      console.log(`Chaining: ${remainingCount} orders remain, invoking enrich-meli-billing again`);
+      try {
+        supabaseClient.functions.invoke('enrich-meli-billing').catch((e) =>
+          console.error('Chain invoke failed:', e)
+        );
+      } catch (e) {
+        console.error('Chain invoke threw:', e);
+      }
+    }
 
     return new Response(
       JSON.stringify({
