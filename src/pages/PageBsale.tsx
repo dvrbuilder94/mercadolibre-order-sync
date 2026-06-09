@@ -2,9 +2,12 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
+import { DetailPanel } from "@/components/DetailPanel";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, Loader2, ExternalLink, Link2, Clock } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Info, Link2, Clock } from "lucide-react";
+
+const PAGE_SIZE = 50;
 
 const CLP = (n: number) =>
   new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
@@ -18,37 +21,29 @@ const periodRange = (p: string) => {
 };
 
 const DOC_LABEL: Record<string, string> = {
-  boleta:         "Boleta",
-  factura:        "Factura",
-  nota_credito:   "N. Crédito",
-  nota_debito:    "N. Débito",
-  factura_exenta: "Fact. Exenta",
+  boleta: "Boleta", factura: "Factura", nota_credito: "N. Crédito",
+  nota_debito: "N. Débito", factura_exenta: "Fact. Exenta",
 };
-
 const DOC_COLOR: Record<string, string> = {
-  boleta:         "bg-slate-100 text-slate-700",
-  factura:        "bg-blue-100 text-blue-700",
-  nota_credito:   "bg-red-100 text-red-700",
-  nota_debito:    "bg-orange-100 text-orange-700",
+  boleta: "bg-slate-100 text-slate-700", factura: "bg-blue-100 text-blue-700",
+  nota_credito: "bg-red-100 text-red-700", nota_debito: "bg-orange-100 text-orange-700",
   factura_exenta: "bg-purple-100 text-purple-700",
 };
-
 const CHANNEL_LABEL: Record<string, string> = {
-  meli:      "MercadoLibre",
-  falabella: "Falabella",
-  paris:     "Paris",
-  ripley:    "Ripley",
-  amazon:    "Amazon",
-  shopify:   "Shopify",
+  meli: "MercadoLibre", falabella: "Falabella", paris: "Paris",
+  ripley: "Ripley", amazon: "Amazon", shopify: "Shopify",
 };
 
 export default function PageBsale() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [docs, setDocs] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
+  const [selected, setSelected] = useState<any | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -56,24 +51,32 @@ export default function PageBsale() {
     });
   }, []);
 
-  const fetchDocs = useCallback(async () => {
+  const fetchDocs = useCallback(async (p: number) => {
     setLoading(true);
     try {
       const { from, to } = periodRange(period);
+
+      const { count } = await supabase
+        .from("tax_documents")
+        .select("*", { count: "exact", head: true })
+        .gte("document_date", from).lte("document_date", to);
+      setTotal(count || 0);
+
       const { data } = await supabase
         .from("tax_documents")
-        .select("id, document_number, document_type, document_date, total_amount, client_name, client_tax_id, detected_channel, status, external_url, order_tax_documents(id)")
-        .gte("document_date", from)
-        .lte("document_date", to)
+        .select("id, document_number, document_type, document_date, total_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)")
+        .gte("document_date", from).lte("document_date", to)
         .order("document_date", { ascending: false })
-        .limit(200);
+        .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
+
       setDocs(data || []);
     } finally {
       setLoading(false);
     }
   }, [period]);
 
-  useEffect(() => { fetchDocs(); }, [fetchDocs]);
+  useEffect(() => { setPage(0); setSelected(null); }, [period]);
+  useEffect(() => { fetchDocs(page); }, [fetchDocs, page]);
 
   const sync = async () => {
     setSyncing(true);
@@ -83,12 +86,12 @@ export default function PageBsale() {
         body: { days_back: 90 },
       });
       if (error) throw error;
-      const total = data?.summary?.total_upserted ?? 0;
+      const tot = data?.summary?.total_upserted ?? 0;
       const byType = data?.summary?.by_type
         ? Object.entries(data.summary.by_type).map(([k, v]) => `${v} ${k}`).join(" · ")
         : "";
-      setSyncMsg(`✅ ${total} documentos${byType ? ` (${byType})` : ""}`);
-      fetchDocs();
+      setSyncMsg(`✅ ${tot} documentos${byType ? ` (${byType})` : ""}`);
+      fetchDocs(page);
     } catch (e: any) {
       setSyncMsg(`❌ ${e?.message || "Error"}`);
     } finally {
@@ -102,11 +105,11 @@ export default function PageBsale() {
     setSyncMsg("");
   };
 
-  const issued   = docs.filter(d => d.status === "issued");
-  const voided   = docs.filter(d => d.status === "voided");
-  const linked   = issued.filter(d => (d.order_tax_documents as any[])?.length > 0);
-  const unlinked = issued.filter(d => !((d.order_tax_documents as any[])?.length > 0));
+  const issued      = docs.filter(d => d.status === "issued");
+  const linked      = issued.filter(d => (d.order_tax_documents as any[])?.length > 0);
+  const unlinked    = issued.filter(d => !((d.order_tax_documents as any[])?.length > 0));
   const totalAmount = issued.reduce((s, d) => s + (d.total_amount || 0), 0);
+  const totalPages  = Math.ceil(total / PAGE_SIZE);
 
   return (
     <div className="flex min-h-screen bg-slate-50">
@@ -126,7 +129,6 @@ export default function PageBsale() {
               <ChevronRight className="h-5 w-5" />
             </button>
           </div>
-
           <div className="flex items-center gap-3">
             {syncMsg && (
               <span className={`text-sm ${syncMsg.includes("❌") ? "text-red-500" : "text-green-600"}`}>
@@ -147,10 +149,10 @@ export default function PageBsale() {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[
-            { label: "Documentos",     value: loading ? "—" : issued.length,        sub: "emitidos" },
-            { label: "Total",          value: loading ? "—" : CLP(totalAmount),     sub: "suma documentos" },
-            { label: "Vinculados",     value: loading ? "—" : linked.length,        sub: "con orden ML", color: "text-green-600" },
-            { label: "Sin vincular",   value: loading ? "—" : unlinked.length,      sub: "sin orden ML",
+            { label: "Documentos",   value: loading ? "—" : total,           sub: "en el período" },
+            { label: "Total",        value: loading ? "—" : CLP(totalAmount), sub: "suma página actual" },
+            { label: "Vinculados",   value: loading ? "—" : linked.length,   sub: "con orden ML", color: "text-green-600" },
+            { label: "Sin vincular", value: loading ? "—" : unlinked.length, sub: "sin orden ML",
               color: unlinked.length > 0 ? "text-orange-600" : "text-green-600" },
           ].map(({ label, value, sub, color }) => (
             <div key={label} className="bg-white border rounded-lg p-4">
@@ -190,10 +192,11 @@ export default function PageBsale() {
                   </td>
                 </tr>
               ) : docs.map(d => {
-                const isLinked = (d.order_tax_documents as any[])?.length > 0;
-                const isVoided = d.status === "voided";
+                const isLinked   = (d.order_tax_documents as any[])?.length > 0;
+                const isVoided   = d.status === "voided";
+                const isSelected = selected?.id === d.id;
                 return (
-                  <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${isVoided ? "opacity-40" : ""}`}>
+                  <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${isVoided ? "opacity-40" : ""} ${isSelected ? "bg-slate-100" : ""}`}>
                     <td className="px-4 py-2.5">
                       <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>
                         {DOC_LABEL[d.document_type] || d.document_type}
@@ -215,12 +218,13 @@ export default function PageBsale() {
                       }
                     </td>
                     <td className="px-4 py-2.5">
-                      {d.external_url && (
-                        <a href={d.external_url} target="_blank" rel="noopener noreferrer"
-                          className="text-slate-300 hover:text-slate-600">
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
+                      <button
+                        onClick={() => setSelected(isSelected ? null : d)}
+                        className={`${isSelected ? "text-slate-600" : "text-slate-300 hover:text-slate-500"}`}
+                        title="Ver detalle"
+                      >
+                        <Info className="h-3.5 w-3.5" />
+                      </button>
                     </td>
                   </tr>
                 );
@@ -228,10 +232,41 @@ export default function PageBsale() {
             </tbody>
           </table>
         </div>
-        {!loading && docs.length === 200 && (
-          <p className="text-xs text-slate-400 mt-2 text-center">Mostrando los primeros 200 resultados</p>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between mt-4">
+            <span className="text-xs text-slate-400">
+              Página {page + 1} de {totalPages} · {total} documentos
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(0, p - 1))}
+                disabled={page === 0 || loading}
+                className="flex items-center gap-1 px-3 py-1.5 bg-white border rounded text-sm disabled:opacity-40 hover:bg-slate-50"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" /> Anterior
+              </button>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                disabled={page >= totalPages - 1 || loading}
+                className="flex items-center gap-1 px-3 py-1.5 bg-white border rounded text-sm disabled:opacity-40 hover:bg-slate-50"
+              >
+                Siguiente <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
         )}
+
       </main>
+
+      {selected && (
+        <DetailPanel
+          title={`Bsale · ${DOC_LABEL[selected.document_type] || selected.document_type} #${selected.document_number}`}
+          data={selected}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   );
 }
