@@ -5,11 +5,12 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Same normalization used in sync-meli-orders and sync-bsale-docs
-function normalizeRut(rut: string | null | undefined): string | null {
-  if (!rut) return null;
+// Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
+function splitRut(rut: string | null | undefined): { body: string | null; dv: string | null } {
+  if (!rut) return { body: null, dv: null };
   const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
-  return clean.length >= 7 ? clean : null;
+  if (clean.length < 7) return { body: null, dv: null };
+  return { body: clean.slice(0, -1), dv: clean.slice(-1) };
 }
 
 Deno.serve(async (req) => {
@@ -74,7 +75,7 @@ Deno.serve(async (req) => {
         buyer.identification?.number ||
         null;
 
-      const rut = normalizeRut(rawRut);
+      const { body: rutBody, dv: rutDv } = splitRut(rawRut);
 
       // Collect samples for diagnosis (first 20)
       if (rutSamples.length < 20) {
@@ -82,29 +83,29 @@ Deno.serve(async (req) => {
           order_id: order.order_id,
           billing_info: billingInfo,
           buyer_keys: Object.keys(buyer),
-          rut_found: rut,
+          rut_found: rutBody,
           had_rut: order.customer_tax_id,
         });
       }
 
-      if (order.customer_tax_id && order.customer_tax_id === rut) {
+      if (order.customer_tax_id && order.customer_tax_id === rutBody) {
         alreadyHad++;
         continue;
       }
 
-      if (!rut) {
+      if (!rutBody) {
         noRutInRaw++;
         continue;
       }
 
       const { error: updateErr } = await supabaseAdmin
         .from('orders')
-        .update({ customer_tax_id: rut })
+        .update({ customer_tax_id: rutBody, customer_tax_id_dv: rutDv })
         .eq('id', order.id);
 
       if (!updateErr) {
         updated++;
-        console.log(`✅ Updated order ${order.order_id}: RUT ${rut}`);
+        console.log(`✅ Updated order ${order.order_id}: RUT ${rutBody}-${rutDv}`);
       }
     }
 
