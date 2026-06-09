@@ -165,6 +165,7 @@ export default function PageMeli() {
                 <th className="text-left px-4 py-3 font-medium">Orden ML</th>
                 <th className="text-left px-4 py-3 font-medium">Fecha</th>
                 <th className="text-left px-4 py-3 font-medium">Cliente</th>
+                <th className="text-left px-4 py-3 font-medium">RUT</th>
                 <th className="text-right px-4 py-3 font-medium">Monto</th>
                 <th className="text-left px-4 py-3 font-medium">Estado</th>
                 <th className="text-left px-4 py-3 font-medium">Boleta</th>
@@ -174,13 +175,13 @@ export default function PageMeli() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-slate-400">
+                  <td colSpan={8} className="text-center py-12 text-slate-400">
                     <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...
                   </td>
                 </tr>
               ) : orders.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-slate-400 text-sm">
+                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
                     Sin órdenes. Prueba Sync MercadoLibre.
                   </td>
                 </tr>
@@ -191,7 +192,12 @@ export default function PageMeli() {
                   <tr key={o.id} className={`border-b last:border-0 hover:bg-slate-50 ${isSelected ? "bg-slate-100" : ""}`}>
                     <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{o.order_id}</td>
                     <td className="px-4 py-2.5 text-slate-500 text-xs">{o.order_date?.slice(0, 10)}</td>
-                    <td className="px-4 py-2.5 max-w-[160px] truncate">{o.customer_name}</td>
+                    <td className="px-4 py-2.5 max-w-[140px] truncate">{o.customer_name}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs">
+                      {o.customer_tax_id
+                        ? <span className="text-slate-700">{o.customer_tax_id}</span>
+                        : <span className="text-slate-300">—</span>}
+                    </td>
                     <td className="px-4 py-2.5 text-right font-mono">{CLP(o.gross_amount)}</td>
                     <td className={`px-4 py-2.5 text-xs ${STATUS_COLOR[o.status] || "text-slate-500"}`}>
                       {STATUS_LABEL[o.status] || o.status}

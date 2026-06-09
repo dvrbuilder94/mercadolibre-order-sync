@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, ExternalLink } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck } from "lucide-react";
 
 interface Stats {
   orders: number;
@@ -47,6 +47,7 @@ export default function Pipeline() {
   const [syncingML, setSyncingML] = useState(false);
   const [syncingBsale, setSyncingBsale] = useState(false);
   const [reconciling, setReconciling] = useState(false);
+  const [enriching, setEnriching] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -182,7 +183,33 @@ export default function Pipeline() {
     }
   };
 
-  const busy = syncingML || syncingBsale || reconciling;
+  const enrichRuts = async () => {
+    setEnriching(true);
+    addLog("› Enriqueciendo RUTs desde API de ML...");
+    let totalEnriched = 0;
+    let round = 0;
+    try {
+      while (true) {
+        round++;
+        const { data, error } = await supabase.functions.invoke("enrich-meli-billing");
+        if (error) throw error;
+        const enriched = data?.enriched ?? 0;
+        const remaining = data?.remaining ?? 0;
+        totalEnriched += enriched;
+        addLog(`  Ronda ${round}: ${enriched} RUTs obtenidos · ${remaining} pendientes`);
+        if (remaining === 0 || enriched === 0) break;
+        if (round >= 50) { addLog("  ⚠️ Límite de rondas alcanzado"); break; }
+      }
+      addLog(`✅ RUTs: ${totalEnriched} órdenes enriquecidas en ${round} ronda${round > 1 ? "s" : ""}`);
+      fetchStats();
+    } catch (e: any) {
+      addLog(`❌ RUTs: ${e?.message || "error desconocido"}`);
+    } finally {
+      setEnriching(false);
+    }
+  };
+
+  const busy = syncingML || syncingBsale || reconciling || enriching;
 
   return (
     <div className="flex min-h-screen bg-slate-50">
@@ -255,6 +282,15 @@ export default function Pipeline() {
           >
             {reconciling ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
             Conciliar
+          </button>
+
+          <button
+            onClick={enrichRuts}
+            disabled={busy}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-700 font-medium rounded-lg text-sm transition-colors"
+          >
+            {enriching ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />}
+            Enriquecer RUTs
           </button>
         </div>
 
