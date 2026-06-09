@@ -1,0 +1,64 @@
+project_id = "opdclqitvxyqzeqzegih"
+
+[functions.sync-payments]
+verify_jwt = true
+
+[functions.sync-meli-settlements]
+verify_jwt = true
+
+[functions.sync-meli-orders]
+verify_jwt = true
+
+[functions.sync-meli-payment-details]
+verify_jwt = true
+
+[functions.sync-bsale-docs]
+verify_jwt = true
+
+[functions.auto-reconcile]
+verify_jwt = true
+
+[functions.manual-reconcile]
+verify_jwt = true
+
+[functions.get-meli-auth-url]
+verify_jwt = true
+
+[functions.meli-callback]
+verify_jwt = true
+
+[functions.refresh-meli-token]
+verify_jwt = true
+
+[functions.meli-webhook]
+verify_jwt = false
+
+[functions.bsale-webhook]
+verify_jwt = false
+
+[functions.process-payments-csv]
+verify_jwt = true
+
+[functions.import-bank-movements]
+verify_jwt = true
+
+[functions.calculate-settlements]
+verify_jwt = true
+
+[functions.get-bsale-auth-url]
+verify_jwt = true
+
+[functions.bsale-oauth-callback]
+verify_jwt = false
+
+[functions.connect-bsale]
+verify_jwt = false
+
+[functions.debug-meli-matching]
+verify_jwt = false
+
+[functions.enrich-meli-billing]
+verify_jwt = true
+
+[functions.cron-refresh-meli-tokens]
+verify_jwt = false
