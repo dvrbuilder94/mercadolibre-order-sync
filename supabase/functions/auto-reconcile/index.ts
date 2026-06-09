@@ -319,7 +319,9 @@ Deno.serve(async (req) => {
     // Helper: Detect generic Bsale boleta RUT (consumidor final = 66666666-6)
     const isGenericBoletaRut = (rut: string | null | undefined): boolean => {
       const n = normalizeRut(rut);
-      return n === '666666666' || n === '66666666K' || n === '11111111K';
+      // Body-only comparison (DV stored in separate column). Cover both legacy and new format.
+      return n === '666666666' || n === '66666666K' || n === '11111111K'
+          || n === '66666666' || n === '1111111';
     };
 
     // Helper: Calculate name similarity (0-1)
