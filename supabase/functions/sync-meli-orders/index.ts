@@ -405,6 +405,18 @@ Deno.serve(async (req) => {
     console.log(`Pages fetched: ${currentPage + 1}`);
     console.log(`Total available: ${totalAvailable}`);
 
+    // Auto-trigger billing enrichment (fire-and-forget) to populate real name + RUT
+    if (syncedCount > 0) {
+      console.log('Triggering enrich-meli-billing...');
+      try {
+        supabaseClient.functions.invoke('enrich-meli-billing').catch((e) =>
+          console.error('enrich-meli-billing invoke failed:', e)
+        );
+      } catch (e) {
+        console.error('enrich-meli-billing threw:', e);
+      }
+    }
+
     return new Response(
       JSON.stringify({ 
         success: true,
