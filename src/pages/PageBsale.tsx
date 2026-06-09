@@ -1,0 +1,237 @@
+import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { Nav } from "@/components/Nav";
+import { format } from "date-fns";
+import { es } from "date-fns/locale";
+import { ChevronLeft, ChevronRight, RefreshCw, Loader2, ExternalLink, Link2, Clock } from "lucide-react";
+
+const CLP = (n: number) =>
+  new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
+
+const periodRange = (p: string) => {
+  const [y, m] = p.split("-").map(Number);
+  return {
+    from: format(new Date(y, m - 1, 1), "yyyy-MM-dd"),
+    to:   format(new Date(y, m, 0),     "yyyy-MM-dd"),
+  };
+};
+
+const DOC_LABEL: Record<string, string> = {
+  boleta:         "Boleta",
+  factura:        "Factura",
+  nota_credito:   "N. Crédito",
+  nota_debito:    "N. Débito",
+  factura_exenta: "Fact. Exenta",
+};
+
+const DOC_COLOR: Record<string, string> = {
+  boleta:         "bg-slate-100 text-slate-700",
+  factura:        "bg-blue-100 text-blue-700",
+  nota_credito:   "bg-red-100 text-red-700",
+  nota_debito:    "bg-orange-100 text-orange-700",
+  factura_exenta: "bg-purple-100 text-purple-700",
+};
+
+const CHANNEL_LABEL: Record<string, string> = {
+  meli:      "MercadoLibre",
+  falabella: "Falabella",
+  paris:     "Paris",
+  ripley:    "Ripley",
+  amazon:    "Amazon",
+  shopify:   "Shopify",
+};
+
+export default function PageBsale() {
+  const navigate = useNavigate();
+  const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [docs, setDocs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session) navigate("/auth");
+    });
+  }, []);
+
+  const fetchDocs = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { from, to } = periodRange(period);
+      const { data } = await supabase
+        .from("tax_documents")
+        .select("id, document_number, document_type, document_date, total_amount, client_name, client_tax_id, detected_channel, status, external_url, order_tax_documents(id)")
+        .gte("document_date", from)
+        .lte("document_date", to)
+        .order("document_date", { ascending: false })
+        .limit(200);
+      setDocs(data || []);
+    } finally {
+      setLoading(false);
+    }
+  }, [period]);
+
+  useEffect(() => { fetchDocs(); }, [fetchDocs]);
+
+  const sync = async () => {
+    setSyncing(true);
+    setSyncMsg("Sincronizando...");
+    try {
+      const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
+        body: { days_back: 90 },
+      });
+      if (error) throw error;
+      const total = data?.summary?.total_upserted ?? 0;
+      const byType = data?.summary?.by_type
+        ? Object.entries(data.summary.by_type).map(([k, v]) => `${v} ${k}`).join(" · ")
+        : "";
+      setSyncMsg(`✅ ${total} documentos${byType ? ` (${byType})` : ""}`);
+      fetchDocs();
+    } catch (e: any) {
+      setSyncMsg(`❌ ${e?.message || "Error"}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const changePeriod = (delta: number) => {
+    const [y, m] = period.split("-").map(Number);
+    setPeriod(format(new Date(y, m - 1 + delta, 1), "yyyy-MM"));
+    setSyncMsg("");
+  };
+
+  const issued   = docs.filter(d => d.status === "issued");
+  const voided   = docs.filter(d => d.status === "voided");
+  const linked   = issued.filter(d => (d.order_tax_documents as any[])?.length > 0);
+  const unlinked = issued.filter(d => !((d.order_tax_documents as any[])?.length > 0));
+  const totalAmount = issued.reduce((s, d) => s + (d.total_amount || 0), 0);
+
+  return (
+    <div className="flex min-h-screen bg-slate-50">
+      <Nav />
+      <main className="flex-1 p-8 max-w-5xl">
+
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <button onClick={() => changePeriod(-1)} className="p-1 hover:bg-slate-200 rounded">
+              <ChevronLeft className="h-5 w-5" />
+            </button>
+            <h1 className="text-xl font-semibold capitalize w-44 text-center">
+              {format(new Date(period + "-01"), "MMMM yyyy", { locale: es })}
+            </h1>
+            <button onClick={() => changePeriod(1)} className="p-1 hover:bg-slate-200 rounded">
+              <ChevronRight className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {syncMsg && (
+              <span className={`text-sm ${syncMsg.includes("❌") ? "text-red-500" : "text-green-600"}`}>
+                {syncMsg}
+              </span>
+            )}
+            <button
+              onClick={sync}
+              disabled={syncing || loading}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white font-medium rounded-lg text-sm"
+            >
+              {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Sync Bsale
+            </button>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          {[
+            { label: "Documentos",     value: loading ? "—" : issued.length,        sub: "emitidos" },
+            { label: "Total",          value: loading ? "—" : CLP(totalAmount),     sub: "suma documentos" },
+            { label: "Vinculados",     value: loading ? "—" : linked.length,        sub: "con orden ML", color: "text-green-600" },
+            { label: "Sin vincular",   value: loading ? "—" : unlinked.length,      sub: "sin orden ML",
+              color: unlinked.length > 0 ? "text-orange-600" : "text-green-600" },
+          ].map(({ label, value, sub, color }) => (
+            <div key={label} className="bg-white border rounded-lg p-4">
+              <p className="text-xs text-slate-400 mb-1">{label}</p>
+              <p className={`text-2xl font-bold ${color || "text-slate-800"}`}>{value}</p>
+              <p className="text-xs text-slate-400 mt-1">{sub}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Docs table */}
+        <div className="bg-white border rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-slate-50 text-xs text-slate-500">
+                <th className="text-left px-4 py-3 font-medium">Tipo</th>
+                <th className="text-left px-4 py-3 font-medium">Número</th>
+                <th className="text-left px-4 py-3 font-medium">Fecha</th>
+                <th className="text-left px-4 py-3 font-medium">Cliente</th>
+                <th className="text-right px-4 py-3 font-medium">Monto</th>
+                <th className="text-left px-4 py-3 font-medium">Canal</th>
+                <th className="text-left px-4 py-3 font-medium">Vinculado</th>
+                <th className="w-8 px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={8} className="text-center py-12 text-slate-400">
+                    <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...
+                  </td>
+                </tr>
+              ) : docs.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
+                    Sin documentos. Prueba Sync Bsale.
+                  </td>
+                </tr>
+              ) : docs.map(d => {
+                const isLinked = (d.order_tax_documents as any[])?.length > 0;
+                const isVoided = d.status === "voided";
+                return (
+                  <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${isVoided ? "opacity-40" : ""}`}>
+                    <td className="px-4 py-2.5">
+                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>
+                        {DOC_LABEL[d.document_type] || d.document_type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{d.document_number}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-500">{d.document_date}</td>
+                    <td className="px-4 py-2.5 max-w-[150px] truncate text-sm">{d.client_name || "—"}</td>
+                    <td className="px-4 py-2.5 text-right font-mono">{CLP(d.total_amount)}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-500">
+                      {CHANNEL_LABEL[d.detected_channel] || (d.detected_channel ? d.detected_channel : "—")}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {isVoided
+                        ? <span className="text-xs text-slate-300">Anulado</span>
+                        : isLinked
+                          ? <span className="flex items-center gap-1 text-green-600 text-xs"><Link2 className="h-3.5 w-3.5" />Sí</span>
+                          : <span className="flex items-center gap-1 text-slate-300 text-xs"><Clock className="h-3.5 w-3.5" />No</span>
+                      }
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {d.external_url && (
+                        <a href={d.external_url} target="_blank" rel="noopener noreferrer"
+                          className="text-slate-300 hover:text-slate-600">
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {!loading && docs.length === 200 && (
+          <p className="text-xs text-slate-400 mt-2 text-center">Mostrando los primeros 200 resultados</p>
+        )}
+      </main>
+    </div>
+  );
+}

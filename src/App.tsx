@@ -10,8 +10,10 @@ import Auth         from "./pages/Auth";
 import MeliCallback from "./pages/MeliCallback";
 import NotFound     from "./pages/NotFound";
 
-// New UX
-import Dashboard from "./pages/Dashboard";
+// New UX — 4 pages
+import Pipeline  from "./pages/Pipeline";
+import PageMeli  from "./pages/PageMeli";
+import PageBsale from "./pages/PageBsale";
 import ConfigNew from "./pages/ConfigNew";
 
 const queryClient = new QueryClient();
@@ -24,27 +26,30 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           {/* Entry */}
-          <Route path="/"      element={<Landing />} />
-          <Route path="/auth"  element={<Auth />} />
+          <Route path="/"     element={<Landing />} />
+          <Route path="/auth" element={<Auth />} />
 
-          {/* New UX */}
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/config"    element={<ConfigNew />} />
+          {/* App — 4 pages */}
+          <Route path="/pipeline"     element={<Pipeline />} />
+          <Route path="/mercadolibre" element={<PageMeli />} />
+          <Route path="/bsale"        element={<PageBsale />} />
+          <Route path="/config"       element={<ConfigNew />} />
 
           {/* OAuth callbacks — DO NOT TOUCH */}
           <Route path="/meli-callback" element={<MeliCallback />} />
 
-          {/* Legacy redirects — keep so old links don't 404 */}
-          <Route path="/sales"            element={<Navigate to="/dashboard" replace />} />
-          <Route path="/payments"         element={<Navigate to="/dashboard" replace />} />
-          <Route path="/payments/:id"     element={<Navigate to="/dashboard" replace />} />
-          <Route path="/orders/:id"       element={<Navigate to="/dashboard" replace />} />
-          <Route path="/bsale-documents"  element={<Navigate to="/dashboard" replace />} />
-          <Route path="/reports/*"        element={<Navigate to="/dashboard" replace />} />
-          <Route path="/pending-sales"    element={<Navigate to="/dashboard" replace />} />
-          <Route path="/sales/issues"     element={<Navigate to="/dashboard" replace />} />
-          <Route path="/closing"          element={<Navigate to="/dashboard" replace />} />
-          <Route path="/ledger"           element={<Navigate to="/dashboard" replace />} />
+          {/* Legacy redirects */}
+          <Route path="/dashboard"        element={<Navigate to="/pipeline" replace />} />
+          <Route path="/sales"            element={<Navigate to="/mercadolibre" replace />} />
+          <Route path="/payments"         element={<Navigate to="/pipeline" replace />} />
+          <Route path="/payments/:id"     element={<Navigate to="/pipeline" replace />} />
+          <Route path="/orders/:id"       element={<Navigate to="/mercadolibre" replace />} />
+          <Route path="/bsale-documents"  element={<Navigate to="/bsale" replace />} />
+          <Route path="/reports/*"        element={<Navigate to="/pipeline" replace />} />
+          <Route path="/pending-sales"    element={<Navigate to="/mercadolibre" replace />} />
+          <Route path="/sales/issues"     element={<Navigate to="/mercadolibre" replace />} />
+          <Route path="/closing"          element={<Navigate to="/pipeline" replace />} />
+          <Route path="/ledger"           element={<Navigate to="/pipeline" replace />} />
 
           <Route path="*" element={<NotFound />} />
         </Routes>
