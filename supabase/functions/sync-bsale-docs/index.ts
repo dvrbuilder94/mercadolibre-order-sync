@@ -5,10 +5,12 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Normalize RUT: remove dots, dashes, and uppercase
-function normalizeRut(rut: string | null | undefined): string | null {
-  if (!rut) return null;
-  return rut.replace(/[^0-9kK]/g, '').toUpperCase();
+// Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
+function splitRut(rut: string | null | undefined): { body: string | null; dv: string | null } {
+  if (!rut) return { body: null, dv: null };
+  const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+  if (clean.length < 2) return { body: null, dv: null };
+  return { body: clean.slice(0, -1), dv: clean.slice(-1) };
 }
 
 // Valid SII codes for tributary documents
@@ -142,7 +144,7 @@ function transformBsaleDoc(doc: any, userId: string, batchId: string) {
     ? `${doc.client.firstName} ${doc.client.lastName}`.trim()
     : doc.client?.company || doc.client?.activity || 'Cliente';
 
-  const clientTaxId = normalizeRut(doc.client?.code);
+  const { body: clientTaxId, dv: clientTaxIdDv } = splitRut(doc.client?.code);
   
   const netAmount = parseFloat(doc.netAmount || 0);
   const taxAmount = parseFloat(doc.taxAmount || 0);
@@ -168,6 +170,7 @@ function transformBsaleDoc(doc: any, userId: string, batchId: string) {
     total_amount: totalAmount,
     client_name: clientName,
     client_tax_id: clientTaxId,
+    client_tax_id_dv: clientTaxIdDv,
     external_system: 'bsale',
     external_id: doc.id.toString(),
     external_order_id: externalOrderId,
