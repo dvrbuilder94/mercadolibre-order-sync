@@ -716,15 +716,16 @@ Deno.serve(async (req) => {
       return validCodesSii.includes(codeSii);
     });
 
-    // Excluir documentos B2B reales (ventas fuera de marketplace, sin contraparte en orders).
-    // Estos no son fallas de match; son ventas mayoristas que no deben entrar al motor.
+    // Incluir todos los docs no vinculados — la clasificación B2B puede ser incorrecta
+    // si sync-bsale-docs corrió antes que sync-meli-orders (sin órdenes para comparar RUT).
+    // Si un doc B2B genuino no tiene orden, simplemente queda sin vincular. Sin daño.
     const allUnlinked = tributaryDocs.filter(doc => !linkedDocIds.has(doc.id));
     const excludedB2BCount = allUnlinked.filter(doc => doc.sales_channel === 'B2B').length;
-    const unlinkedDocs = allUnlinked.filter(doc => doc.sales_channel !== 'B2B');
+    const unlinkedDocs = allUnlinked; // Intentar match en todos, incluyendo los clasificados B2B
     console.log(`Found ${ordersNeedingDocs.length} orders needing documents (with money_release_date)`);
     console.log(`Found ${allUnlinked.length} unlinked tributary documents`);
-    console.log(`  Excluidos B2B (ventas fuera de marketplace): ${excludedB2BCount}`);
-    console.log(`  Elegibles para match (MARKETPLACE/sin clasificar): ${unlinkedDocs.length}`);
+    console.log(`  Clasificados B2B (pueden ser mal clasificados si sync corrió antes de órdenes): ${excludedB2BCount}`);
+    console.log(`  Total elegibles para match: ${unlinkedDocs.length}`);
 
     let autoLinkedCount = 0;
     let autoSoftCount = 0;

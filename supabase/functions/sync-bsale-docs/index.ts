@@ -37,12 +37,14 @@ function detectChannelFromReference(reason: string | null): string | null {
   return null;
 }
 
-// Classify sales channel based on reference reason and order match
+// Classify sales channel based on reference reason and order match.
+// Default is MARKETPLACE — docs without a matching order are likely mis-timed syncs,
+// not genuine B2B wholesale. auto-reconcile will leave unmatched docs unlinked.
 function classifySalesChannel(referenceReason: string | null, hasMatchingOrder: boolean): string {
   const channel = detectChannelFromReference(referenceReason);
   if (channel) return 'MARKETPLACE';
   if (hasMatchingOrder) return 'MARKETPLACE';
-  return 'B2B';
+  return 'MARKETPLACE'; // Default: don't exclude from reconciliation engine
 }
 
 // Extract external order ID from various fields

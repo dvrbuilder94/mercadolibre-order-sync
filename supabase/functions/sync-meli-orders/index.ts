@@ -25,13 +25,13 @@ Deno.serve(async (req) => {
     // Parse request body for optional date parameters
     let dateFromParam: string | null = null;
     let dateToParam: string | null = null;
-    let maxPagesParam: number = 2;
-    
+    let maxPagesParam: number = 10;
+
     try {
       const body = await req.json();
       dateFromParam = body.date_from || null;
       dateToParam = body.date_to || null;
-      maxPagesParam = body.max_pages || 2;
+      maxPagesParam = body.max_pages || 10;
     } catch {
       // No body or invalid JSON, use defaults
     }
