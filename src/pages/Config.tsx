@@ -23,6 +23,8 @@ interface MeliAccount {
   seller_id: string | null;
   site_id: string;
   access_token: string | null;
+  expires_at: string | null;
+  updated_at: string | null;
 }
 
 interface BsaleAccount {
@@ -75,7 +77,7 @@ export default function Config() {
 
       const { data: meli } = await supabase
         .from("meli_accounts")
-        .select("id, seller_id, site_id, access_token")
+        .select("id, seller_id, site_id, access_token, expires_at, updated_at")
         .eq("user_id", user.id)
         .maybeSingle();
 
@@ -277,6 +279,19 @@ export default function Config() {
   const meliConnected = meliAccount?.access_token && meliAccount?.seller_id;
   const bsaleConnected = bsaleAccount?.status === 'connected';
 
+  const getMeliTokenStatus = () => {
+    if (!meliAccount?.expires_at) return null;
+    const expiresAt = new Date(meliAccount.expires_at);
+    const now = new Date();
+    const hoursLeft = (expiresAt.getTime() - now.getTime()) / (1000 * 60 * 60);
+    if (hoursLeft < 0) return { label: 'Token expirado', color: 'text-red-600', urgent: true };
+    if (hoursLeft < 2) return { label: `Expira en ${Math.round(hoursLeft * 60)} min`, color: 'text-red-500', urgent: true };
+    if (hoursLeft < 6) return { label: `Expira en ${Math.round(hoursLeft)}h`, color: 'text-amber-500', urgent: false };
+    return { label: `Token activo (${Math.round(hoursLeft)}h restantes)`, color: 'text-green-600', urgent: false };
+  };
+
+  const meliTokenStatus = getMeliTokenStatus();
+
   return (
     <AppLayout>
       <div className="space-y-6">
@@ -326,6 +341,23 @@ export default function Config() {
                     <span className="text-muted-foreground">Sitio:</span>
                     <span>{meliAccount?.site_id}</span>
                   </div>
+                  {meliTokenStatus && (
+                    <div className="flex justify-between items-center pt-1 border-t border-border/50">
+                      <span className="text-muted-foreground">Token:</span>
+                      <span className={`font-medium ${meliTokenStatus.color}`}>
+                        {meliTokenStatus.urgent && <AlertCircle className="h-3 w-3 inline mr-1" />}
+                        {meliTokenStatus.label}
+                      </span>
+                    </div>
+                  )}
+                  {meliAccount?.updated_at && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Último sync:</span>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(meliAccount.updated_at).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">

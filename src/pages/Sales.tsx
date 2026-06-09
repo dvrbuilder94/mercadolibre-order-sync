@@ -130,6 +130,7 @@ const Sales = () => {
     withoutDocCount: 0,
   });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const PAGE_SIZE = 25;
 
@@ -164,6 +165,7 @@ const Sales = () => {
   useEffect(() => {
     const fetchSales = async () => {
       setLoading(true);
+      setError(null);
       try {
         const { data, error } = await supabase
           .from('orders')
@@ -231,8 +233,9 @@ const Sales = () => {
           withoutDocCount: nonCancelled.filter(s => s.hasPayment && !s.hasDocument).length,
         });
 
-      } catch (error) {
-        console.error('Error fetching sales:', error);
+      } catch (err) {
+        console.error('Error fetching sales:', err);
+        setError('No se pudieron cargar las ventas. Intenta recargar la página.');
       } finally {
         setLoading(false);
       }
@@ -451,7 +454,14 @@ const Sales = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {loading ? (
+                  {error ? (
+                    <TableRow>
+                      <TableCell colSpan={10} className="text-center py-8 text-destructive">
+                        <AlertCircle className="h-5 w-5 inline mr-2" />
+                        {error}
+                      </TableCell>
+                    </TableRow>
+                  ) : loading ? (
                     Array.from({ length: 5 }).map((_, i) => (
                       <TableRow key={i}>
                         {Array.from({ length: 10 }).map((_, j) => (

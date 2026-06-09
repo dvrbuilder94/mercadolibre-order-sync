@@ -49,7 +49,7 @@ const App = () => (
           <Route path="/reports/fees" element={<ReportFees />} />
           <Route path="/reports/tax-cross" element={<ReportTaxCross />} />
           <Route path="/config" element={<Config />} />
-          <Route path="/debug" element={<Debug />} />
+          {import.meta.env.DEV && <Route path="/debug" element={<Debug />} />}
           
           {/* Redirects from old routes */}
           <Route path="/pending-sales" element={<Navigate to="/sales?filter=pendientes" replace />} />
