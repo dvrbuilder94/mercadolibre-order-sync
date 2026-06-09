@@ -6,10 +6,12 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-// Normalize RUT: remove dots, dashes, and convert to uppercase
-const normalizeRut = (rut: string | null | undefined): string => {
-  if (!rut) return '';
-  return rut.replace(/[^0-9kK]/g, '').toUpperCase();
+// Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
+const splitRut = (rut: string | null | undefined): { body: string; dv: string } => {
+  if (!rut) return { body: '', dv: '' };
+  const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+  if (clean.length < 7) return { body: '', dv: '' };
+  return { body: clean.slice(0, -1), dv: clean.slice(-1) };
 };
 
 // Capitalize name properly
@@ -210,14 +212,14 @@ Deno.serve(async (req) => {
           if (docNumberInfo?.value && !rawRut) rawRut = docNumberInfo.value;
         }
         
-        const normalizedRut = normalizeRut(rawRut);
+        const { body: rutBody, dv: rutDv } = splitRut(rawRut);
         
-        console.log(`[${processedCount}] Parsed: name=${firstName} ${lastName}, rut=${normalizedRut}`);
+        console.log(`[${processedCount}] Parsed: name=${firstName} ${lastName}, rut=${rutBody}-${rutDv}`);
         
         // Build real name
         const fullName = capitalizeName(`${firstName} ${lastName}`.trim());
 
-        if (!normalizedRut && !fullName) {
+        if (!rutBody && !fullName) {
           console.log(`No useful data for order ${order.order_id}`);
           failedCount++;
           errors.push(`Order ${order.order_id}: No RUT or name available`);
@@ -226,8 +228,9 @@ Deno.serve(async (req) => {
 
         // Update order with enriched data
         const updateData: Record<string, string> = {};
-        if (normalizedRut) {
-          updateData.customer_tax_id = normalizedRut;
+        if (rutBody) {
+          updateData.customer_tax_id = rutBody;
+          updateData.customer_tax_id_dv = rutDv;
         }
         if (fullName && fullName !== order.customer_name) {
           // Store real name, keeping nickname as backup reference
