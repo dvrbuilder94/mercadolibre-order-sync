@@ -26,14 +26,62 @@ function mapBsaleDocType(codeSii: number | undefined): 'boleta' | 'factura' | 'n
   return null;
 }
 
-// Detect channel from reference reason
-function detectChannelFromReference(reason: string | null): string | null {
-  if (!reason) return null;
-  const upper = reason.toUpperCase();
-  if (upper.includes('MERCADO LIBRE') || upper.includes('MERCADOLIBRE')) return 'meli';
-  if (upper.includes('FALABELLA')) return 'falabella';
+// Detect channel from any text string (reference reason, payment name, etc.)
+function detectChannelFromText(text: string | null): string | null {
+  if (!text) return null;
+  const upper = text.toUpperCase();
+  // MercadoLibre / MercadoPago (same marketplace)
+  if (upper.includes('MERCADO LIBRE') || upper.includes('MERCADOLIBRE') ||
+      upper.includes('MERCADO PAGO') || upper.includes('MERCADOPAGO') ||
+      upper.includes('ML ') || upper.includes(' ML') || upper === 'ML') return 'meli';
+  // Falabella / CMR
+  if (upper.includes('FALABELLA') || upper.includes('CMR')) return 'falabella';
+  // Paris / Cencosud
+  if (upper.includes('PARIS') || upper.includes('CENCOSUD') || upper.includes('PARIS.CL')) return 'paris';
+  // Ripley
+  if (upper.includes('RIPLEY')) return 'ripley';
+  // Amazon
   if (upper.includes('AMAZON')) return 'amazon';
+  // Shopify
   if (upper.includes('SHOPIFY')) return 'shopify';
+  // Linio / Allegro
+  if (upper.includes('LINIO')) return 'linio';
+  // Rappi
+  if (upper.includes('RAPPI')) return 'rappi';
+  // Walmart / Líder
+  if (upper.includes('WALMART') || upper.includes('LIDER') || upper.includes('LÍDER')) return 'walmart';
+  return null;
+}
+
+// Legacy alias kept for compatibility
+const detectChannelFromReference = detectChannelFromText;
+
+// Detect channel from a Bsale document using all available signals
+function detectChannelFromDoc(doc: any): string | null {
+  // 1. Check all references (not just first)
+  if (doc.references?.items?.length > 0) {
+    for (const ref of doc.references.items) {
+      const hit = detectChannelFromText(ref.reason) || detectChannelFromText(ref.number?.toString());
+      if (hit) return hit;
+    }
+  }
+  // 2. Check coin/payment method name (e.g. "Mercado Pago")
+  if (doc.coin?.name) {
+    const hit = detectChannelFromText(doc.coin.name);
+    if (hit) return hit;
+  }
+  // 3. Check client note
+  if (doc.client?.note) {
+    const hit = detectChannelFromText(doc.client.note);
+    if (hit) return hit;
+  }
+  // 4. Check detail comments
+  if (doc.details?.items?.length > 0) {
+    for (const detail of doc.details.items) {
+      const hit = detectChannelFromText(detail.comment);
+      if (hit) return hit;
+    }
+  }
   return null;
 }
 
@@ -208,13 +256,34 @@ Deno.serve(async (req) => {
 
     // Get request body for optional filters
     const body = await req.json().catch(() => ({}));
-    const { 
+    const {
       days_back = 120,
       max_pages = 150,
       date_from = null,
       is_resync = false,
-      resync_batch = null
+      resync_batch = null,
+      reclassify_b2b = false  // If true: fix existing B2B docs to MARKETPLACE (no new sync)
     } = body;
+
+    // MODE: reclassify_b2b — fix existing docs that were wrongly saved as B2B
+    if (reclassify_b2b) {
+      console.log('=== RECLASSIFY B2B DOCS MODE ===');
+      const { data: fixed, error: fixErr } = await supabaseClient
+        .from('tax_documents')
+        .update({ sales_channel: 'MARKETPLACE' })
+        .eq('user_id', user.id)
+        .eq('sales_channel', 'B2B')
+        .select('id');
+      if (fixErr) {
+        console.error('Reclassify error:', fixErr);
+        return new Response(JSON.stringify({ error: fixErr.message }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      const count = fixed?.length || 0;
+      console.log(`Reclassified ${count} B2B docs to MARKETPLACE`);
+      return new Response(JSON.stringify({ success: true, reclassified: count }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
 
     // Validación: resync requiere date_from obligatorio
     if (is_resync && !date_from) {
@@ -279,7 +348,7 @@ Deno.serve(async (req) => {
       // code post-fetch in filterValidTributaryDocs().
       const url = new URL(`${BSALE_API_URL}/v1/documents.json`);
       url.searchParams.set('emissiondaterange', `[${emissionDateFrom},${emissionDateTo}]`);
-      url.searchParams.set('expand', '[details,client,document_type,references]');
+      url.searchParams.set('expand', '[details,client,document_type,references,coin]');
       url.searchParams.set('limit', limit.toString());
       url.searchParams.set('offset', offset.toString());
 
@@ -321,14 +390,15 @@ Deno.serve(async (req) => {
             const transformed = transformBsaleDoc(doc, user.id, batchId);
             if (transformed) {
               docTypeCounts[transformed.document_type] = (docTypeCounts[transformed.document_type] || 0) + 1;
-              // Detect channel from references already expanded in main request
-              const refItems = doc.references?.items || [];
-              const referenceReason = refItems[0]?.reason || null;
-              const detectedChannel = detectChannelFromReference(referenceReason);
+              // Detect channel using all available signals (references, coin, client note, details)
+              const detectedChannel = detectChannelFromDoc(doc);
+              const referenceReason = doc.references?.items?.[0]?.reason || null;
+              const coinName = doc.coin?.name || null;
               (transformed.raw_data as any).reference_reason = referenceReason;
+              (transformed.raw_data as any).payment_method_name = coinName;
               return {
                 ...transformed,
-                sales_channel: 'MARKETPLACE', // Default: let auto-reconcile sort unmatched docs
+                sales_channel: 'MARKETPLACE',
                 detected_channel: detectedChannel,
               };
             }

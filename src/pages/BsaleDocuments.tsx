@@ -125,10 +125,15 @@ const getLinkageBadge = (doc: TaxDocument) => {
 const getChannelBadge = (channel: string | null) => {
   if (!channel) return null;
   const config: Record<string, { label: string; className: string }> = {
-    meli: { label: "Meli", className: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300" },
-    falabella: { label: "Falabella", className: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300" },
-    amazon: { label: "Amazon", className: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300" },
-    shopify: { label: "Shopify", className: "bg-lime-100 text-lime-800 dark:bg-lime-900 dark:text-lime-300" },
+    meli:     { label: "MercadoLibre", className: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300" },
+    falabella:{ label: "Falabella",    className: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300" },
+    paris:    { label: "Paris",        className: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300" },
+    ripley:   { label: "Ripley",       className: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300" },
+    amazon:   { label: "Amazon",       className: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300" },
+    shopify:  { label: "Shopify",      className: "bg-lime-100 text-lime-800 dark:bg-lime-900 dark:text-lime-300" },
+    linio:    { label: "Linio",        className: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300" },
+    rappi:    { label: "Rappi",        className: "bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-300" },
+    walmart:  { label: "Walmart",      className: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-300" },
   };
   const c = config[channel] || { label: channel, className: "bg-gray-100 text-gray-700" };
   return <Badge className={c.className}>{c.label}</Badge>;
@@ -155,6 +160,7 @@ export default function BsaleDocuments() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [reclassifying, setReclassifying] = useState(false);
 
   // Debounce search
   useEffect(() => {
@@ -270,6 +276,25 @@ export default function BsaleDocuments() {
     },
   });
 
+  const handleReclassify = async () => {
+    setReclassifying(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
+        body: { reclassify_b2b: true },
+      });
+      if (error) throw error;
+      toast({
+        title: "Reclasificación completada",
+        description: `${data?.reclassified || 0} documentos B2B corregidos a Marketplace`,
+      });
+      refetch();
+    } catch (e: any) {
+      toast({ title: "Error al reclasificar", description: e?.message, variant: "destructive" });
+    } finally {
+      setReclassifying(false);
+    }
+  };
+
   const handleSync = async () => {
     setSyncing(true);
     try {
@@ -325,6 +350,10 @@ export default function BsaleDocuments() {
                   ))}
                 </SelectContent>
               </Select>
+              <Button onClick={handleReclassify} disabled={reclassifying} variant="outline" size="sm" title="Corrige documentos guardados como B2B incorrectamente">
+                <RefreshCw className={`h-4 w-4 mr-2 ${reclassifying ? "animate-spin" : ""}`} />
+                {reclassifying ? "Corrigiendo..." : "Corregir B2B"}
+              </Button>
               <Button onClick={handleSync} disabled={syncing} variant="outline">
                 <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
                 Sincronizar
