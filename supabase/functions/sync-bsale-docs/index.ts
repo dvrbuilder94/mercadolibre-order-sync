@@ -257,7 +257,7 @@ Deno.serve(async (req) => {
     // Get request body for optional filters
     const body = await req.json().catch(() => ({}));
     const {
-      days_back = 120,
+      days_back = 90,
       max_pages = 150,
       date_from = null,
       is_resync = false,

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,22 +22,21 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { toast } from "@/hooks/use-toast";
-import { 
-  FileText, 
-  Receipt, 
-  FileX, 
-  Link2, 
-  ExternalLink, 
-  RefreshCw, 
+import {
+  FileText,
+  RefreshCw,
   Search,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  ExternalLink,
+  SlidersHorizontal,
 } from "lucide-react";
-import { format, endOfMonth, startOfMonth, subMonths } from "date-fns";
+import { format, subMonths } from "date-fns";
 import { es } from "date-fns/locale";
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 50;
 
 type DocumentType = "all" | "boleta" | "factura" | "nota_credito" | "nota_debito" | "factura_exenta";
 type StatusFilter = "all" | "issued" | "voided";
@@ -49,7 +48,6 @@ interface TaxDocument {
   document_number: string;
   document_date: string;
   client_name: string | null;
-  client_tax_id: string | null;
   total_amount: number;
   status: string | null;
   sales_channel: string | null;
@@ -58,21 +56,13 @@ interface TaxDocument {
   order_tax_documents: { id: string; match_source: string | null }[];
 }
 
-interface Stats {
-  boletas: number;
-  facturas: number;
-  anulados: number;
-  vinculados: number;
-  totalMarketplace: number;
-  vinculadosMarketplace: number;
-  totalB2B: number;
-}
+// Current month as default: "yyyy-MM"
+const currentPeriod = format(new Date(), "yyyy-MM");
 
-// Generate period options for last 12 months
 const generatePeriodOptions = () => {
   const options = [{ value: "all", label: "Todos los períodos" }];
   const now = new Date();
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 6; i++) {
     const date = subMonths(now, i);
     const value = format(date, "yyyy-MM");
     const label = format(date, "MMMM yyyy", { locale: es });
@@ -83,77 +73,63 @@ const generatePeriodOptions = () => {
 
 const periodOptions = generatePeriodOptions();
 
-const getDocTypeBadge = (type: string) => {
-  const config: Record<string, { label: string; className: string }> = {
-    factura: { label: "Factura", className: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" },
-    boleta: { label: "Boleta", className: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300" },
-    nota_credito: { label: "Nota Crédito", className: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300" },
-    nota_debito: { label: "Nota Débito", className: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300" },
-    factura_exenta: { label: "Fact. Exenta", className: "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300" },
-  };
-  const c = config[type] || { label: type, className: "" };
-  return <Badge className={c.className}>{c.label}</Badge>;
+// Build date range from "yyyy-MM" string safely (avoids UTC timezone shift)
+function periodToDateRange(period: string): { from: string; to: string } | null {
+  if (period === "all") return null;
+  const [y, m] = period.split("-").map(Number);
+  const start = new Date(y, m - 1, 1);
+  const end = new Date(y, m, 0);
+  return { from: format(start, "yyyy-MM-dd"), to: format(end, "yyyy-MM-dd") };
+}
+
+const DOC_TYPE_LABELS: Record<string, string> = {
+  boleta: "Boleta",
+  factura: "Factura",
+  nota_credito: "N. Crédito",
+  nota_debito: "N. Débito",
+  factura_exenta: "Fact. Exenta",
 };
 
-const getStatusBadge = (status: string | null) => {
-  if (status === "voided") {
-    return <Badge variant="destructive">Anulado</Badge>;
-  }
-  return <Badge variant="secondary">Emitido</Badge>;
+const DOC_TYPE_COLORS: Record<string, string> = {
+  boleta: "bg-slate-100 text-slate-700",
+  factura: "bg-blue-100 text-blue-700",
+  nota_credito: "bg-red-100 text-red-700",
+  nota_debito: "bg-orange-100 text-orange-700",
+  factura_exenta: "bg-purple-100 text-purple-700",
 };
 
-const getLinkageBadge = (doc: TaxDocument) => {
-  if (doc.status === "voided") {
-    return <span className="text-muted-foreground text-sm">—</span>;
-  }
-  
+const CHANNEL_CONFIG: Record<string, { label: string; className: string }> = {
+  meli:      { label: "MercadoLibre", className: "bg-yellow-100 text-yellow-800" },
+  falabella: { label: "Falabella",    className: "bg-green-100 text-green-800" },
+  paris:     { label: "Paris",        className: "bg-blue-100 text-blue-800" },
+  ripley:    { label: "Ripley",       className: "bg-purple-100 text-purple-800" },
+  amazon:    { label: "Amazon",       className: "bg-orange-100 text-orange-800" },
+  shopify:   { label: "Shopify",      className: "bg-lime-100 text-lime-800" },
+  linio:     { label: "Linio",        className: "bg-red-100 text-red-800" },
+  rappi:     { label: "Rappi",        className: "bg-pink-100 text-pink-800" },
+  walmart:   { label: "Walmart",      className: "bg-cyan-100 text-cyan-800" },
+};
+
+const formatCLP = (n: number) =>
+  new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
+
+const formatDate = (d: string) => format(new Date(d + "T12:00:00"), "dd/MM/yy");
+
+function LinkageBadge({ doc }: { doc: TaxDocument }) {
+  if (doc.status === "voided") return <span className="text-xs text-muted-foreground">Anulado</span>;
   const links = doc.order_tax_documents || [];
-  if (links.length === 0) {
-    return <Badge variant="outline" className="text-muted-foreground">Pendiente</Badge>;
-  }
-  
-  const matchSource = links[0]?.match_source;
-  if (matchSource === "AUTO_CONSOLIDATED") {
-    return <Badge className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">Consolidado</Badge>;
-  }
-  if (matchSource === "MANUAL" || matchSource === "MANUAL_CONSOLIDATED") {
-    return <Badge className="bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">Manual</Badge>;
-  }
-  return <Badge className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">Auto</Badge>;
-};
-
-const getChannelBadge = (channel: string | null) => {
-  if (!channel) return null;
-  const config: Record<string, { label: string; className: string }> = {
-    meli:     { label: "MercadoLibre", className: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300" },
-    falabella:{ label: "Falabella",    className: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300" },
-    paris:    { label: "Paris",        className: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300" },
-    ripley:   { label: "Ripley",       className: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300" },
-    amazon:   { label: "Amazon",       className: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300" },
-    shopify:  { label: "Shopify",      className: "bg-lime-100 text-lime-800 dark:bg-lime-900 dark:text-lime-300" },
-    linio:    { label: "Linio",        className: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300" },
-    rappi:    { label: "Rappi",        className: "bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-300" },
-    walmart:  { label: "Walmart",      className: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-300" },
-  };
-  const c = config[channel] || { label: channel, className: "bg-gray-100 text-gray-700" };
-  return <Badge className={c.className}>{c.label}</Badge>;
-};
-
-const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat("es-CL", {
-    style: "currency",
-    currency: "CLP",
-    maximumFractionDigits: 0,
-  }).format(amount);
-};
-
-const formatDate = (dateStr: string) => {
-  return format(new Date(dateStr), "dd/MM/yyyy");
-};
+  if (links.length === 0) return <Badge variant="outline" className="text-xs text-muted-foreground">Pendiente</Badge>;
+  const src = links[0]?.match_source;
+  if (src === "AUTO_CONSOLIDATED" || src === "MANUAL_CONSOLIDATED")
+    return <Badge className="text-xs bg-green-100 text-green-700">Consolidado</Badge>;
+  if (src?.startsWith("MANUAL"))
+    return <Badge className="text-xs bg-blue-100 text-blue-700">Manual</Badge>;
+  return <Badge className="text-xs bg-green-100 text-green-700">Auto</Badge>;
+}
 
 export default function BsaleDocuments() {
   const [page, setPage] = useState(1);
-  const [period, setPeriod] = useState("all");
+  const [period, setPeriod] = useState(currentPeriod);
   const [documentType, setDocumentType] = useState<DocumentType>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [salesChannel, setSalesChannel] = useState<SalesChannelFilter>("all");
@@ -161,120 +137,81 @@ export default function BsaleDocuments() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [reclassifying, setReclassifying] = useState(false);
+  const [showExtraFilters, setShowExtraFilters] = useState(false);
 
-  // Debounce search
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(timer);
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
   }, [search]);
 
-  // Reset page when filters change
-  useEffect(() => {
-    setPage(1);
-  }, [period, documentType, statusFilter, salesChannel, debouncedSearch]);
+  useEffect(() => { setPage(1); }, [period, documentType, statusFilter, salesChannel, debouncedSearch]);
 
-  // Fetch documents
+  // Main documents query — explicit column list, NO raw_data (big JSONB)
   const { data: documentsData, isLoading, refetch } = useQuery({
-    queryKey: ["bsale-documents", page, period, documentType, statusFilter, salesChannel, debouncedSearch],
+    queryKey: ["bsale-docs", page, period, documentType, statusFilter, salesChannel, debouncedSearch],
     queryFn: async () => {
-      let query = supabase
+      let q = supabase
         .from("tax_documents")
-        .select("*, order_tax_documents(id, match_source)", { count: "exact" })
+        .select(
+          "id, document_type, document_number, document_date, client_name, total_amount, status, sales_channel, detected_channel, external_url, order_tax_documents(id, match_source)",
+          { count: "exact" }
+        )
         .order("document_date", { ascending: false });
 
-      if (documentType !== "all") {
-        query = query.eq("document_type", documentType);
-      }
-      if (statusFilter !== "all") {
-        query = query.eq("status", statusFilter);
-      }
-      if (period !== "all") {
-        // Parse year/month directly to avoid UTC→local timezone shift
-        // (new Date("2026-06-01") is UTC midnight, which in Chile = May 31 local)
-        const [y, m] = period.split("-").map(Number);
-        const startDate = new Date(y, m - 1, 1);
-        const endDate = new Date(y, m, 0); // day 0 of next month = last day of this month
-        query = query
-          .gte("document_date", format(startDate, "yyyy-MM-dd"))
-          .lte("document_date", format(endDate, "yyyy-MM-dd"));
-      }
-      if (salesChannel !== "all") {
-        query = query.eq("sales_channel", salesChannel);
-      }
-      if (debouncedSearch) {
-        query = query.or(
-          `document_number.ilike.%${debouncedSearch}%,client_name.ilike.%${debouncedSearch}%`
-        );
-      }
+      const range = periodToDateRange(period);
+      if (range) q = q.gte("document_date", range.from).lte("document_date", range.to);
+      if (documentType !== "all") q = q.eq("document_type", documentType);
+      if (statusFilter !== "all") q = q.eq("status", statusFilter);
+      if (salesChannel !== "all") q = q.eq("sales_channel", salesChannel);
+      if (debouncedSearch)
+        q = q.or(`document_number.ilike.%${debouncedSearch}%,client_name.ilike.%${debouncedSearch}%`);
 
       const start = (page - 1) * PAGE_SIZE;
-      const end = start + PAGE_SIZE - 1;
-      query = query.range(start, end);
+      q = q.range(start, start + PAGE_SIZE - 1);
 
-      const { data, error, count } = await query;
+      const { data, error, count } = await q;
       if (error) throw error;
       return { documents: data as TaxDocument[], count: count || 0 };
     },
+    staleTime: 30_000,
   });
 
-  // Fetch stats
+  // Lightweight stats — only tiny columns, filtered by same period
   const { data: stats } = useQuery({
-    queryKey: ["bsale-documents-stats", period, salesChannel],
+    queryKey: ["bsale-docs-stats", period],
     queryFn: async () => {
-      let baseQuery = supabase.from("tax_documents").select("id, document_type, status, sales_channel");
-      
-      if (period !== "all") {
-        const [y, m] = period.split("-").map(Number);
-        const startDate = new Date(y, m - 1, 1);
-        const endDate = new Date(y, m, 0);
-        baseQuery = baseQuery
-          .gte("document_date", format(startDate, "yyyy-MM-dd"))
-          .lte("document_date", format(endDate, "yyyy-MM-dd"));
-      }
-
-      const { data: docs, error } = await baseQuery;
-      if (error) throw error;
-
-      // Get linked document IDs
-      const { data: links } = await supabase
-        .from("order_tax_documents")
-        .select("tax_document_id");
-      
-      const linkedIds = new Set((links || []).map(l => l.tax_document_id));
-
-      const result: Stats = {
-        boletas: 0,
-        facturas: 0,
-        anulados: 0,
-        vinculados: 0,
-        totalMarketplace: 0,
-        vinculadosMarketplace: 0,
-        totalB2B: 0,
+      let q = supabase.from("tax_documents").select("document_type, status");
+      const range = periodToDateRange(period);
+      if (range) q = q.gte("document_date", range.from).lte("document_date", range.to);
+      const { data } = await q;
+      const docs = data || [];
+      const active = docs.filter(d => d.status !== "voided");
+      return {
+        total: docs.length,
+        boletas: active.filter(d => d.document_type === "boleta").length,
+        facturas: active.filter(d => d.document_type === "factura").length,
+        anulados: docs.filter(d => d.status === "voided").length,
       };
-
-      (docs || []).forEach((doc) => {
-        // Count by sales channel
-        if (doc.sales_channel === 'MARKETPLACE') {
-          result.totalMarketplace++;
-          if (linkedIds.has(doc.id) && doc.status !== 'voided') {
-            result.vinculadosMarketplace++;
-          }
-        } else if (doc.sales_channel === 'B2B') {
-          result.totalB2B++;
-        }
-        
-        if (doc.status === "voided") {
-          result.anulados++;
-        } else {
-          if (doc.document_type === "boleta") result.boletas++;
-          if (doc.document_type === "factura") result.facturas++;
-          if (linkedIds.has(doc.id)) result.vinculados++;
-        }
-      });
-
-      return result;
     },
+    staleTime: 30_000,
   });
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
+        body: { days_back: 90 },
+      });
+      if (error) throw error;
+      const total = data?.summary?.total_upserted ?? data?.summary?.total_fetched ?? 0;
+      toast({ title: "Sincronización completada", description: `${total} documentos procesados` });
+      refetch();
+    } catch (e: any) {
+      toast({ title: "Error al sincronizar", description: e?.message, variant: "destructive" });
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const handleReclassify = async () => {
     setReclassifying(true);
@@ -283,10 +220,7 @@ export default function BsaleDocuments() {
         body: { reclassify_b2b: true },
       });
       if (error) throw error;
-      toast({
-        title: "Reclasificación completada",
-        description: `${data?.reclassified || 0} documentos B2B corregidos a Marketplace`,
-      });
+      toast({ title: "Reclasificación completada", description: `${data?.reclassified || 0} documentos B2B corregidos` });
       refetch();
     } catch (e: any) {
       toast({ title: "Error al reclasificar", description: e?.message, variant: "destructive" });
@@ -295,269 +229,238 @@ export default function BsaleDocuments() {
     }
   };
 
-  const handleSync = async () => {
-    setSyncing(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("sync-bsale-docs");
-      if (error) throw error;
-      const total = data?.summary?.total_upserted ?? data?.summary?.total_fetched ?? data?.synced ?? 0;
-      toast({
-        title: "Sincronización completada",
-        description: `Se procesaron ${total} documentos desde Bsale`,
-      });
-      refetch();
-    } catch (e) {
-      toast({
-        title: "Error al sincronizar",
-        description: "No se pudo completar la sincronización con Bsale",
-        variant: "destructive",
-      });
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   const documents = documentsData?.documents || [];
   const totalCount = documentsData?.count || 0;
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+  const hasActiveFilters = documentType !== "all" || statusFilter !== "all" || salesChannel !== "all";
 
   return (
     <SidebarProvider>
       <div className="min-h-screen flex w-full">
         <AppSidebar />
         <main className="flex-1 p-6">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <FileText className="h-8 w-8 text-primary" />
-              <div>
-                <h1 className="text-2xl font-bold">Documentos Bsale</h1>
-                <p className="text-muted-foreground text-sm">
-                  Documentos tributarios sincronizados desde Bsale
-                </p>
-              </div>
+
+          {/* ── Header ── */}
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <FileText className="h-6 w-6 text-primary shrink-0" />
+              <h1 className="text-xl font-bold truncate">Documentos Bsale</h1>
             </div>
-            <div className="flex items-center gap-3">
-              <Select value={period} onValueChange={setPeriod}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Período" />
-                </SelectTrigger>
-                <SelectContent>
-                  {periodOptions.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button onClick={handleReclassify} disabled={reclassifying} variant="outline" size="sm" title="Corrige documentos guardados como B2B incorrectamente">
-                <RefreshCw className={`h-4 w-4 mr-2 ${reclassifying ? "animate-spin" : ""}`} />
-                {reclassifying ? "Corrigiendo..." : "Corregir B2B"}
-              </Button>
-              <Button onClick={handleSync} disabled={syncing} variant="outline">
-                <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
-                Sincronizar
-              </Button>
-            </div>
-          </div>
 
-          {/* KPI Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            <Card className="border-primary/20 bg-primary/5">
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium">Vinculados Marketplace</CardTitle>
-                <Link2 className="h-4 w-4 text-primary" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-primary">
-                  {stats?.vinculadosMarketplace?.toLocaleString() || 0} / {stats?.totalMarketplace?.toLocaleString() || 0}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Documentos de marketplace conciliados
-                </p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium">Documentos B2B</CardTitle>
-                <FileText className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">{stats?.totalB2B?.toLocaleString() || 0}</div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Ventas directas (no marketplace)
-                </p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium">Boletas</CardTitle>
-                <Receipt className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">{stats?.boletas?.toLocaleString() || 0}</div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium">Facturas</CardTitle>
-                <FileText className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">{stats?.facturas?.toLocaleString() || 0}</div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Filters */}
-          <div className="flex flex-wrap gap-3 mb-4">
-            <Select value={documentType} onValueChange={(v) => setDocumentType(v as DocumentType)}>
-              <SelectTrigger className="w-[150px]">
-                <SelectValue placeholder="Tipo" />
+            {/* Period selector */}
+            <Select value={period} onValueChange={setPeriod}>
+              <SelectTrigger className="w-[170px]">
+                <SelectValue placeholder="Período" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Todos los tipos</SelectItem>
-                <SelectItem value="boleta">Boleta</SelectItem>
-                <SelectItem value="factura">Factura</SelectItem>
-                <SelectItem value="nota_credito">Nota Crédito</SelectItem>
-                <SelectItem value="nota_debito">Nota Débito</SelectItem>
-                <SelectItem value="factura_exenta">Factura Exenta</SelectItem>
+                {periodOptions.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
 
-            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-              <SelectTrigger className="w-[150px]">
-                <SelectValue placeholder="Estado" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todos</SelectItem>
-                <SelectItem value="issued">Emitidos</SelectItem>
-                <SelectItem value="voided">Anulados</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Select value={salesChannel} onValueChange={(v) => setSalesChannel(v as SalesChannelFilter)}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Canal de Venta" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todos los canales</SelectItem>
-                <SelectItem value="MARKETPLACE">Solo Marketplace</SelectItem>
-                <SelectItem value="B2B">Solo B2B / Directa</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <div className="relative flex-1 max-w-sm">
+            {/* Search */}
+            <div className="relative w-[200px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Buscar por número o cliente..."
+                placeholder="N° o cliente..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-9"
               />
             </div>
+
+            {/* Actions */}
+            <Button
+              onClick={handleReclassify}
+              disabled={reclassifying}
+              variant="outline"
+              size="sm"
+              title="Corrige documentos guardados como B2B"
+            >
+              <RefreshCw className={`h-4 w-4 mr-1.5 ${reclassifying ? "animate-spin" : ""}`} />
+              {reclassifying ? "Corrigiendo..." : "Corregir B2B"}
+            </Button>
+            <Button onClick={handleSync} disabled={syncing} size="sm">
+              <RefreshCw className={`h-4 w-4 mr-1.5 ${syncing ? "animate-spin" : ""}`} />
+              {syncing ? "Sincronizando..." : "Sincronizar"}
+            </Button>
           </div>
 
-          {/* Table */}
+          {/* ── Stats bar ── */}
+          {stats && (
+            <p className="text-sm text-muted-foreground mb-3">
+              <span className="font-semibold text-foreground">{stats.total.toLocaleString()}</span> documentos
+              {" · "}
+              <span className="font-semibold text-foreground">{stats.boletas.toLocaleString()}</span> boletas
+              {" · "}
+              <span className="font-semibold text-foreground">{stats.facturas.toLocaleString()}</span> facturas
+              {stats.anulados > 0 && (
+                <> · <span className="text-red-500">{stats.anulados} anulados</span></>
+              )}
+            </p>
+          )}
+
+          {/* ── Extra filters (collapsed) ── */}
+          <Collapsible open={showExtraFilters} onOpenChange={setShowExtraFilters}>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm" className="mb-3 gap-1.5 text-muted-foreground hover:text-foreground">
+                <SlidersHorizontal className="h-4 w-4" />
+                Filtros
+                {hasActiveFilters && (
+                  <Badge className="ml-1 h-4 w-4 p-0 flex items-center justify-center text-[10px]">
+                    !
+                  </Badge>
+                )}
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="flex flex-wrap gap-2 mb-4 p-3 bg-muted/30 rounded-lg">
+                <Select value={documentType} onValueChange={(v) => setDocumentType(v as DocumentType)}>
+                  <SelectTrigger className="w-[150px] h-8 text-sm">
+                    <SelectValue placeholder="Tipo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos los tipos</SelectItem>
+                    <SelectItem value="boleta">Boleta</SelectItem>
+                    <SelectItem value="factura">Factura</SelectItem>
+                    <SelectItem value="nota_credito">Nota Crédito</SelectItem>
+                    <SelectItem value="nota_debito">Nota Débito</SelectItem>
+                    <SelectItem value="factura_exenta">Factura Exenta</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+                  <SelectTrigger className="w-[140px] h-8 text-sm">
+                    <SelectValue placeholder="Estado" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="issued">Emitidos</SelectItem>
+                    <SelectItem value="voided">Anulados</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select value={salesChannel} onValueChange={(v) => setSalesChannel(v as SalesChannelFilter)}>
+                  <SelectTrigger className="w-[170px] h-8 text-sm">
+                    <SelectValue placeholder="Canal" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos los canales</SelectItem>
+                    <SelectItem value="MARKETPLACE">Marketplace</SelectItem>
+                    <SelectItem value="B2B">B2B / Directa</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                {hasActiveFilters && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-sm"
+                    onClick={() => { setDocumentType("all"); setStatusFilter("all"); setSalesChannel("all"); }}
+                  >
+                    Limpiar filtros
+                  </Button>
+                )}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+
+          {/* ── Table ── */}
           <Card>
             <CardContent className="p-0">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Tipo</TableHead>
+                    <TableHead className="w-[110px]">Tipo</TableHead>
                     <TableHead>Número</TableHead>
-                    <TableHead>Fecha</TableHead>
+                    <TableHead className="w-[90px]">Fecha</TableHead>
                     <TableHead>Cliente</TableHead>
-                    <TableHead>RUT</TableHead>
-                    <TableHead className="text-right">Monto</TableHead>
-                    <TableHead>Canal</TableHead>
-                    <TableHead>Estado</TableHead>
-                    <TableHead>Vinculación</TableHead>
-                    <TableHead></TableHead>
+                    <TableHead className="text-right w-[110px]">Monto</TableHead>
+                    <TableHead className="w-[120px]">Canal</TableHead>
+                    <TableHead className="w-[100px]">Vinculación</TableHead>
+                    <TableHead className="w-[40px]"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoading ? (
                     <TableRow>
-                      <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
+                      <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
                         Cargando documentos...
                       </TableCell>
                     </TableRow>
                   ) : documents.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
-                        No se encontraron documentos
+                      <TableCell colSpan={8} className="text-center py-12">
+                        <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                          <FileText className="h-8 w-8 opacity-30" />
+                          <p>No hay documentos para este período</p>
+                          <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
+                            <RefreshCw className="h-4 w-4 mr-1.5" />
+                            Sincronizar ahora
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ) : (
-                    documents.map((doc) => (
-                      <TableRow key={doc.id}>
-                        <TableCell>{getDocTypeBadge(doc.document_type)}</TableCell>
-                        <TableCell className="font-mono">{doc.document_number}</TableCell>
-                        <TableCell>{formatDate(doc.document_date)}</TableCell>
-                        <TableCell className="max-w-[200px] truncate">
-                          {doc.client_name || "—"}
-                        </TableCell>
-                        <TableCell className="font-mono text-sm">
-                          {doc.client_tax_id || "—"}
-                        </TableCell>
-                        <TableCell className="text-right font-mono">
-                          {formatCurrency(doc.total_amount)}
-                        </TableCell>
-                        <TableCell>
-                          {doc.detected_channel ? getChannelBadge(doc.detected_channel) : 
-                           doc.sales_channel === 'MARKETPLACE' ? <Badge variant="outline">Marketplace</Badge> :
-                           <span className="text-muted-foreground text-sm">B2B</span>}
-                        </TableCell>
-                        <TableCell>{getStatusBadge(doc.status)}</TableCell>
-                        <TableCell>{getLinkageBadge(doc)}</TableCell>
-                        <TableCell>
-                          {doc.external_url && (
-                            <Button variant="ghost" size="sm" asChild>
-                              <a href={doc.external_url} target="_blank" rel="noopener noreferrer">
+                    documents.map((doc) => {
+                      const channelCfg = doc.detected_channel ? CHANNEL_CONFIG[doc.detected_channel] : null;
+                      return (
+                        <TableRow key={doc.id}>
+                          <TableCell>
+                            <Badge className={`text-xs ${DOC_TYPE_COLORS[doc.document_type] || ""}`}>
+                              {DOC_TYPE_LABELS[doc.document_type] || doc.document_type}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="font-mono text-sm">{doc.document_number}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{formatDate(doc.document_date)}</TableCell>
+                          <TableCell className="max-w-[180px] truncate text-sm">{doc.client_name || "—"}</TableCell>
+                          <TableCell className="text-right font-mono text-sm">{formatCLP(doc.total_amount)}</TableCell>
+                          <TableCell>
+                            {channelCfg ? (
+                              <Badge className={`text-xs ${channelCfg.className}`}>{channelCfg.label}</Badge>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">
+                                {doc.sales_channel === "MARKETPLACE" ? "Marketplace" : doc.sales_channel || "—"}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell><LinkageBadge doc={doc} /></TableCell>
+                          <TableCell>
+                            {doc.external_url && (
+                              <a href={doc.external_url} target="_blank" rel="noopener noreferrer"
+                                className="text-muted-foreground hover:text-foreground">
                                 <ExternalLink className="h-4 w-4" />
                               </a>
-                            </Button>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
                   )}
                 </TableBody>
               </Table>
             </CardContent>
           </Card>
 
-          {/* Pagination */}
+          {/* ── Pagination ── */}
           {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-4">
+            <div className="flex items-center justify-between mt-3">
               <p className="text-sm text-muted-foreground">
-                Mostrando {(page - 1) * PAGE_SIZE + 1}–
-                {Math.min(page * PAGE_SIZE, totalCount)} de {totalCount.toLocaleString()}
+                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, totalCount)} de {totalCount.toLocaleString()}
               </p>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                >
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
-                <span className="text-sm">
-                  Página {page} de {totalPages}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={page === totalPages}
-                >
+                <span className="text-sm px-2">Pág. {page} / {totalPages}</span>
+                <Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}>
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
             </div>
           )}
+
         </main>
       </div>
     </SidebarProvider>
