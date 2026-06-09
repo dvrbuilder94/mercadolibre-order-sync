@@ -44,13 +44,8 @@ const isValidRut = (rut: string): boolean => {
   return dv === expectedDvChar;
 };
 
-// Format RUT: solo números del cuerpo, sin DV, sin puntos ni guión
-const formatRut = (rut: string): string => {
-  const clean = rut.replace(/[^0-9kK]/g, '');
-  if (clean.length < 2) return rut; // Return raw if invalid
-  // Solo el cuerpo del RUT, sin dígito verificador
-  return clean.slice(0, -1);
-};
+// DB ya guarda solo el cuerpo (sin DV). Mostrar tal cual, solo dígitos.
+const formatRut = (rut: string): string => rut.replace(/[^0-9]/g, '');
 
 interface Payment {
   id: string;
