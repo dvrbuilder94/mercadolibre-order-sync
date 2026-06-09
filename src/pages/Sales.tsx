@@ -72,10 +72,8 @@ const formatCurrency = (amount: number): string => {
 
 const formatRut = (rut: string | null): string => {
   if (!rut) return "—";
-  // Extract only numeric body (no dots, dash, or verification digit)
-  const cleaned = rut.replace(/\./g, '').replace(/-/g, '');
-  // Remove last character (verification digit) if present
-  return cleaned.length > 1 ? cleaned.slice(0, -1) : cleaned;
+  // DB ya guarda solo el cuerpo (sin DV). Mostrar tal cual, solo dígitos.
+  return rut.replace(/[^0-9]/g, '');
 };
 
 const getPaidStatus = (sale: SaleRow): { icon: string; label: string; variant: "default" | "secondary" | "destructive" | "outline" } => {
