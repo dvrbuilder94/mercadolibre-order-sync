@@ -779,6 +779,53 @@ Deno.serve(async (req) => {
     console.log(`Stage 3 Phase 0 (Hard match external_order_id): ${hardLinkedCount} linked`);
 
     // ==========================================
+    // PHASE 0B: HARD MATCH by pack_id (1:N)
+    // MercadoLibre agrupa varias órdenes en un mismo "pack" (envío) y Bsale
+    // emite un solo documento referenciando ese pack_id en external_order_id.
+    // ==========================================
+    let packLinkedDocsCount = 0;
+    let packLinkedOrdersCount = 0;
+    const ordersByPackId = new Map<string, any[]>();
+    for (const o of ordersNeedingDocs) {
+      const packId = o.raw_data?.pack_id;
+      if (!packId) continue;
+      const key = String(packId);
+      if (!ordersByPackId.has(key)) ordersByPackId.set(key, []);
+      ordersByPackId.get(key)!.push(o);
+    }
+    for (const doc of unlinkedDocs) {
+      if (newlyLinkedDocIds.has(doc.id)) continue;
+      const eoi = (doc as any).external_order_id;
+      if (!eoi) continue;
+      const packOrders = (ordersByPackId.get(String(eoi)) || [])
+        .filter(o => !linkedOrderIds.has(o.id) && !newlyLinkedOrderIds.has(o.id));
+      if (packOrders.length === 0) continue;
+      let linkedAny = false;
+      for (const order of packOrders) {
+        const { error: linkErr } = await supabaseAdmin
+          .from('order_tax_documents')
+          .insert({
+            order_id: order.id,
+            tax_document_id: doc.id,
+            allocated_amount: order.gross_amount || order.amount,
+            created_by: user.id,
+            match_source: 'AUTO_HARD_PACK_ID',
+            match_score: 100,
+          });
+        if (!linkErr) {
+          newlyLinkedOrderIds.add(order.id);
+          packLinkedOrdersCount++;
+          linkedAny = true;
+        }
+      }
+      if (linkedAny) {
+        newlyLinkedDocIds.add(doc.id);
+        packLinkedDocsCount++;
+      }
+    }
+    console.log(`Stage 3 Phase 0B (Hard match pack_id, 1:N): ${packLinkedDocsCount} docs, ${packLinkedOrdersCount} orders linked`);
+
+    // ==========================================
     // PHASE A: CONSOLIDATED MATCHING (1:N) - NEW
     // ==========================================
     console.log('\n--- Stage 3A: Consolidated Matching (1:N) ---');
@@ -1151,7 +1198,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    stage3 = autoLinkedCount + autoSoftCount + autoConsolidatedCount;
+    stage3 = autoLinkedCount + autoSoftCount + autoConsolidatedCount + packLinkedDocsCount;
 
     console.log(`\nStage 3 Summary:`);
     console.log(`  Auto-consolidated (1:N): ${autoConsolidatedCount} docs (${autoConsolidatedOrdersCount} orders)`);
@@ -1211,7 +1258,7 @@ Deno.serve(async (req) => {
     console.log('\n=== AUTO-RECONCILE SUMMARY ===');
     console.log(`Stage 1 (Bank↔Settlement): ${stage1}`);
     console.log(`Stage 2 (Settlement↔Order): ${stage2}`);
-    console.log(`Stage 3 (Order↔TaxDoc): ${hardLinkedCount} hard, ${autoConsolidatedCount} consolidated (${autoConsolidatedOrdersCount} orders), ${autoLinkedCount} auto, ${autoSoftCount} soft, ${ambiguousCount} ambiguous, ${excludedB2BCount} excluidos B2B`);
+    console.log(`Stage 3 (Order↔TaxDoc): ${hardLinkedCount} hard, ${packLinkedDocsCount} pack_id (${packLinkedOrdersCount} orders), ${autoConsolidatedCount} consolidated (${autoConsolidatedOrdersCount} orders), ${autoLinkedCount} auto, ${autoSoftCount} soft, ${ambiguousCount} ambiguous, ${excludedB2BCount} excluidos B2B`);
     console.log(`Stage 4 (Refunds flagged): ${stage4}`);
     console.log(`Total processed: ${stage1 + stage2 + stage3 + stage4}`);
 
@@ -1223,6 +1270,8 @@ Deno.serve(async (req) => {
         stage2_settlement_order: stage2,
         stage3_order_taxdoc: {
           hard_linked: hardLinkedCount,
+          hard_linked_pack_id: packLinkedDocsCount,
+          hard_linked_pack_id_orders: packLinkedOrdersCount,
           auto_consolidated: autoConsolidatedCount,
           auto_consolidated_orders: autoConsolidatedOrdersCount,
           auto_linked: autoLinkedCount,
