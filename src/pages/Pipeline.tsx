@@ -114,7 +114,7 @@ export default function Pipeline() {
         body: {
           date_from: `${from}T00:00:00`,
           date_to: `${to}T23:59:59`,
-          max_pages: 20,
+          max_pages: 50,
         },
       });
       if (error) throw error;

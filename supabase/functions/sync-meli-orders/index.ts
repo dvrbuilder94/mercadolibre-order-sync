@@ -147,7 +147,7 @@ Deno.serve(async (req) => {
     let allOrders: any[] = [];
     let offset = 0;
     const limit = 50; // MELI API max limit
-    const maxPages = Math.min(maxPagesParam, 20); // Cap at 20 pages (1000 orders) to prevent timeout
+    const maxPages = Math.min(maxPagesParam, 50); // Cap at 50 pages (2500 orders); el upsert ahora es por lote
     let currentPage = 0;
     let totalAvailable = 0;
 
