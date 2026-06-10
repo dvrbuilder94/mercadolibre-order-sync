@@ -37,7 +37,7 @@ Deno.serve(async (req) => {
     }
 
     const { data: { user } } = await supabaseClient.auth.getUser();
-    
+
     if (!user) {
       return new Response(
         JSON.stringify({ error: 'Unauthorized' }),
@@ -103,7 +103,7 @@ Deno.serve(async (req) => {
       if (refreshResponse.ok) {
         const refreshData = await refreshResponse.json();
         accessToken = refreshData.access_token;
-        
+
         // Update token in database
         const expiresAt = new Date(Date.now() + refreshData.expires_in * 1000);
         await supabaseClient
@@ -128,7 +128,7 @@ Deno.serve(async (req) => {
     }
 
     console.log('Fetching orders for seller:', sellerId);
-    
+
     // Use date parameter if provided, otherwise default to 30 days
     let dateFrom: string;
     if (dateFromParam) {
@@ -143,19 +143,148 @@ Deno.serve(async (req) => {
     const dateTo: string | null = dateToParam ? new Date(dateToParam).toISOString() : null;
     if (dateTo) console.log('Using custom date_to:', dateTo);
 
-    // Fetch all orders with pagination
-    let allOrders: any[] = [];
+    // Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
+    const splitRut = (rut: string | null | undefined): { body: string | null; dv: string | null } => {
+      if (!rut) return { body: null, dv: null };
+      const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+      if (clean.length < 7) return { body: null, dv: null };
+      return { body: clean.slice(0, -1), dv: clean.slice(-1) };
+    };
+
+    const transformOrder = (order: any) => {
+      const buyer = order.buyer || {};
+      const orderDate = new Date(order.date_created);
+
+      // Extract RUT from billing_info — ML Chile returns this field for authenticated buyers
+      const billingInfo = buyer.billing_info || {};
+      const rawRut = billingInfo.doc_number || billingInfo.docNumber || null;
+      const { body: customerTaxId, dv: customerTaxIdDv } = splitRut(rawRut);
+
+      // Map Mercado Libre status to our status
+      let status = 'pending';
+      if (order.status === 'paid') status = 'confirmed';
+      if (order.status === 'cancelled') status = 'cancelled';
+      if (order.shipping?.status === 'shipped') status = 'shipped';
+      if (order.shipping?.status === 'delivered') status = 'delivered';
+
+      // Extract payment data for commission calculation
+      const payment = order.payments?.[0];
+      const paymentMethod = payment?.payment_method_id || 'unknown';
+      const paymentMethodType = payment?.payment_type_id || null; // credit_card, debit_card, account_money, etc.
+      const paymentMethodBrand = payment?.card?.cardholder?.name ? null : (payment?.issuer_id || payment?.payment_method_id || null); // visa, master, etc.
+      const paymentApprovedAt = payment?.date_approved;
+      const grossAmount = order.total_amount || 0;
+      const shipping = order.shipping || {};
+      const coupon = order.coupon || {};
+
+      // Calculate estimated commission based on payment method
+      let commissionPercentage = 3.99; // default
+      if (paymentMethod === 'account_money') commissionPercentage = 2.99;
+      else if (['credit_card', 'master', 'visa'].includes(paymentMethod)) commissionPercentage = 4.99;
+      else if (['debit_card', 'debvisa', 'debmaster'].includes(paymentMethod)) commissionPercentage = 3.49;
+
+      const commissionAmount = Math.round(grossAmount * (commissionPercentage / 100) * 100) / 100;
+      const netAmount = Math.round((grossAmount - commissionAmount) * 100) / 100;
+
+      // Calculate expected payment date (14 days after approval)
+      let expectedPaymentDate = orderDate;
+      let moneyReleaseDate = null;
+      if (paymentApprovedAt) {
+        const approvalDate = new Date(paymentApprovedAt);
+        expectedPaymentDate = new Date(approvalDate.getTime() + 14 * 24 * 60 * 60 * 1000);
+        moneyReleaseDate = payment?.money_release_date || expectedPaymentDate.toISOString();
+      }
+
+      // Calculate settlement amount (what actually reaches the bank)
+      const shippingCost = shipping.cost || 0;
+      const discountAmount = coupon.amount || 0;
+      const shippingMode = shipping.shipping_mode || 'custom';
+
+      // If Mercado Envíos (me2), shipping is NOT received by seller
+      const shippingDeduction = shippingMode === 'me2' ? shippingCost : 0;
+      const settlementAmount = Math.round((grossAmount - discountAmount - shippingDeduction - commissionAmount) * 100) / 100;
+
+      // Extract product details
+      const firstItem = order.order_items?.[0];
+      const productTitle = firstItem?.item?.title || null;
+      const sellerSku = firstItem?.item?.seller_custom_field || null;
+
+      return {
+        channel: 'meli',
+        channel_account_id: meliAccount.id,
+        meli_account_id: meliAccount.id, // Keep for backward compatibility
+        order_id: order.id.toString(),
+        customer_name: buyer.nickname || 'Cliente',
+        customer_email: buyer.email || null,
+        customer_tax_id: customerTaxId,
+        customer_tax_id_dv: customerTaxIdDv,
+        order_date: orderDate.toISOString(),
+        amount: order.total_amount || 0,
+        status: status,
+        items: order.order_items?.length || 1,
+        raw_data: order,
+
+        // Financial data
+        gross_amount: grossAmount,
+        net_amount: netAmount,
+        commission_percentage: commissionPercentage,
+        commission_amount: commissionAmount,
+        payment_method: paymentMethod,
+        payment_approved_at: paymentApprovedAt || orderDate.toISOString(),
+        expected_payment_date: expectedPaymentDate.toISOString(),
+        has_exact_data: false,
+
+        // FASE 1: Critical fields
+        money_release_date: moneyReleaseDate,
+        settlement_date: expectedPaymentDate.toISOString(),
+        settlement_amount: settlementAmount,
+        bank_reference: `MELI-${order.id}`,
+        shipping_cost: shippingCost,
+        discount_amount: discountAmount,
+        currency_id: order.currency_id || 'CLP',
+        shipping_mode: shippingMode,
+
+        // FASE 2: Financial details
+        installments: payment?.installments || 1,
+        installment_amount: payment?.installment_amount || grossAmount,
+        financing_fee: 0, // Will be updated with exact data
+        tax_amount: 0, // Will be updated with exact data
+        payment_method_type: paymentMethodType,
+        payment_method_brand: paymentMethodBrand,
+
+        // FASE 3: Operational details
+        shipping_id: shipping.id?.toString() || null,
+        date_shipped: shipping.date_shipped || null,
+        date_delivered: shipping.date_delivered || null,
+        seller_sku: sellerSku,
+        product_title: productTitle,
+      };
+    };
+
+    // Fetch + persist orders page by page (1 upsert por página, no por orden ni al final)
     let offset = 0;
     const limit = 50; // MELI API max limit
-    const maxPages = Math.min(maxPagesParam, 50); // Cap at 50 pages (2500 orders); el upsert ahora es por lote
+    const maxPages = Math.min(maxPagesParam, 50); // Cap a 50 páginas (2500 órdenes)
     let currentPage = 0;
     let totalAvailable = 0;
+    let totalFetched = 0;
+    let syncedCount = 0;
+    let errorCount = 0;
+    let timedOut = false;
+    const startedAt = Date.now();
+    const TIME_BUDGET_MS = 100_000; // margen bajo el límite (~150s) de Edge Functions
 
     console.log('\n=== STARTING PAGINATION ===');
     console.log(`Date from: ${dateFrom}`);
     console.log(`Max pages: ${maxPages}`);
 
     while (currentPage < maxPages) {
+      if (Date.now() - startedAt > TIME_BUDGET_MS) {
+        console.log(`⏱️ Time budget (${TIME_BUDGET_MS}ms) exceeded, stopping pagination early`);
+        timedOut = true;
+        break;
+      }
+
       const dateToFilter = dateTo ? `&order.date_created.to=${dateTo}` : '';
       const ordersUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&sort=date_desc&order.date_created.from=${dateFrom}${dateToFilter}&limit=${limit}&offset=${offset}`;
       console.log(`\nPage ${currentPage + 1}: Fetching from offset ${offset}`);
@@ -172,18 +301,47 @@ Deno.serve(async (req) => {
         break;
       }
 
-      const ordersData = await ordersResponse.json();
-      const orders = ordersData.results || [];
-      totalAvailable = ordersData.paging?.total || 0;
+      const ordersPage = await ordersResponse.json();
+      const orders = ordersPage.results || [];
+      totalAvailable = ordersPage.paging?.total || 0;
 
       console.log(`Fetched ${orders.length} orders (Total available: ${totalAvailable})`);
-      
+
       if (orders.length === 0) {
         console.log('No more orders to fetch');
         break;
       }
 
-      allOrders = [...allOrders, ...orders];
+      totalFetched += orders.length;
+
+      // Transform + upsert this page in a single round-trip
+      const pageOrdersData: any[] = [];
+      for (const order of orders) {
+        try {
+          pageOrdersData.push(transformOrder(order));
+        } catch (error) {
+          console.error(`❌ Error processing order ${order.id}:`, error);
+          errorCount++;
+        }
+      }
+
+      if (pageOrdersData.length > 0) {
+        const { data: upserted, error: upsertError } = await supabaseClient
+          .from('orders')
+          .upsert(pageOrdersData, {
+            onConflict: 'channel_account_id,order_id',
+            ignoreDuplicates: false,
+          })
+          .select('id');
+
+        if (upsertError) {
+          console.error(`❌ Error upserting page ${currentPage + 1}:`, upsertError);
+          errorCount += pageOrdersData.length;
+        } else {
+          syncedCount += upserted?.length || pageOrdersData.length;
+          console.log(`✅ Page ${currentPage + 1}: upserted ${upserted?.length || pageOrdersData.length} orders`);
+        }
+      }
 
       // Check if we've fetched all available orders
       if (offset + limit >= totalAvailable) {
@@ -198,203 +356,13 @@ Deno.serve(async (req) => {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    console.log(`\n=== PAGINATION COMPLETE ===`);
-    console.log(`Total pages fetched: ${currentPage + 1}`);
-    console.log(`Total orders collected: ${allOrders.length}`);
-    console.log(`Total available in MELI: ${totalAvailable}`);
-
-    console.log(`\n=== PROCESSING ${allOrders.length} ORDERS ===\n`);
-
-    // Process and upsert orders
-    let syncedCount = 0;
-    let errorCount = 0;
-    
-    // Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
-    const splitRut = (rut: string | null | undefined): { body: string | null; dv: string | null } => {
-      if (!rut) return { body: null, dv: null };
-      const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
-      if (clean.length < 7) return { body: null, dv: null };
-      return { body: clean.slice(0, -1), dv: clean.slice(-1) };
-    };
-
-    const ordersData: any[] = [];
-
-    for (const order of allOrders) {
-      try {
-        const buyer = order.buyer || {};
-        const orderDate = new Date(order.date_created);
-
-        // Extract RUT from billing_info — ML Chile returns this field for authenticated buyers
-        const billingInfo = buyer.billing_info || {};
-        const rawRut = billingInfo.doc_number || billingInfo.docNumber || null;
-        const { body: customerTaxId, dv: customerTaxIdDv } = splitRut(rawRut);
-
-        // Log detailed order information
-        console.log(`\n--- Order ${order.id} ---`);
-        console.log(`Status: ${order.status}`);
-        console.log(`Total Amount: ${order.total_amount} ${order.currency_id}`);
-        console.log(`Buyer: ${buyer.nickname || 'N/A'} (${buyer.email || 'no email'})`);
-        console.log(`Buyer billing_info:`, JSON.stringify(billingInfo));
-        console.log(`Customer RUT extracted: ${customerTaxId || 'null'}`);
-        console.log(`Date: ${orderDate.toISOString()}`);
-        console.log(`Items count: ${order.order_items?.length || 0}`);
-        
-        // Log payment details
-        if (order.payments && order.payments.length > 0) {
-          console.log(`Payments (${order.payments.length}):`);
-          order.payments.forEach((payment: any, idx: number) => {
-            console.log(`  ${idx + 1}. ${payment.payment_method_id}: ${payment.transaction_amount} ${payment.currency_id} - Status: ${payment.status}`);
-          });
-        }
-        
-        // Log shipping details
-        if (order.shipping) {
-          console.log(`Shipping ID: ${order.shipping.id}`);
-          console.log(`Shipping Status: ${order.shipping.status || 'N/A'}`);
-        }
-        
-        // Log items
-        if (order.order_items && order.order_items.length > 0) {
-          console.log(`Items:`);
-          order.order_items.forEach((item: any, idx: number) => {
-            console.log(`  ${idx + 1}. ${item.item?.title || 'Unknown'} - Qty: ${item.quantity} - Price: ${item.unit_price} ${item.currency_id}`);
-          });
-        }
-        
-        // Map Mercado Libre status to our status
-        let status = 'pending';
-        if (order.status === 'paid') status = 'confirmed';
-        if (order.status === 'cancelled') status = 'cancelled';
-        if (order.shipping?.status === 'shipped') status = 'shipped';
-        if (order.shipping?.status === 'delivered') status = 'delivered';
-
-        // Extract payment data for commission calculation
-        const payment = order.payments?.[0];
-        const paymentMethod = payment?.payment_method_id || 'unknown';
-        const paymentMethodType = payment?.payment_type_id || null; // credit_card, debit_card, account_money, etc.
-        const paymentMethodBrand = payment?.card?.cardholder?.name ? null : (payment?.issuer_id || payment?.payment_method_id || null); // visa, master, etc.
-        const paymentApprovedAt = payment?.date_approved;
-        const grossAmount = order.total_amount || 0;
-        const shipping = order.shipping || {};
-        const coupon = order.coupon || {};
-
-        // Calculate estimated commission based on payment method
-        let commissionPercentage = 3.99; // default
-        if (paymentMethod === 'account_money') commissionPercentage = 2.99;
-        else if (['credit_card', 'master', 'visa'].includes(paymentMethod)) commissionPercentage = 4.99;
-        else if (['debit_card', 'debvisa', 'debmaster'].includes(paymentMethod)) commissionPercentage = 3.49;
-
-        const commissionAmount = Math.round(grossAmount * (commissionPercentage / 100) * 100) / 100;
-        const netAmount = Math.round((grossAmount - commissionAmount) * 100) / 100;
-
-        // Calculate expected payment date (14 days after approval)
-        let expectedPaymentDate = orderDate;
-        let moneyReleaseDate = null;
-        if (paymentApprovedAt) {
-          const approvalDate = new Date(paymentApprovedAt);
-          expectedPaymentDate = new Date(approvalDate.getTime() + 14 * 24 * 60 * 60 * 1000);
-          moneyReleaseDate = payment?.money_release_date || expectedPaymentDate.toISOString();
-        }
-
-        // Calculate settlement amount (what actually reaches the bank)
-        const shippingCost = shipping.cost || 0;
-        const discountAmount = coupon.amount || 0;
-        const shippingMode = shipping.shipping_mode || 'custom';
-        
-        // If Mercado Envíos (me2), shipping is NOT received by seller
-        const shippingDeduction = shippingMode === 'me2' ? shippingCost : 0;
-        const settlementAmount = Math.round((grossAmount - discountAmount - shippingDeduction - commissionAmount) * 100) / 100;
-        
-        // Extract product details
-        const firstItem = order.order_items?.[0];
-        const productTitle = firstItem?.item?.title || null;
-        const sellerSku = firstItem?.item?.seller_custom_field || null;
-
-        const orderData = {
-          channel: 'meli',
-          channel_account_id: meliAccount.id,
-          meli_account_id: meliAccount.id, // Keep for backward compatibility
-          order_id: order.id.toString(),
-          customer_name: buyer.nickname || 'Cliente',
-          customer_email: buyer.email || null,
-          customer_tax_id: customerTaxId,
-          customer_tax_id_dv: customerTaxIdDv,
-          order_date: orderDate.toISOString(),
-          amount: order.total_amount || 0,
-          status: status,
-          items: order.order_items?.length || 1,
-          raw_data: order,
-          
-          // Financial data
-          gross_amount: grossAmount,
-          net_amount: netAmount,
-          commission_percentage: commissionPercentage,
-          commission_amount: commissionAmount,
-          payment_method: paymentMethod,
-          payment_approved_at: paymentApprovedAt || orderDate.toISOString(),
-          expected_payment_date: expectedPaymentDate.toISOString(),
-          has_exact_data: false,
-          
-          // FASE 1: Critical fields
-          money_release_date: moneyReleaseDate,
-          settlement_date: expectedPaymentDate.toISOString(),
-          settlement_amount: settlementAmount,
-          bank_reference: `MELI-${order.id}`,
-          shipping_cost: shippingCost,
-          discount_amount: discountAmount,
-          currency_id: order.currency_id || 'CLP',
-          shipping_mode: shippingMode,
-          
-          // FASE 2: Financial details
-          installments: payment?.installments || 1,
-          installment_amount: payment?.installment_amount || grossAmount,
-          financing_fee: 0, // Will be updated with exact data
-          tax_amount: 0, // Will be updated with exact data
-          payment_method_type: paymentMethodType,
-          payment_method_brand: paymentMethodBrand,
-          
-          // FASE 3: Operational details
-          shipping_id: shipping.id?.toString() || null,
-          date_shipped: shipping.date_shipped || null,
-          date_delivered: shipping.date_delivered || null,
-          seller_sku: sellerSku,
-          product_title: productTitle,
-        };
-
-        ordersData.push(orderData);
-      } catch (error) {
-        console.error(`❌ Error processing order ${order.id}:`, error);
-        errorCount++;
-      }
-    }
-
-    // Batch upsert: un round-trip por lote en vez de uno por orden
-    const BATCH_SIZE = 200;
-    for (let i = 0; i < ordersData.length; i += BATCH_SIZE) {
-      const batch = ordersData.slice(i, i + BATCH_SIZE);
-      const { data: upserted, error: upsertError } = await supabaseClient
-        .from('orders')
-        .upsert(batch, {
-          onConflict: 'channel_account_id,order_id',
-          ignoreDuplicates: false,
-        })
-        .select('id');
-
-      if (upsertError) {
-        console.error(`❌ Error upserting batch ${i / BATCH_SIZE + 1}:`, upsertError);
-        errorCount += batch.length;
-      } else {
-        syncedCount += upserted?.length || batch.length;
-        console.log(`✅ Batch ${i / BATCH_SIZE + 1}: upserted ${upserted?.length || batch.length} orders`);
-      }
-    }
-
     console.log(`\n=== SYNC SUMMARY ===`);
-    console.log(`Total orders processed: ${allOrders.length}`);
+    console.log(`Total orders fetched: ${totalFetched}`);
     console.log(`Successfully synced: ${syncedCount}`);
     console.log(`Errors: ${errorCount}`);
     console.log(`Pages fetched: ${currentPage + 1}`);
     console.log(`Total available: ${totalAvailable}`);
+    if (timedOut) console.log(`⚠️ Stopped early due to time budget — ~${Math.max(totalAvailable - offset, 0)} orders may remain`);
 
     // Auto-trigger billing enrichment (fire-and-forget) to populate real name + RUT
     if (syncedCount > 0) {
@@ -409,14 +377,17 @@ Deno.serve(async (req) => {
     }
 
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         success: true,
-        message: 'Sincronización completada',
-        total: allOrders.length,
+        message: timedOut
+          ? 'Sincronización parcial (límite de tiempo alcanzado, volvé a correrla para continuar)'
+          : 'Sincronización completada',
+        total: totalFetched,
         synced: syncedCount,
         errors: errorCount,
         pages: currentPage + 1,
         available: totalAvailable,
+        partial: timedOut,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
