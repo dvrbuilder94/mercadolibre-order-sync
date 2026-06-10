@@ -404,26 +404,29 @@ Deno.serve(async (req) => {
         console.log(`Page ${pageCount + 1}: Filtered ${validDocs.length} valid docs (ignored ${pageIgnored})`);
 
         // Transform docs to our schema (references already included via expand=[...,references])
-        const taxDocsToUpsert = validDocs
-          .map((doc: any) => {
+        // One bad document must not abort the whole page/sync.
+        const taxDocsToUpsert: any[] = [];
+        for (const doc of validDocs) {
+          try {
             const transformed = transformBsaleDoc(doc, user.id, batchId);
-            if (transformed) {
-              docTypeCounts[transformed.document_type] = (docTypeCounts[transformed.document_type] || 0) + 1;
-              // Detect channel using all available signals (references, coin, client note, details)
-              const detectedChannel = detectChannelFromDoc(doc);
-              const referenceReason = doc.references?.items?.[0]?.reason || null;
-              const coinName = doc.coin?.name || null;
-              (transformed.raw_data as any).reference_reason = referenceReason;
-              (transformed.raw_data as any).payment_method_name = coinName;
-              return {
-                ...transformed,
-                sales_channel: 'MARKETPLACE',
-                detected_channel: detectedChannel,
-              };
-            }
-            return null;
-          })
-          .filter((doc: any) => doc !== null);
+            if (!transformed) continue;
+            docTypeCounts[transformed.document_type] = (docTypeCounts[transformed.document_type] || 0) + 1;
+            // Detect channel using all available signals (references, coin, client note, details)
+            const detectedChannel = detectChannelFromDoc(doc);
+            const referenceReason = doc.references?.items?.[0]?.reason || null;
+            const coinName = doc.coin?.name || null;
+            (transformed.raw_data as any).reference_reason = referenceReason;
+            (transformed.raw_data as any).payment_method_name = coinName;
+            taxDocsToUpsert.push({
+              ...transformed,
+              sales_channel: 'MARKETPLACE',
+              detected_channel: detectedChannel,
+            });
+          } catch (error) {
+            console.error(`❌ Error processing doc ${doc.id}:`, error);
+            totalErrors++;
+          }
+        }
 
         if (taxDocsToUpsert.length > 0) {
           const { data: upserted, error: upsertError } = await supabaseClient
