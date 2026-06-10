@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck, ExternalLink } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck, ArrowRight } from "lucide-react";
 
 interface Stats {
   orders: number;
@@ -12,17 +12,6 @@ interface Stats {
   matched: number;
   unmatched: number;
 }
-
-interface UnmatchedOrder {
-  id: string;
-  order_id: string;
-  order_date: string;
-  gross_amount: number;
-  customer_name: string;
-}
-
-const CLP = (n: number) =>
-  new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -41,7 +30,6 @@ export default function Pipeline() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [stats, setStats] = useState<Stats>({ orders: 0, docs: 0, matched: 0, unmatched: 0 });
-  const [unmatched, setUnmatched] = useState<UnmatchedOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [log, setLog] = useState<string[]>([]);
   const [syncingML, setSyncingML] = useState(false);
@@ -74,7 +62,7 @@ export default function Pipeline() {
       // Orders + their links in one query (max 1000)
       const { data: orders, error: ordersErr } = await supabase
         .from("orders")
-        .select("id, order_id, order_date, gross_amount, customer_name, order_tax_documents(id)")
+        .select("id, order_tax_documents(id)")
         .gte("order_date", from + "T00:00:00")
         .lte("order_date", to   + "T23:59:59")
         .neq("status", "cancelled")
@@ -94,24 +82,14 @@ export default function Pipeline() {
 
       const all = orders || [];
       const matched = all.filter(o => (o.order_tax_documents as any[])?.length > 0);
-      const unmatchedList = all.filter(o => !((o.order_tax_documents as any[])?.length > 0));
+      const unmatchedCount = all.length - matched.length;
 
       setStats({
         orders:    all.length,
         docs:      docCount || 0,
         matched:   matched.length,
-        unmatched: unmatchedList.length,
+        unmatched: unmatchedCount,
       });
-
-      setUnmatched(
-        unmatchedList.slice(0, 50).map(o => ({
-          id:            o.id,
-          order_id:      o.order_id,
-          order_date:    o.order_date,
-          gross_amount:  o.gross_amount,
-          customer_name: o.customer_name,
-        }))
-      );
     } catch (e: any) {
       addLog(`❌ Error cargando datos: ${e?.message || "desconocido"}`);
     } finally {
@@ -255,16 +233,19 @@ export default function Pipeline() {
           ))}
         </div>
 
-        {/* Actions */}
-        <div className="flex gap-3 mb-8">
+        {/* Pipeline steps */}
+        <p className="text-xs text-slate-400 mb-2">Ejecutar en orden:</p>
+        <div className="flex items-center gap-2 mb-8 flex-wrap">
           <button
             onClick={syncML}
             disabled={busy}
             className="flex items-center gap-2 px-4 py-2 bg-yellow-400 hover:bg-yellow-500 disabled:opacity-40 text-yellow-900 font-medium rounded-lg text-sm transition-colors"
           >
             {syncingML ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Sync MercadoLibre
+            1. Sync MercadoLibre
           </button>
+
+          <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button
             onClick={syncBsale}
@@ -272,17 +253,10 @@ export default function Pipeline() {
             className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors"
           >
             {syncingBsale ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Sync Bsale
+            2. Sync Bsale
           </button>
 
-          <button
-            onClick={reconcile}
-            disabled={busy}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors"
-          >
-            {reconciling ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
-            Conciliar
-          </button>
+          <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button
             onClick={enrichRuts}
@@ -290,7 +264,18 @@ export default function Pipeline() {
             className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-700 font-medium rounded-lg text-sm transition-colors"
           >
             {enriching ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />}
-            Enriquecer RUTs
+            3. Enriquecer RUTs
+          </button>
+
+          <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
+
+          <button
+            onClick={reconcile}
+            disabled={busy}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors"
+          >
+            {reconciling ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
+            4. Conciliar
           </button>
         </div>
 
@@ -316,52 +301,18 @@ export default function Pipeline() {
           </div>
         )}
 
-        {/* Unmatched orders */}
+        {/* Unmatched summary → link to detail page */}
         {!loading && stats.unmatched > 0 && (
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="font-semibold text-red-600">
-                ⚠️ {stats.unmatched} órdenes sin documento tributario
-              </h2>
-              {unmatched.length < stats.unmatched && (
-                <span className="text-xs text-slate-400">
-                  mostrando {unmatched.length} de {stats.unmatched}
-                </span>
-              )}
-            </div>
-            <div className="bg-white border rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-slate-50 text-xs text-slate-500">
-                    <th className="text-left px-4 py-2 font-medium">Orden</th>
-                    <th className="text-left px-4 py-2 font-medium">Fecha</th>
-                    <th className="text-left px-4 py-2 font-medium">Cliente</th>
-                    <th className="text-right px-4 py-2 font-medium">Monto</th>
-                    <th className="w-8 px-4 py-2"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {unmatched.map(o => (
-                    <tr key={o.id} className="border-b last:border-0 hover:bg-slate-50">
-                      <td className="px-4 py-2 font-mono text-xs text-slate-500">{o.order_id}</td>
-                      <td className="px-4 py-2 text-slate-500">{o.order_date?.slice(0, 10)}</td>
-                      <td className="px-4 py-2 text-slate-700 max-w-[180px] truncate">{o.customer_name}</td>
-                      <td className="px-4 py-2 text-right font-mono">{CLP(o.gross_amount)}</td>
-                      <td className="px-4 py-2">
-                        <a
-                          href={`https://www.mercadolibre.cl/ventas/${o.order_id}/detalle`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-slate-300 hover:text-slate-600"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          <div className="bg-white border rounded-lg p-4 flex items-center justify-between">
+            <p className="text-sm text-red-600 font-medium">
+              ⚠️ {stats.unmatched} órdenes sin documento tributario en este período
+            </p>
+            <button
+              onClick={() => navigate("/mercadolibre")}
+              className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800"
+            >
+              Ver detalle <ArrowRight className="h-3.5 w-3.5" />
+            </button>
           </div>
         )}
 
