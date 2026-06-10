@@ -54,6 +54,18 @@ export default function Pipeline() {
     setLog(prev => [...prev, `${time}  ${msg}`]);
   };
 
+  // supabase.functions.invoke() solo da "Edge Function returned a non-2xx status code"
+  // en error.message; el detalle real viene en el body de error.context.
+  const errorDetail = async (error: any): Promise<string> => {
+    try {
+      const body = await error?.context?.json?.();
+      if (body?.error || body?.message) return body.error || body.message;
+    } catch {
+      // ignore, fall back below
+    }
+    return error?.message || "error desconocido";
+  };
+
   // One query: fetch orders with their links — avoids .in() with huge ID arrays
   const fetchStats = useCallback(async () => {
     setLoading(true);
@@ -124,7 +136,7 @@ export default function Pipeline() {
       }
       fetchStats();
     } catch (e: any) {
-      addLog(`❌ ML: ${e?.message || "error desconocido"}`);
+      addLog(`❌ ML: ${await errorDetail(e)}`);
     } finally {
       setSyncingML(false);
     }
@@ -151,7 +163,7 @@ export default function Pipeline() {
       }
       fetchStats();
     } catch (e: any) {
-      addLog(`❌ Bsale: ${e?.message || "error desconocido"}`);
+      addLog(`❌ Bsale: ${await errorDetail(e)}`);
     } finally {
       setSyncingBsale(false);
     }
@@ -178,7 +190,7 @@ export default function Pipeline() {
       if (s3.ambiguous > 0) addLog(`⚠️ ${s3.ambiguous} ambiguas — requieren revisión manual`);
       fetchStats();
     } catch (e: any) {
-      addLog(`❌ Conciliación: ${e?.message || "error desconocido"}`);
+      addLog(`❌ Conciliación: ${await errorDetail(e)}`);
     } finally {
       setReconciling(false);
     }
@@ -204,7 +216,7 @@ export default function Pipeline() {
       addLog(`✅ RUTs: ${totalEnriched} órdenes enriquecidas en ${round} ronda${round > 1 ? "s" : ""}`);
       fetchStats();
     } catch (e: any) {
-      addLog(`❌ RUTs: ${e?.message || "error desconocido"}`);
+      addLog(`❌ RUTs: ${await errorDetail(e)}`);
     } finally {
       setEnriching(false);
     }
