@@ -119,6 +119,9 @@ export default function Pipeline() {
       });
       if (error) throw error;
       addLog(`✅ ML: ${data?.synced || 0} órdenes guardadas`);
+      if (data?.partial) {
+        addLog(`⚠️ Sincronización parcial (quedan órdenes por traer), volvé a tocar "Sincronizar MercadoLibre"`);
+      }
       fetchStats();
     } catch (e: any) {
       addLog(`❌ ML: ${e?.message || "error desconocido"}`);
