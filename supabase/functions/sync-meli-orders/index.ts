@@ -217,6 +217,8 @@ Deno.serve(async (req) => {
       return { body: clean.slice(0, -1), dv: clean.slice(-1) };
     };
 
+    const ordersData: any[] = [];
+
     for (const order of allOrders) {
       try {
         const buyer = order.buyer || {};
@@ -359,45 +361,34 @@ Deno.serve(async (req) => {
           product_title: productTitle,
         };
 
-        console.log(`Attempting to upsert order ${order.id}...`);
-        
-        // Upsert order
-        const { data: upsertedOrder, error: upsertError } = await supabaseClient
-          .from('orders')
-          .upsert(orderData, {
-            onConflict: 'channel_account_id,order_id',
-            ignoreDuplicates: false,
-          })
-          .select()
-          .single();
-
-        if (upsertError) {
-          console.error(`❌ Error upserting order ${order.id}:`, upsertError);
-          errorCount++;
-        } else {
-          console.log(`✅ Successfully synced order ${order.id}`);
-          syncedCount++;
-
-          // For orders from the last 7 days, fetch exact payment details
-          const orderAge = (Date.now() - orderDate.getTime()) / (1000 * 60 * 60 * 24);
-          
-          // DISABLED: Skip exact payment data fetch for performance
-          // Users can use sync-meli-payment-details for exact data
-          // This significantly speeds up the sync process
-          /*
-          if (orderAge <= 7 && payment?.id && upsertedOrder) {
-...
-              console.log(`⚠️ Could not fetch exact payment details: ${error}. Using estimates.`);
-            }
-          }
-          */
-        }
+        ordersData.push(orderData);
       } catch (error) {
         console.error(`❌ Error processing order ${order.id}:`, error);
         errorCount++;
       }
     }
-    
+
+    // Batch upsert: un round-trip por lote en vez de uno por orden
+    const BATCH_SIZE = 200;
+    for (let i = 0; i < ordersData.length; i += BATCH_SIZE) {
+      const batch = ordersData.slice(i, i + BATCH_SIZE);
+      const { data: upserted, error: upsertError } = await supabaseClient
+        .from('orders')
+        .upsert(batch, {
+          onConflict: 'channel_account_id,order_id',
+          ignoreDuplicates: false,
+        })
+        .select('id');
+
+      if (upsertError) {
+        console.error(`❌ Error upserting batch ${i / BATCH_SIZE + 1}:`, upsertError);
+        errorCount += batch.length;
+      } else {
+        syncedCount += upserted?.length || batch.length;
+        console.log(`✅ Batch ${i / BATCH_SIZE + 1}: upserted ${upserted?.length || batch.length} orders`);
+      }
+    }
+
     console.log(`\n=== SYNC SUMMARY ===`);
     console.log(`Total orders processed: ${allOrders.length}`);
     console.log(`Successfully synced: ${syncedCount}`);
