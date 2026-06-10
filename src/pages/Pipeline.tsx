@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck, ArrowRight, Download, Sparkles } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck, ArrowRight, Download, Sparkles, CalendarClock } from "lucide-react";
 
 interface Stats {
   orders: number;
@@ -37,6 +37,7 @@ export default function Pipeline() {
   const [reconciling, setReconciling] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [fixingDates, setFixingDates] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -210,7 +211,24 @@ export default function Pipeline() {
     }
   };
 
-  const busy = syncingML || syncingBsale || reconciling || enriching;
+  const fixDates = async () => {
+    setFixingDates(true);
+    addLog("› Corrigiendo fechas de documentos Bsale (zona horaria Chile)...");
+    try {
+      const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
+        body: { fix_dates: true },
+      });
+      if (error) throw error;
+      addLog(`✅ Fechas: ${data?.fixed || 0} de ${data?.checked || 0} documentos corregidos`);
+      fetchStats();
+    } catch (e: any) {
+      addLog(`❌ Fechas: ${e?.message || "error desconocido"}`);
+    } finally {
+      setFixingDates(false);
+    }
+  };
+
+  const busy = syncingML || syncingBsale || reconciling || enriching || fixingDates;
 
   const exportSample = async (includeRaw = false) => {
     setExporting(true);
@@ -332,6 +350,30 @@ export default function Pipeline() {
             {reconciling ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
             4. Conciliar
           </button>
+        </div>
+
+        {/* One-time fix: recompute Bsale document_date with Chile timezone */}
+        <div className="bg-white border rounded-lg p-4 mb-8">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-slate-800 flex items-center gap-2">
+                <CalendarClock className="h-4 w-4 text-amber-500" />
+                Corregir fechas de documentos Bsale
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Recalcula <code>document_date</code> de los documentos ya sincronizados usando la zona horaria de Chile
+                (algunos quedaron con la fecha UTC, corridos un día). No vuelve a consultar la API de Bsale.
+              </p>
+            </div>
+            <button
+              onClick={fixDates}
+              disabled={busy}
+              className="shrink-0 flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors"
+            >
+              {fixingDates ? <Loader2 className="h-4 w-4 animate-spin" /> : <CalendarClock className="h-4 w-4" />}
+              Corregir fechas
+            </button>
+          </div>
         </div>
 
         {/* Export sample for external LLM analysis */}
