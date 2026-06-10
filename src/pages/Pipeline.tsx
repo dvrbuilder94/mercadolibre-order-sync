@@ -190,9 +190,9 @@ export default function Pipeline() {
 
   const busy = syncingML || syncingBsale || reconciling || enriching;
 
-  const exportSample = async () => {
+  const exportSample = async (includeRaw = false) => {
     setExporting(true);
-    addLog(`› Exportando muestra JSON de ${period}...`);
+    addLog(`› Exportando ${includeRaw ? "RAW (API nativa)" : "muestra"} JSON de ${period}...`);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error("Sesión expirada");
@@ -203,18 +203,18 @@ export default function Pipeline() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ period, include_raw: false }),
+        body: JSON.stringify({ period, include_raw: includeRaw }),
       });
       if (!res.ok) throw new Error(await res.text());
       const blob = await res.blob();
       const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `quadra-sample-${period}.json`;
+      a.download = `quadra-${includeRaw ? "raw" : "sample"}-${period}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      addLog(`✅ Muestra descargada (${sizeMB} MB) — súbela a Grok/ChatGPT/Claude`);
+      addLog(`✅ ${includeRaw ? "RAW" : "Muestra"} descargada (${sizeMB} MB)`);
     } catch (e: any) {
       addLog(`❌ Export: ${e?.message || "error"}`);
     } finally {
@@ -321,17 +321,27 @@ export default function Pipeline() {
                 Muestra para análisis externo (Grok / ChatGPT / Claude)
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                Descarga un JSON con todas las ventas MELI, documentos Bsale, pagos y matches existentes de {periodLabel(period)}. Súbelo al LLM con un prompt de matching para validar coincidencias.
+                Descarga un JSON de {periodLabel(period)}. <b>Normalizado</b>: datos transformados al modelo Quadra (liviano). <b>RAW</b>: respuestas originales de MELI y Bsale tal como llegaron de la API (incluye <code>raw_data</code>, puede pesar varios MB).
               </p>
             </div>
-            <button
-              onClick={exportSample}
-              disabled={exporting || busy}
-              className="shrink-0 flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors"
-            >
-              {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              Descargar JSON
-            </button>
+            <div className="shrink-0 flex flex-col gap-2">
+              <button
+                onClick={() => exportSample(false)}
+                disabled={exporting || busy}
+                className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors"
+              >
+                {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                Normalizado
+              </button>
+              <button
+                onClick={() => exportSample(true)}
+                disabled={exporting || busy}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors"
+              >
+                {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                RAW (API nativa)
+              </button>
+            </div>
           </div>
         </div>
 
