@@ -1,51 +1,73 @@
-
 ## Objetivo
-Guardar el RUT separado en dos columnas:
-- **Cuerpo** (solo dígitos, sin puntos, sin guion, sin DV) → columna actual.
-- **DV** (1 char: `0-9` o `K`) → nueva columna `_dv` al lado en la base.
 
-En la **UI no se muestra DV ni se cambia nada visual**: las tablas y vistas siguen mostrando solo el cuerpo numérico (regla `ui/rut-display-format` se mantiene).
+Generar un archivo JSON descargable que contenga **toda la data del mes** (ventas MELI + documentos Bsale + payments + matches existentes) en un formato que puedas pegar/subir directamente a Grok, ChatGPT o Claude para que analicen coincidencias por fuera del sistema.
 
-## Estado actual vs objetivo
+## Sobre el peso
 
-| Tabla | Hoy | Después (cuerpo) | Después (DV) |
-|---|---|---|---|
-| `orders.customer_tax_id` | `191126408` | `19112640` | `customer_tax_id_dv = '8'` |
-| `tax_documents.client_tax_id` | `76954884K` | `76954884` | `client_tax_id_dv = 'K'` |
+Con un mes típico (~500 ventas + ~500 docs + payments) el archivo pesa **2–5 MB** en JSON crudo. Todos los LLMs grandes lo aceptan sin problema (Claude acepta hasta 30MB, ChatGPT/Grok vía adjunto también). No es necesario recortar campos — incluimos todo para que el análisis sea completo.
 
-Datos ya están limpios (0 filas con puntos/guiones), así que el split es trivial: último char → DV, resto → cuerpo.
+Si un mes muy cargado supera ~10MB, agregamos automáticamente una versión "slim" sin `raw_data`.
 
-## Cambios
+## Estructura del JSON
 
-### 1. Migración (single migration)
-- `ALTER TABLE orders ADD COLUMN customer_tax_id_dv TEXT;`
-- `ALTER TABLE tax_documents ADD COLUMN client_tax_id_dv TEXT;`
-- Backfill in-place:
-  - `UPDATE orders SET customer_tax_id_dv = upper(right(customer_tax_id,1)), customer_tax_id = left(customer_tax_id, length(customer_tax_id)-1) WHERE customer_tax_id ~ '^[0-9]+[0-9kK]$';`
-  - Idem para `tax_documents.client_tax_id`.
-- Índices nuevos sobre `(customer_tax_id)` y `(client_tax_id)` para matching rápido.
+```text
+{
+  "meta": { period, generated_at, user_id, counts },
+  "meli_sales":     [ ...orders del mes con todos los campos relevantes... ],
+  "bsale_documents":[ ...tax_documents del mes... ],
+  "payments":       [ ...payments del mes... ],
+  "existing_links": {
+    "order_tax_documents": [...],     // matches ya hechos
+    "payment_sales":       [...],     // links venta-pago
+    "match_candidates":    [...]      // ambigüedades pendientes
+  }
+}
+```
 
-### 2. Edge functions (escritura)
-Reemplazar `normalizeRut()` por `splitRut(raw)` que retorna `{ body, dv }`:
-- `sync-meli-orders/index.ts` → escribe `customer_tax_id = body`, `customer_tax_id_dv = dv`.
-- `enrich-meli-billing/index.ts` → idem.
-- `sync-bsale-docs/index.ts` → escribe `client_tax_id = body`, `client_tax_id_dv = dv`.
-- `bsale-webhook/index.ts` → idem.
-- `backfill-rut/index.ts` → actualizado para escribir ambas columnas.
+### Campos por venta MELI
+`id, order_id, order_date, status, gross_amount, net_amount, commission_amount, commission_percentage, shipping_cost, discount_amount, settlement_amount, money_release_date, customer_name, customer_tax_id, customer_tax_id_dv, shipping_mode, shipping_id, payment_method, installments, currency_id, marketplace, channel_account_id`
 
-### 3. Matching (lectura)
-- `auto-reconcile/index.ts` y `debug-meli-matching/index.ts` ya comparan RUT como string; cambian a comparar solo `customer_tax_id` (cuerpo) contra `client_tax_id` (cuerpo). El match mejora: deja de fallar cuando un lado trae K y el otro no.
+### Campos por documento Bsale
+`id, folio, document_type, code_sii, emission_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, client_tax_id_dv, references, external_sale_id, office_id, status`
 
-### 4. Frontend
-- **NO se agregan columnas DV en la UI.** Tablas, modales y filtros siguen mostrando solo el cuerpo (la columna actual).
-- Solo se ajustan filtros/búsquedas por RUT para que acepten el cuerpo sin DV (si alguno asume el DV pegado, sacarlo del texto antes de consultar).
-- Tipos de Supabase se regeneran automáticamente tras la migración.
+### Campos por payment
+`id, external_payment_id, payment_date, gross_amount, net_amount, fee_amount, status, payment_method, money_release_date`
 
-## Out of scope
-- No se valida ni recalcula el DV (se confía en la fuente).
-- No se muestra DV en pantalla, ni se exporta separado en reportes.
-- No se tocan otros campos del `raw_data`.
+Sin `raw_data` por defecto (es ruido), pero queda un toggle por si quieres incluirlo.
 
-## Riesgos
-- Filas con formato inesperado (no `^[0-9]+[0-9kK]$`) se dejan intactas y se loguean para revisar manualmente.
-- Cualquier query hardcoded que busque `customer_tax_id = '191126408'` deja de matchear → se cubre en el punto 3 y 4.
+## Implementación
+
+### 1. Edge function `export-monthly-sample`
+- Input: `{ period: "2026-06", include_raw?: boolean }`
+- Lee de Supabase con RLS del usuario:
+  - `orders` del período (todos los marketplaces, no solo MELI — pero la mayoría serán MELI)
+  - `tax_documents` con `emission_date` del período
+  - `payments` con `payment_date` del período
+  - `order_tax_documents`, `payment_sales`, `order_tax_match_candidates` filtrados por los IDs anteriores
+- Devuelve JSON serializado con `Content-Disposition: attachment; filename="quadra-sample-2026-06.json"`
+
+### 2. UI: nuevo card en `src/pages/Reports.tsx`
+- Selector de mes (default: mes actual)
+- Checkbox "Incluir raw_data (más pesado)"
+- Botón "Descargar muestra JSON"
+- Al click: invoca la function, recibe el blob, dispara descarga del navegador
+- Muestra contador estimado: "≈ 487 ventas · 512 docs · 1.834 payments"
+
+### 3. Prompt sugerido (en la misma página)
+Bloque con un prompt listo para copiar al LLM:
+
+> *"Adjunto JSON con ventas de MercadoLibre y documentos tributarios Bsale del período X. Analiza las coincidencias por RUT + monto + fecha (±3 días). Devuelve: matches confiables, ambiguos y huérfanos en tabla."*
+
+## Detalles técnicos
+
+- Function en `supabase/functions/export-monthly-sample/index.ts`
+- Usa `createClient` con el token del usuario para respetar RLS
+- Sin paginación: una query por tabla, todo en memoria (mes ≈ pocas miles de filas)
+- Si el JSON serializado > 10MB, regenera versión sin `raw_data` automáticamente y avisa
+- No toca la DB; estrictamente lectura
+
+## Fuera de alcance
+
+- No exporta meses agregados (solo uno por descarga)
+- No incluye Bsale raw API responses (solo lo ya guardado en `tax_documents`)
+- No procesa el análisis del LLM dentro de la app (lo haces externo)
