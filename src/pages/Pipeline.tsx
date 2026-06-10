@@ -107,9 +107,16 @@ export default function Pipeline() {
 
   const syncML = async () => {
     setSyncingML(true);
-    addLog("› Sincronizando MercadoLibre...");
+    const { from, to } = periodRange(period);
+    addLog(`› Sincronizando MercadoLibre (${periodLabel(period)})...`);
     try {
-      const { data, error } = await supabase.functions.invoke("sync-meli-orders");
+      const { data, error } = await supabase.functions.invoke("sync-meli-orders", {
+        body: {
+          date_from: `${from}T00:00:00`,
+          date_to: `${to}T23:59:59`,
+          max_pages: 20,
+        },
+      });
       if (error) throw error;
       addLog(`✅ ML: ${data?.synced || 0} órdenes guardadas`);
       fetchStats();
@@ -122,10 +129,13 @@ export default function Pipeline() {
 
   const syncBsale = async () => {
     setSyncingBsale(true);
-    addLog("› Sincronizando Bsale (últimos 90 días)...");
+    const { from, to } = periodRange(period);
+    addLog(`› Sincronizando Bsale (${periodLabel(period)})...`);
     try {
+      const dateFrom = Math.floor(new Date(`${from}T00:00:00Z`).getTime() / 1000);
+      const dateTo   = Math.floor(new Date(`${to}T23:59:59Z`).getTime() / 1000);
       const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
-        body: { days_back: 90 },
+        body: { date_from: dateFrom, date_to: dateTo },
       });
       if (error) throw error;
       const total = data?.summary?.total_upserted ?? 0;
@@ -143,9 +153,15 @@ export default function Pipeline() {
 
   const reconcile = async () => {
     setReconciling(true);
-    addLog("› Conciliando...");
+    const { from, to } = periodRange(period);
+    addLog(`› Conciliando ${periodLabel(period)}...`);
     try {
-      const { data, error } = await supabase.functions.invoke("auto-reconcile");
+      const { data, error } = await supabase.functions.invoke("auto-reconcile", {
+        body: {
+          date_from: `${from}T00:00:00`,
+          date_to: `${to}T23:59:59`,
+        },
+      });
       if (error) throw error;
       const s3 = data?.stage3_order_taxdoc || {};
       const hard = s3.hard_linked ?? 0;

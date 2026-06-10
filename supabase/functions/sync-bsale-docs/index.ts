@@ -264,6 +264,7 @@ Deno.serve(async (req) => {
       days_back = 90,
       max_pages = 150,
       date_from = null,
+      date_to = null,
       is_resync = false,
       resync_batch = null,
       reclassify_b2b = false  // If true: fix existing B2B docs to MARKETPLACE (no new sync)
@@ -323,10 +324,10 @@ Deno.serve(async (req) => {
 
     // Calculate date range
     const now = Math.floor(Date.now() / 1000);
-    const emissionDateFrom = date_from 
-      ? Number(date_from) 
+    const emissionDateFrom = date_from
+      ? Number(date_from)
       : now - (days_back * 24 * 60 * 60);
-    const emissionDateTo = now;
+    const emissionDateTo = date_to ? Number(date_to) : now;
 
     console.log(`Date range: ${new Date(emissionDateFrom * 1000).toISOString()} to ${new Date(emissionDateTo * 1000).toISOString()}`);
 

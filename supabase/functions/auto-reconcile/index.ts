@@ -165,8 +165,17 @@ Deno.serve(async (req) => {
       });
     }
 
+    // Optional period scope (limits Stage 3 order/doc fetch for performance).
+    // If omitted, Stage 3 scans the full history as before.
+    const body = await req.json().catch(() => ({} as any));
+    const periodFrom: string | null = body?.date_from || null;
+    const periodTo: string | null = body?.date_to || null;
+
     console.log('=== AUTO-RECONCILE 4-STAGE START ===');
     console.log('User ID:', user.id);
+    if (periodFrom && periodTo) {
+      console.log(`Period scope: ${periodFrom} – ${periodTo} (Stage 3, ±7d buffer)`);
+    }
 
     let stage1 = 0, stage2 = 0, stage3 = 0, stage4 = 0;
 
@@ -674,7 +683,9 @@ Deno.serve(async (req) => {
     // Include ALL non-cancelled orders — not just those with money_release_date.
     // ML API sometimes doesn't return payment dates on first sync; excluding them
     // causes orders to never be reconciled even when a Bsale doc exists.
-    const { data: ordersWithPayment, error: ordersError } = await supabaseAdmin
+    const BUFFER_MS = 7 * 24 * 60 * 60 * 1000; // catch cross-month order/doc pairs near period edges
+
+    let ordersQuery = supabaseAdmin
       .from('orders')
       .select(`
         *,
@@ -683,6 +694,14 @@ Deno.serve(async (req) => {
       .neq('status', 'cancelled')
       .order('order_date', { ascending: false })
       .limit(5000);
+
+    if (periodFrom && periodTo) {
+      const bufferedFrom = new Date(new Date(periodFrom).getTime() - BUFFER_MS).toISOString();
+      const bufferedTo   = new Date(new Date(periodTo).getTime() + BUFFER_MS).toISOString();
+      ordersQuery = ordersQuery.gte('order_date', bufferedFrom).lte('order_date', bufferedTo);
+    }
+
+    const { data: ordersWithPayment, error: ordersError } = await ordersQuery;
 
     if (ordersError) {
       console.error('Error fetching orders:', ordersError.message);
@@ -705,12 +724,20 @@ Deno.serve(async (req) => {
     const linkedOrderIds = new Set((linkedOrderTaxDocs || []).map(d => d.order_id));
     const linkedDocIds = new Set((linkedOrderTaxDocs || []).map(d => d.tax_document_id));
 
-    const { data: allDocs } = await supabaseAdmin
+    let docsQuery = supabaseAdmin
       .from('tax_documents')
       .select('*')
       .eq('status', 'issued')
       .in('document_type', ['boleta', 'factura', 'factura_exenta'])
       .limit(10000);
+
+    if (periodFrom && periodTo) {
+      const bufferedFromDate = new Date(new Date(periodFrom).getTime() - BUFFER_MS).toISOString().split('T')[0];
+      const bufferedToDate   = new Date(new Date(periodTo).getTime() + BUFFER_MS).toISOString().split('T')[0];
+      docsQuery = docsQuery.gte('document_date', bufferedFromDate).lte('document_date', bufferedToDate);
+    }
+
+    const { data: allDocs } = await docsQuery;
 
     // Post-filtro por codeSii válido para documentos tributarios
     // Códigos válidos: 33=Factura, 34=Factura Exenta, 39=Boleta, 41=Boleta Exenta
