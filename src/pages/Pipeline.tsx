@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck, ArrowRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck, ArrowRight, Download, Sparkles } from "lucide-react";
 
 interface Stats {
   orders: number;
@@ -36,6 +36,7 @@ export default function Pipeline() {
   const [syncingBsale, setSyncingBsale] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
