@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
       'settlement_amount', 'money_release_date', 'customer_name', 'customer_tax_id',
       'customer_tax_id_dv', 'shipping_mode', 'shipping_id', 'payment_method',
       'installments', 'currency_id', 'marketplace', 'channel', 'channel_account_id',
-      'external_order_id',
+      'external_sale_id',
     ];
     const docFields = [
       'id', 'document_type', 'document_number', 'document_date', 'net_amount',
