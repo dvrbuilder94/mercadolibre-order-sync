@@ -269,60 +269,8 @@ Deno.serve(async (req) => {
       date_to = null,
       is_resync = false,
       resync_batch = null,
-      reclassify_b2b = false,  // If true: fix existing B2B docs to MARKETPLACE (no new sync)
-      fix_dates = false  // If true: recompute document_date from raw_data using Chile timezone (no new sync)
+      reclassify_b2b = false  // If true: fix existing B2B docs to MARKETPLACE (no new sync)
     } = body;
-
-    // MODE: fix_dates — recompute document_date for already-synced docs using Chile timezone
-    if (fix_dates) {
-      console.log('=== FIX DATES MODE ===');
-      let checked = 0;
-      let fixed = 0;
-      let offset = 0;
-      const pageSize = 500;
-      const CONCURRENCY = 20;
-
-      while (true) {
-        const { data: rows, error: fetchErr } = await supabaseClient
-          .from('tax_documents')
-          .select('id, document_date, raw_data')
-          .eq('user_id', user.id)
-          .eq('external_system', 'bsale')
-          .range(offset, offset + pageSize - 1);
-
-        if (fetchErr) {
-          console.error('Fix dates fetch error:', fetchErr);
-          return new Response(JSON.stringify({ error: fetchErr.message }),
-            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        }
-        if (!rows || rows.length === 0) break;
-        checked += rows.length;
-
-        const updates = rows
-          .map((row: any) => {
-            const ts = row.raw_data?.emissionDate;
-            if (!ts) return null;
-            const correctDate = new Date(ts * 1000).toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
-            return correctDate !== row.document_date ? { id: row.id, document_date: correctDate } : null;
-          })
-          .filter((u: any) => u !== null);
-
-        for (let i = 0; i < updates.length; i += CONCURRENCY) {
-          const batch = updates.slice(i, i + CONCURRENCY);
-          await Promise.all(batch.map((u: any) =>
-            supabaseClient.from('tax_documents').update({ document_date: u.document_date }).eq('id', u.id)
-          ));
-          fixed += batch.length;
-        }
-
-        if (rows.length < pageSize) break;
-        offset += pageSize;
-      }
-
-      console.log(`Checked ${checked} docs, fixed ${fixed} dates`);
-      return new Response(JSON.stringify({ success: true, checked, fixed }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
 
     // MODE: reclassify_b2b — fix existing docs that were wrongly saved as B2B
     if (reclassify_b2b) {
