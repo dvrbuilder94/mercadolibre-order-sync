@@ -190,6 +190,38 @@ export default function Pipeline() {
 
   const busy = syncingML || syncingBsale || reconciling || enriching;
 
+  const exportSample = async () => {
+    setExporting(true);
+    addLog(`› Exportando muestra JSON de ${period}...`);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Sesión expirada");
+      const url = `https://opdclqitvxyqzeqzegih.supabase.co/functions/v1/export-monthly-sample`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ period, include_raw: false }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `quadra-sample-${period}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      addLog(`✅ Muestra descargada (${sizeMB} MB) — súbela a Grok/ChatGPT/Claude`);
+    } catch (e: any) {
+      addLog(`❌ Export: ${e?.message || "error"}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="flex min-h-screen bg-slate-50">
       <Nav />
@@ -278,6 +310,29 @@ export default function Pipeline() {
             {reconciling ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
             4. Conciliar
           </button>
+        </div>
+
+        {/* Export sample for external LLM analysis */}
+        <div className="bg-white border rounded-lg p-4 mb-8">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-slate-800 flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-violet-500" />
+                Muestra para análisis externo (Grok / ChatGPT / Claude)
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Descarga un JSON con todas las ventas MELI, documentos Bsale, pagos y matches existentes de {periodLabel(period)}. Súbelo al LLM con un prompt de matching para validar coincidencias.
+              </p>
+            </div>
+            <button
+              onClick={exportSample}
+              disabled={exporting || busy}
+              className="shrink-0 flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors"
+            >
+              {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              Descargar JSON
+            </button>
+          </div>
         </div>
 
         {/* Log terminal */}
