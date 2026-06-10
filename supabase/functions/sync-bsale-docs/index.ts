@@ -344,10 +344,21 @@ Deno.serve(async (req) => {
     let totalIgnored = 0;
     let totalUpserted = 0;
     let totalErrors = 0;
+    let timedOut = false;
+    let apiError: string | null = null;
     const docTypeCounts: Record<string, number> = {};
+
+    const startedAt = Date.now();
+    const TIME_BUDGET_MS = 100_000; // margen bajo el límite (~150s) de Edge Functions
 
     // Process page by page - upsert immediately, don't accumulate
     while (hasMore && pageCount < max_pages) {
+      if (Date.now() - startedAt > TIME_BUDGET_MS) {
+        console.log(`⏱️ Time budget (${TIME_BUDGET_MS}ms) exceeded, stopping pagination early`);
+        timedOut = true;
+        break;
+      }
+
       // IMPORTANT: do NOT send `codesii` here. Bsale returns count:0 silently
       // when given a comma-separated list for some accounts. We filter by SII
       // code post-fetch in filterValidTributaryDocs().
@@ -369,7 +380,8 @@ Deno.serve(async (req) => {
       if (!bsaleResponse.ok) {
         const errorText = await bsaleResponse.text();
         console.error('Bsale API error:', bsaleResponse.status, errorText);
-        throw new Error(`Bsale API error: ${bsaleResponse.status}`);
+        apiError = `Bsale API error: ${bsaleResponse.status}`;
+        break;
       }
 
       const bsaleData = await bsaleResponse.json();
@@ -452,11 +464,19 @@ Deno.serve(async (req) => {
     console.log(`Total upserted: ${totalUpserted}`);
     console.log(`Errors: ${totalErrors}`);
     console.log('By type:', docTypeCounts);
+    if (timedOut) console.log('⏱️ Stopped early due to time budget');
+    if (apiError) console.log(`⚠️ Stopped due to Bsale API error: ${apiError}`);
+
+    const partial = timedOut || !!apiError;
 
     return new Response(
       JSON.stringify({
         success: true,
-        message: 'Sincronización de documentos Bsale completada',
+        message: partial
+          ? 'Sincronización parcial de Bsale (volvé a correrla para continuar)'
+          : 'Sincronización de documentos Bsale completada',
+        partial,
+        ...(apiError ? { error_detail: apiError } : {}),
         resync_batch: batchId,
         summary: {
           pages_processed: pageCount,

@@ -146,6 +146,9 @@ export default function Pipeline() {
         ? Object.entries(data.summary.by_type).map(([k, v]) => `${v} ${k}`).join(" · ")
         : "";
       addLog(`✅ Bsale: ${total} documentos${byType ? ` (${byType})` : ""}`);
+      if (data?.partial) {
+        addLog(`⚠️ Sincronización Bsale parcial${data?.error_detail ? ` (${data.error_detail})` : ""}, volvé a tocar "Sincronizar Bsale"`);
+      }
       fetchStats();
     } catch (e: any) {
       addLog(`❌ Bsale: ${e?.message || "error desconocido"}`);
