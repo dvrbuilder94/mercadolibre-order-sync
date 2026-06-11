@@ -724,22 +724,37 @@ Deno.serve(async (req) => {
     const linkedOrderIds = new Set((linkedOrderTaxDocs || []).map(d => d.order_id));
     const linkedDocIds = new Set((linkedOrderTaxDocs || []).map(d => d.tax_document_id));
 
-    let docsQuery = supabaseAdmin
-      .from('tax_documents')
-      // Excluir raw_data (JSONB ~1.3KB/doc) para evitar que PostgREST trunque
-      // la respuesta a ~600 filas cuando hay miles de docs en el período.
-      .select('id, user_id, external_order_id, external_id, external_system, client_tax_id, client_tax_id_dv, client_name, total_amount, net_amount, tax_amount, document_date, document_number, document_type, sales_channel, detected_channel, status, resync_batch')
-      .eq('status', 'issued')
-      .in('document_type', ['boleta', 'factura', 'factura_exenta'])
-      .limit(10000);
-
+    // Paginar explícitamente con .range() porque PostgREST impone un max-rows
+    // de ~1000 en el servidor que .limit() no supera. Sin paginar, Stage 3
+    // procesaba solo los primeros 600 docs y dejaba miles sin matchear.
+    // Excluimos raw_data (JSONB pesado) para reducir tamaño de respuesta.
+    const DOCS_COLUMNS = 'id, user_id, external_order_id, external_id, external_system, client_tax_id, client_tax_id_dv, client_name, total_amount, net_amount, tax_amount, document_date, document_number, document_type, sales_channel, detected_channel, status, resync_batch';
+    const PAGE_SIZE = 1000;
+    let bufferedFromDate: string | null = null;
+    let bufferedToDate: string | null = null;
     if (periodFrom && periodTo) {
-      const bufferedFromDate = new Date(new Date(periodFrom).getTime() - BUFFER_MS).toISOString().split('T')[0];
-      const bufferedToDate   = new Date(new Date(periodTo).getTime() + BUFFER_MS).toISOString().split('T')[0];
-      docsQuery = docsQuery.gte('document_date', bufferedFromDate).lte('document_date', bufferedToDate);
+      bufferedFromDate = new Date(new Date(periodFrom).getTime() - BUFFER_MS).toISOString().split('T')[0];
+      bufferedToDate   = new Date(new Date(periodTo).getTime() + BUFFER_MS).toISOString().split('T')[0];
     }
-
-    const { data: allDocs } = await docsQuery;
+    const allDocs: any[] = [];
+    for (let page = 0; page < 20; page++) {
+      let q = supabaseAdmin
+        .from('tax_documents')
+        .select(DOCS_COLUMNS)
+        .eq('status', 'issued')
+        .in('document_type', ['boleta', 'factura', 'factura_exenta'])
+        .order('document_date', { ascending: false })
+        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+      if (bufferedFromDate && bufferedToDate) {
+        q = q.gte('document_date', bufferedFromDate).lte('document_date', bufferedToDate);
+      }
+      const { data: pageData, error: pageErr } = await q;
+      if (pageErr) { console.error('docs page error:', pageErr.message); break; }
+      if (!pageData || pageData.length === 0) break;
+      allDocs.push(...pageData);
+      if (pageData.length < PAGE_SIZE) break;
+    }
+    console.log(`Fetched ${allDocs.length} tax_documents in scope (paginated)`);
 
     // El filtro por document_type ya excluye guías y no-tributarios.
     // (Anteriormente se re-filtraba por raw_data.codeSii, pero raw_data ya no se trae.)
