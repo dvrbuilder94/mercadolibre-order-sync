@@ -326,92 +326,104 @@ Deno.serve(async (req) => {
 
     // Calculate date range
     const now = Math.floor(Date.now() / 1000);
-    const emissionDateFrom = date_from
+    const emissionDateFrom = date_from != null
       ? Number(date_from)
       : now - (days_back * 24 * 60 * 60);
-    const emissionDateTo = date_to ? Number(date_to) : now;
+    const emissionDateTo = date_to != null ? Number(date_to) : now;
+
+    if (!Number.isFinite(emissionDateFrom) || !Number.isFinite(emissionDateTo) || emissionDateFrom >= emissionDateTo) {
+      return new Response(
+        JSON.stringify({ error: 'Rango de fechas inválido (date_from debe ser menor a date_to, ambos en unix seconds)' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     console.log(`Date range: ${new Date(emissionDateFrom * 1000).toISOString()} to ${new Date(emissionDateTo * 1000).toISOString()}`);
 
     // Use api.bsale.cl (same host the webhook uses successfully).
-    // api.bsale.io works too but some accounts return count:0 with codesii lists.
     const BSALE_API_URL = 'https://api.bsale.cl';
-    let offset = 0;
     const limit = 50;
-    let hasMore = true;
-    let pageCount = 0;
-    
+
     let totalFetched = 0;
     let totalValid = 0;
     let totalIgnored = 0;
     let totalUpserted = 0;
     let totalErrors = 0;
+    let pageCount = 0;
     let timedOut = false;
     let apiError: string | null = null;
     const docTypeCounts: Record<string, number> = {};
 
     const startedAt = Date.now();
-    const TIME_BUDGET_MS = 100_000; // margen bajo el límite (~150s) de Edge Functions
+    const TIME_BUDGET_MS = 100_000;
 
-    // Process page by page - upsert immediately, don't accumulate
-    while (hasMore && pageCount < max_pages) {
-      if (Date.now() - startedAt > TIME_BUDGET_MS) {
-        console.log(`⏱️ Time budget (${TIME_BUDGET_MS}ms) exceeded, stopping pagination early`);
-        timedOut = true;
-        break;
-      }
+    // Query per SII code individually. This avoids dragging the full universe
+    // (guías de despacho + notas de venta) just to filter them out client-side,
+    // which is what was driving the 150s idle timeout.
+    outer: for (const codeSii of VALID_SII_CODES) {
+      let offset = 0;
+      let hasMore = true;
+      let codeApiError: string | null = null;
 
-      // IMPORTANT: do NOT send `codesii` here. Bsale returns count:0 silently
-      // when given a comma-separated list for some accounts. We filter by SII
-      // code post-fetch in filterValidTributaryDocs().
-      const url = new URL(`${BSALE_API_URL}/v1/documents.json`);
-      url.searchParams.set('emissiondaterange', `[${emissionDateFrom},${emissionDateTo}]`);
-      url.searchParams.set('expand', '[details,client,document_type,references,coin]');
-      url.searchParams.set('limit', limit.toString());
-      url.searchParams.set('offset', offset.toString());
+      while (hasMore && pageCount < max_pages) {
+        if (Date.now() - startedAt > TIME_BUDGET_MS) {
+          console.log(`⏱️ Time budget exceeded at codeSii=${codeSii}, stopping`);
+          timedOut = true;
+          break outer;
+        }
 
-      console.log(`Page ${pageCount + 1}: ${url.toString()}`);
+        const url = new URL(`${BSALE_API_URL}/v1/documents.json`);
+        url.searchParams.set('emissiondaterange', `[${emissionDateFrom},${emissionDateTo}]`);
+        url.searchParams.set('codesii', String(codeSii));
+        url.searchParams.set('expand', '[details,client,document_type,references,coin]');
+        url.searchParams.set('limit', String(limit));
+        url.searchParams.set('offset', String(offset));
 
-      const bsaleResponse = await fetch(url.toString(), {
-        headers: {
-          'access_token': bsaleToken,
-          'Content-Type': 'application/json',
-        },
-      });
+        console.log(`[codeSii=${codeSii}] page ${pageCount + 1}: offset=${offset}`);
 
-      if (!bsaleResponse.ok) {
-        const errorText = await bsaleResponse.text();
-        console.error('Bsale API error:', bsaleResponse.status, errorText);
-        apiError = `Bsale API error: ${bsaleResponse.status}`;
-        break;
-      }
+        let bsaleResponse: Response;
+        try {
+          bsaleResponse = await fetch(url.toString(), {
+            headers: { 'access_token': bsaleToken, 'Content-Type': 'application/json' },
+          });
+        } catch (e: any) {
+          codeApiError = `fetch failed: ${e?.message || 'network'}`;
+          console.error(`[codeSii=${codeSii}] ${codeApiError}`);
+          break;
+        }
 
-      const bsaleData = await bsaleResponse.json();
-      const docs = bsaleData.items || [];
-      
-      console.log(`Page ${pageCount + 1}: Fetched ${docs.length} documents (offset ${offset}, total: ${bsaleData.count || '?'})`);
-      
-      if (docs.length === 0) {
-        hasMore = false;
-      } else {
+        if (!bsaleResponse.ok) {
+          const errorText = await bsaleResponse.text().catch(() => '');
+          codeApiError = `Bsale API ${bsaleResponse.status}`;
+          console.error(`[codeSii=${codeSii}] ${codeApiError}: ${errorText.slice(0, 200)}`);
+          break;
+        }
+
+        const bsaleData = await bsaleResponse.json().catch(() => ({}));
+        const docs: any[] = bsaleData.items || [];
+        const totalForCode = bsaleData.count ?? 0;
+
+        console.log(`[codeSii=${codeSii}] fetched ${docs.length} (offset ${offset}/${totalForCode})`);
+
+        if (docs.length === 0) {
+          hasMore = false;
+          break;
+        }
+
         totalFetched += docs.length;
-        
-        // POST-FETCH FILTER: Security layer to validate SII codes
+
+        // Defense in depth: still filter post-fetch in case Bsale returns
+        // mixed types for some accounts.
         const { valid: validDocs, ignored: pageIgnored } = filterValidTributaryDocs(docs);
         totalIgnored += pageIgnored;
         totalValid += validDocs.length;
-        
-        console.log(`Page ${pageCount + 1}: Filtered ${validDocs.length} valid docs (ignored ${pageIgnored})`);
 
-        // Transform docs to our schema (references already included via expand=[...,references])
-        // One bad document must not abort the whole page/sync.
         const taxDocsToUpsert: any[] = [];
         for (const doc of validDocs) {
           try {
             const transformed = transformBsaleDoc(doc, user.id, batchId);
             if (!transformed) continue;
             docTypeCounts[transformed.document_type] = (docTypeCounts[transformed.document_type] || 0) + 1;
-            // Detect channel using all available signals (references, coin, client note, details)
             const detectedChannel = detectChannelFromDoc(doc);
             const referenceReason = doc.references?.items?.[0]?.reason || null;
             const coinName = doc.coin?.name || null;
@@ -433,32 +445,25 @@ Deno.serve(async (req) => {
             .from('tax_documents')
             .upsert(taxDocsToUpsert, {
               onConflict: 'user_id,external_system,external_id',
-              ignoreDuplicates: false
+              ignoreDuplicates: false,
             })
-            .select('id, detected_channel');
+            .select('id');
 
           if (upsertError) {
-            console.error(`Page ${pageCount + 1} upsert error:`, upsertError.message);
+            console.error(`[codeSii=${codeSii}] upsert error:`, upsertError.message);
             totalErrors += taxDocsToUpsert.length;
           } else {
             totalUpserted += (upserted?.length || 0);
-            const meliCount = upserted?.filter((d: any) => d.detected_channel === 'meli').length || 0;
-            console.log(`Page ${pageCount + 1}: Upserted ${upserted?.length || 0} documents (${meliCount} meli detected)`);
           }
         }
 
         offset += limit;
         pageCount++;
-        
-        if (bsaleData.count && totalFetched >= bsaleData.count) {
-          hasMore = false;
-        }
+        if (totalForCode && offset >= totalForCode) hasMore = false;
+        if (hasMore) await new Promise(r => setTimeout(r, 150));
       }
 
-      // Rate limit: 150ms delay (~6.6 req/seg, safe under Bsale's 8 req/seg)
-      if (hasMore) {
-        await new Promise(r => setTimeout(r, 150));
-      }
+      if (codeApiError && !apiError) apiError = codeApiError;
     }
 
     console.log('\n=== SYNC SUMMARY ===');
