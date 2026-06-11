@@ -32,6 +32,7 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
   const [job, setJob] = useState<Job | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const pollRef = useRef<number | null>(null);
 
   const fetchStatus = useCallback(async (jobId?: string) => {
@@ -73,6 +74,29 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
       onLog?.(`❌ Raw API ${labels[source]}: ${e?.message || "error"}`);
     } finally {
       setLaunching(false);
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!downloadUrl) return;
+    setDownloading(true);
+    try {
+      const response = await fetch(downloadUrl);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = `${source}-${period}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(objectUrl);
+      onLog?.(`✓ Raw API ${labels[source]}: descarga iniciada`);
+    } catch (e: any) {
+      onLog?.(`❌ Raw API ${labels[source]}: no se pudo descargar (${e?.message || "error"})`);
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -124,13 +148,14 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
                 ✓ {job.current_step}{sizeMB ? ` · ${sizeMB} MB` : ""}
               </p>
               {downloadUrl && (
-                <a
-                  href={downloadUrl}
-                  download={`${source}-${period}.json`}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded"
+                <button
+                  onClick={handleDownload}
+                  disabled={downloading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs font-medium rounded"
                 >
-                  <Download className="h-3.5 w-3.5" /> Descargar JSON
-                </a>
+                  {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                  Descargar JSON
+                </button>
               )}
             </div>
           )}
