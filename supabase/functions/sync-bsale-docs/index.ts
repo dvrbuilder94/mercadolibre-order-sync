@@ -562,7 +562,7 @@ Deno.serve(async (req) => {
     if (timedOut) console.log('⏱️ Stopped early due to time budget');
     if (apiError) console.log(`⚠️ Stopped due to Bsale API error: ${apiError}`);
 
-    const partial = timedOut || !!apiError;
+    const partial = timedOut || !!apiError || !!nextCursor;
 
     return new Response(
       JSON.stringify({
@@ -573,8 +573,10 @@ Deno.serve(async (req) => {
         partial,
         ...(apiError ? { error_detail: apiError } : {}),
         resync_batch: batchId,
+        ...(nextCursor ? { next_cursor: nextCursor } : {}),
         summary: {
           pages_processed: pageCount,
+          pages_processed_this_run: pagesThisRun,
           total_fetched: totalFetched,
           total_valid: totalValid,
           total_ignored: totalIgnored,
