@@ -39,10 +39,16 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
     const params: any = { source, period };
     if (jobId) params.job_id = jobId;
     const { data, error } = await supabase.functions.invoke("raw-extract-status", { body: params });
-    if (error) return;
+    if (error) {
+      onLog?.(`⚠ Raw API ${labels[source]}: status error (${error.message || "?"})`);
+      return;
+    }
     if (data?.job) setJob(data.job);
     if (data?.download_url) setDownloadUrl(data.download_url);
-  }, [source, period]);
+    else if (data?.job?.status === "done") {
+      onLog?.(`⚠ Raw API ${labels[source]}: job listo pero sin URL (file_path=${data.job.file_path || "null"})`);
+    }
+  }, [source, period, onLog]);
 
   // Load latest job for this source+period
   useEffect(() => {
@@ -152,7 +158,7 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
               <p className="text-xs text-green-700">
                 ✓ {job.current_step}{sizeMB ? ` · ${sizeMB} MB` : ""}
               </p>
-              {downloadUrl && (
+              {downloadUrl ? (
                 <button
                   onClick={handleDownload}
                   disabled={downloading}
@@ -160,6 +166,14 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
                 >
                   {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                   Descargar JSON
+                </button>
+              ) : (
+                <button
+                  onClick={() => fetchStatus(job.id)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-600 hover:bg-slate-700 text-white text-xs font-medium rounded"
+                >
+                  <RotateCw className="h-3.5 w-3.5" />
+                  Generar enlace
                 </button>
               )}
             </div>
