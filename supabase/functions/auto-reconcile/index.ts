@@ -836,6 +836,8 @@ Deno.serve(async (req) => {
     // PHASE A: CONSOLIDATED MATCHING (1:N) - NEW
     // ==========================================
     console.log('\n--- Stage 3A: Consolidated Matching (1:N) ---');
+    const consolidatedLinks: any[] = [];
+    const consolidatedCandidates: any[] = [];
 
     for (const doc of unlinkedDocs) {
       // Skip if already linked in this run
