@@ -1,12 +1,13 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { LayoutDashboard, ShoppingCart, FileText, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, ShoppingCart, FileText, GitMerge, Settings, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const links = [
   { to: "/pipeline",      label: "Pipeline",       icon: LayoutDashboard },
   { to: "/mercadolibre",  label: "MercadoLibre",   icon: ShoppingCart },
   { to: "/bsale",         label: "Bsale",          icon: FileText },
+  { to: "/conciliacion",  label: "Conciliación",   icon: GitMerge },
   { to: "/config",        label: "Conexiones",     icon: Settings },
 ];
 
