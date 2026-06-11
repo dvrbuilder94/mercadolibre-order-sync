@@ -5,6 +5,7 @@ import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck, ArrowRight, Download, Sparkles } from "lucide-react";
+import { RawApiExtractor } from "@/components/RawApiExtractor";
 
 interface Stats {
   orders: number;
