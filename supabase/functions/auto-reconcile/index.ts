@@ -364,16 +364,12 @@ Deno.serve(async (req) => {
     // Helper: Calculate match score between order and tax document (1:1)
     const calculateMatchScore = (order: any, doc: any): { score: number; breakdown: any } => {
       let score = 0;
-      const breakdown = {
-        rut: 0,
-        amount: 0,
-        date: 0,
-        name: 0
-      };
+      const breakdown = { rut: 0, amount: 0, date: 0, name: 0 };
 
-      // 1. RUT Match (+40 exact, +25 generic boleta, +20 order has no RUT (ML case))
-      const orderRut = normalizeRut(order.customer_tax_id);
-      const docRut = normalizeRut(doc.client_tax_id);
+      // Optimized: Use pre-calculated RUT if available
+      const orderRut = order._normRut !== undefined ? order._normRut : normalizeRut(order.customer_tax_id);
+      const docRut = doc._normRut !== undefined ? doc._normRut : normalizeRut(doc.client_tax_id);
+      
       if (orderRut && docRut && orderRut === docRut) {
         breakdown.rut = 40;
         score += 40;
@@ -765,11 +761,35 @@ Deno.serve(async (req) => {
     // Si un doc B2B genuino no tiene orden, simplemente queda sin vincular. Sin daño.
     const allUnlinked = tributaryDocs.filter(doc => !linkedDocIds.has(doc.id));
     const excludedB2BCount = allUnlinked.filter(doc => doc.sales_channel === 'B2B').length;
-    const unlinkedDocs = allUnlinked; // Intentar match en todos, incluyendo los clasificados B2B
-    console.log(`Found ${ordersNeedingDocs.length} orders needing documents (with money_release_date)`);
-    console.log(`Found ${allUnlinked.length} unlinked tributary documents`);
-    console.log(`  Clasificados B2B (pueden ser mal clasificados si sync corrió antes de órdenes): ${excludedB2BCount}`);
-    console.log(`  Total elegibles para match: ${unlinkedDocs.length}`);
+    const unlinkedDocs = allUnlinked; 
+    
+    // --- OPTIMIZATION: PRE-CALCULATE AND INDEX ---
+    const ordersWithMeta = ordersNeedingDocs.map(o => ({
+      ...o,
+      _normRut: normalizeRut(o.customer_tax_id),
+      _dateMs: new Date(o.order_date).getTime(),
+      _amount: o.gross_amount || o.amount || 0,
+    }));
+    
+    const ordersByRut = new Map<string, any[]>();
+    const ordersNoRut: any[] = [];
+    for (const o of ordersWithMeta) {
+      if (o._normRut) {
+        if (!ordersByRut.has(o._normRut)) ordersByRut.set(o._normRut, []);
+        ordersByRut.get(o._normRut)!.push(o);
+      } else {
+        ordersNoRut.push(o);
+      }
+    }
+    const ordersByDateAsc = [...ordersWithMeta].sort((a, b) => a._dateMs - b._dateMs);
+    
+    const docListWithMeta = unlinkedDocs.map(d => ({
+      ...d,
+      _normRut: normalizeRut(d.client_tax_id),
+      _dateMs: new Date(d.document_date).getTime(),
+    }));
+
+    console.log(`Found ${ordersNeedingDocs.length} orders needing docs, ${allUnlinked.length} unlinked docs`);
 
     let autoLinkedCount = 0;
     let autoSoftCount = 0;
@@ -791,26 +811,22 @@ Deno.serve(async (req) => {
     const ordersByOrderId = new Map<string, any>(
       ordersNeedingDocs.map(o => [String(o.order_id), o])
     );
+    const hardLinks: any[] = [];
     for (const doc of unlinkedDocs) {
       const eoi = (doc as any).external_order_id;
       if (!eoi) continue;
       const order = ordersByOrderId.get(String(eoi));
       if (!order || linkedOrderIds.has(order.id) || newlyLinkedDocIds.has(doc.id)) continue;
-      const { error: linkErr } = await supabaseAdmin
-        .from('order_tax_documents')
-        .insert({
-          order_id: order.id,
-          tax_document_id: doc.id,
-          allocated_amount: doc.total_amount,
-          created_by: user.id,
-          match_source: 'AUTO_HARD_ORDER_ID',
-          match_score: 100,
-        });
-      if (!linkErr) {
-        newlyLinkedDocIds.add(doc.id);
-        newlyLinkedOrderIds.add(order.id);
-        hardLinkedCount++;
-      }
+      hardLinks.push({
+        order_id: order.id, tax_document_id: doc.id, allocated_amount: doc.total_amount,
+        created_by: user.id, match_source: 'AUTO_HARD_ORDER_ID', match_score: 100
+      });
+      newlyLinkedDocIds.add(doc.id);
+      newlyLinkedOrderIds.add(order.id);
+      hardLinkedCount++;
+    }
+    if (hardLinks.length > 0) {
+      await supabaseAdmin.from('order_tax_documents').insert(hardLinks);
     }
     console.log(`Stage 3 Phase 0 (Hard match external_order_id): ${hardLinkedCount} linked`);
 
@@ -837,22 +853,18 @@ Deno.serve(async (req) => {
         .filter(o => !linkedOrderIds.has(o.id) && !newlyLinkedOrderIds.has(o.id));
       if (packOrders.length === 0) continue;
       let linkedAny = false;
+      const packLinks: any[] = [];
       for (const order of packOrders) {
-        const { error: linkErr } = await supabaseAdmin
-          .from('order_tax_documents')
-          .insert({
-            order_id: order.id,
-            tax_document_id: doc.id,
-            allocated_amount: order.gross_amount || order.amount,
-            created_by: user.id,
-            match_source: 'AUTO_HARD_PACK_ID',
-            match_score: 100,
-          });
-        if (!linkErr) {
-          newlyLinkedOrderIds.add(order.id);
-          packLinkedOrdersCount++;
-          linkedAny = true;
-        }
+        packLinks.push({
+          order_id: order.id, tax_document_id: doc.id, allocated_amount: order.gross_amount || order.amount,
+          created_by: user.id, match_source: 'AUTO_HARD_PACK_ID', match_score: 100
+        });
+        newlyLinkedOrderIds.add(order.id);
+        packLinkedOrdersCount++;
+        linkedAny = true;
+      }
+      if (packLinks.length > 0) {
+        await supabaseAdmin.from('order_tax_documents').insert(packLinks);
       }
       if (linkedAny) {
         newlyLinkedDocIds.add(doc.id);
@@ -887,82 +899,46 @@ Deno.serve(async (req) => {
           
           // Save first candidate for review using admin client
           for (const order of orders) {
-            const { error: candidateError } = await supabaseAdmin
-              .from('order_tax_match_candidates')
-              .upsert({
-                tax_document_id: doc.id,
-                order_id: order.id,
-                match_score: score,
-                breakdown: {
-                  ...breakdown,
-                  notes: `Consolidated match: ${orders.length} orders, ambiguous with ${breakdown.alternative_combinations} alternatives`
-                },
-                status: 'pending'
-              }, { onConflict: 'tax_document_id,order_id' });
-
-            if (!candidateError) candidatesSavedCount++;
+            consolidatedCandidates.push({
+              tax_document_id: doc.id, order_id: order.id, match_score: score,
+              breakdown: { ...breakdown, notes: `Consolidated match: ${orders.length} orders, ambiguous` },
+              status: 'pending'
+            });
+            candidatesSavedCount++;
           }
           continue;
         }
 
-        // Check score threshold for auto-link
         if (score >= 80) {
-          // Insert N records for consolidated match
-          let insertSuccess = true;
           for (const order of orders) {
-            const { error: insertError } = await supabaseAdmin
-              .from('order_tax_documents')
-              .insert({
-                order_id: order.id,
-                tax_document_id: doc.id,
-                allocated_amount: order.gross_amount || order.amount,
-                match_source: 'AUTO_CONSOLIDATED',
-                match_score: score,
-                created_by: user.id,
-                resync_batch: doc.resync_batch
-              });
-
-            if (insertError) {
-              console.error(`   ❌ Consolidated insert error for order ${order.order_id}: ${insertError.message}`);
-              insertSuccess = false;
-            } else {
-              newlyLinkedOrderIds.add(order.id);
-            }
+            consolidatedLinks.push({
+              order_id: order.id, tax_document_id: doc.id, allocated_amount: order.gross_amount || order.amount,
+              match_source: 'AUTO_CONSOLIDATED', match_score: score, created_by: user.id, resync_batch: doc.resync_batch
+            });
+            newlyLinkedOrderIds.add(order.id);
           }
-
-          if (insertSuccess) {
-            autoConsolidatedCount++;
-            autoConsolidatedOrdersCount += orders.length;
-            newlyLinkedDocIds.add(doc.id);
-            
-            console.log(`✅ Stage 3A: AUTO_CONSOLIDATED doc ${doc.document_number} → ${orders.length} orders (score: ${score})`);
-            console.log(`   Orders: ${orders.map(o => o.order_id).join(', ')}`);
-            console.log(`   Sum: $${breakdown.sum_total.toLocaleString()} = Doc: $${breakdown.document_amount.toLocaleString()}`);
-            console.log(`   Reasons: ${breakdown.matching_reasons.join(', ')}`);
-          }
+          autoConsolidatedCount++;
+          autoConsolidatedOrdersCount += orders.length;
+          newlyLinkedDocIds.add(doc.id);
         } else if (score >= 60) {
-        // Save as candidate for manual review using admin client
           for (const order of orders) {
-            const { error: candidateError } = await supabaseAdmin
-              .from('order_tax_match_candidates')
-              .upsert({
-                tax_document_id: doc.id,
-                order_id: order.id,
-                match_score: score,
-                breakdown: {
-                  ...breakdown,
-                  notes: `Consolidated match: ${orders.length} orders, score ${score} needs review`
-                },
-                status: 'pending'
-              }, { onConflict: 'tax_document_id,order_id' });
-
-            if (!candidateError) candidatesSavedCount++;
+            consolidatedCandidates.push({
+              tax_document_id: doc.id, order_id: order.id, match_score: score,
+              breakdown: { ...breakdown, notes: `Consolidated match: ${orders.length} orders, score ${score}` },
+              status: 'pending'
+            });
+            candidatesSavedCount++;
           }
-          console.log(`📋 Stage 3A: CANDIDATE consolidated doc ${doc.document_number} - ${orders.length} orders, score ${score} (saved for review)`);
         }
       }
     }
 
+    if (consolidatedLinks.length > 0) {
+      await supabaseAdmin.from('order_tax_documents').insert(consolidatedLinks);
+    }
+    if (consolidatedCandidates.length > 0) {
+      await supabaseAdmin.from('order_tax_match_candidates').upsert(consolidatedCandidates, { onConflict: 'tax_document_id,order_id' });
+    }
     console.log(`\nStage 3A Summary: ${autoConsolidatedCount} docs consolidated (${autoConsolidatedOrdersCount} orders)`);
 
     // ==========================================
@@ -970,30 +946,42 @@ Deno.serve(async (req) => {
     // ==========================================
     console.log('\n--- Stage 3B: Simple Matching (1:1) ---');
 
-    // Process each unlinked document (skip those already handled by consolidated matching)
-    for (const doc of unlinkedDocs) {
-      // Skip if already linked by consolidated matching
+    const simpleLinks: any[] = [];
+    const simpleCandidates: any[] = [];
+    
+    for (const doc of docListWithMeta) {
       if (newlyLinkedDocIds.has(doc.id)) continue;
 
-      // Find candidate orders within date window ±5 days and amount ±2% or ±$500
-      const docDate = new Date(doc.document_date);
+      const docTime = doc._dateMs;
       const docAmount = doc.total_amount || 0;
       const amountTolerance = Math.max(docAmount * 0.02, 500);
 
-      // DEBUG: Log for specific documents
-      const isDebugDoc = ['5461', '5462'].includes(doc.document_number);
-      if (isDebugDoc) {
-        console.log(`\n🔍 DEBUG Doc ${doc.document_number}: RUT=${doc.client_tax_id}, Amount=${docAmount}, Date=${doc.document_date}`);
-        console.log(`   Total orders to check: ${ordersNeedingDocs.length}`);
+      // OPTIMIZED: Use binary search for +/- 5 days
+      const windowMs = 5 * 24 * 60 * 60 * 1000;
+      const startTime = docTime - windowMs;
+      const endTime = docTime + windowMs;
+      
+      let startIdx = 0, low = 0, high = ordersByDateAsc.length;
+      while (low < high) {
+        let mid = (low + high) >>> 1;
+        if (ordersByDateAsc[mid]._dateMs < startTime) low = mid + 1;
+        else high = mid;
       }
+      startIdx = low;
 
-      const candidates = ordersNeedingDocs
-        .filter(order => !linkedOrderIds.has(order.id) && !newlyLinkedOrderIds.has(order.id)) // Exclude linked orders
-        .map(order => {
-          const orderDate = new Date(order.order_date);
-          const daysDiff = Math.abs((docDate.getTime() - orderDate.getTime()) / (24 * 60 * 60 * 1000));
-          const orderAmount = order.gross_amount || order.amount || 0;
-          const amountDiff = Math.abs(orderAmount - docAmount);
+      const candidates = [];
+      for (let i = startIdx; i < ordersByDateAsc.length; i++) {
+        const order = ordersByDateAsc[i];
+        if (order._dateMs > endTime) break;
+        if (linkedOrderIds.has(order.id) || newlyLinkedOrderIds.has(order.id)) continue;
+
+        const amountDiff = Math.abs(order._amount - docAmount);
+        if (amountDiff > amountTolerance) continue;
+
+        const { score, breakdown } = calculateMatchScore(order, doc);
+        candidates.push({ order, score, breakdown });
+      }
+      candidates.sort((a, b) => b.score - a.score);
           
           // DEBUG: Log RUT matches for specific documents
           if (isDebugDoc && normalizeRut(order.customer_tax_id) === normalizeRut(doc.client_tax_id)) {
@@ -1037,53 +1025,23 @@ Deno.serve(async (req) => {
       const candidates85Plus = candidates.filter(c => c.score >= 85);
       const candidates70Plus = candidates.filter(c => c.score >= 70);
 
-      // Rule 1: If ONLY ONE candidate has score ≥85 → AUTO-LINK
       if (bestCandidate.score >= 85 && candidates85Plus.length === 1) {
-        const { error: insertError } = await supabaseAdmin
-          .from('order_tax_documents')
-          .insert({
-            order_id: bestCandidate.order.id,
-            tax_document_id: doc.id,
-            allocated_amount: doc.total_amount,
-            match_source: 'AUTO',
-            match_score: bestCandidate.score,
-            created_by: user.id,
-            resync_batch: doc.resync_batch  // Heredar batch del documento para trazabilidad
-          });
-
-        if (!insertError) {
-          autoLinkedCount++;
-          newlyLinkedDocIds.add(doc.id);
-          newlyLinkedOrderIds.add(bestCandidate.order.id);
-          console.log(`✅ Stage 3: AUTO-LINKED doc ${doc.document_number} → order ${bestCandidate.order.order_id} (score: ${bestCandidate.score})`);
-          console.log(`   Breakdown: RUT=${bestCandidate.breakdown.rut}, Amount=${bestCandidate.breakdown.amount}, Date=${bestCandidate.breakdown.date}, Name=${bestCandidate.breakdown.name}`);
-        } else {
-          console.error(`   ❌ Insert error: ${insertError.message}`);
-        }
+        simpleLinks.push({
+          order_id: bestCandidate.order.id, tax_document_id: doc.id, allocated_amount: doc.total_amount,
+          match_source: 'AUTO', match_score: bestCandidate.score, created_by: user.id, resync_batch: doc.resync_batch
+        });
+        autoLinkedCount++;
+        newlyLinkedDocIds.add(doc.id);
+        newlyLinkedOrderIds.add(bestCandidate.order.id);
       }
-      // Rule 2: If ONLY ONE candidate has score 70-84 → AUTO_SOFT
       else if (bestCandidate.score >= 70 && candidates70Plus.length === 1) {
-        const { error: insertError } = await supabaseAdmin
-          .from('order_tax_documents')
-          .insert({
-            order_id: bestCandidate.order.id,
-            tax_document_id: doc.id,
-            allocated_amount: doc.total_amount,
-            match_source: 'AUTO_SOFT',
-            match_score: bestCandidate.score,
-            created_by: user.id,
-            resync_batch: doc.resync_batch  // Heredar batch del documento para trazabilidad
-          });
-
-        if (!insertError) {
-          autoSoftCount++;
-          newlyLinkedDocIds.add(doc.id);
-          newlyLinkedOrderIds.add(bestCandidate.order.id);
-          console.log(`✅ Stage 3: AUTO_SOFT doc ${doc.document_number} → order ${bestCandidate.order.order_id} (score: ${bestCandidate.score})`);
-          console.log(`   Breakdown: RUT=${bestCandidate.breakdown.rut}, Amount=${bestCandidate.breakdown.amount}, Date=${bestCandidate.breakdown.date}, Name=${bestCandidate.breakdown.name}`);
-        } else {
-          console.error(`   ❌ Insert error: ${insertError.message}`);
-        }
+        simpleLinks.push({
+          order_id: bestCandidate.order.id, tax_document_id: doc.id, allocated_amount: doc.total_amount,
+          match_source: 'AUTO_SOFT', match_score: bestCandidate.score, created_by: user.id, resync_batch: doc.resync_batch
+        });
+        autoSoftCount++;
+        newlyLinkedDocIds.add(doc.id);
+        newlyLinkedOrderIds.add(bestCandidate.order.id);
       }
       // Rule 3: If multiple candidates ≥60 → Check for PERFECT TIE N:N scenario
       else if (highScoreCandidates.length > 1) {
@@ -1121,33 +1079,16 @@ Deno.serve(async (req) => {
               new Date(b.created_at || b.order_date).getTime()
             );
 
-            // Link 1:1 by position using admin client
-            let tieBreakSuccess = true;
             for (let i = 0; i < sortedDocs.length; i++) {
               const tieDoc = sortedDocs[i];
               const tieOrder = sortedOrders[i];
-              
-              const { error: insertError } = await supabaseAdmin
-                .from('order_tax_documents')
-                .insert({
-                  order_id: tieOrder.id,
-                  tax_document_id: tieDoc.id,
-                  allocated_amount: tieDoc.total_amount,
-                  match_source: 'AUTO_TIE_BREAK',
-                  match_score: tieScore,
-                  created_by: user.id,
-                  resync_batch: tieDoc.resync_batch
-                });
-
-              if (insertError) {
-                console.error(`   ❌ Tie-break insert error for doc ${tieDoc.document_number} → order ${tieOrder.order_id}: ${insertError.message}`);
-                tieBreakSuccess = false;
-              } else {
-                newlyLinkedDocIds.add(tieDoc.id);
-                newlyLinkedOrderIds.add(tieOrder.id);
-                autoLinkedCount++;
-                console.log(`   ✅ TIE_BREAK: doc ${tieDoc.document_number} → order ${tieOrder.order_id} (score: ${tieScore})`);
-              }
+              simpleLinks.push({
+                order_id: tieOrder.id, tax_document_id: tieDoc.id, allocated_amount: tieDoc.total_amount,
+                match_source: 'AUTO_TIE_BREAK', match_score: tieScore, created_by: user.id, resync_batch: tieDoc.resync_batch
+              });
+              newlyLinkedDocIds.add(tieDoc.id);
+              newlyLinkedOrderIds.add(tieOrder.id);
+              autoLinkedCount++;
             }
 
             if (tieBreakSuccess) {
@@ -1160,28 +1101,13 @@ Deno.serve(async (req) => {
         // Fallback: Save as AMBIGUOUS candidates for manual review
         ambiguousCount++;
         
-        // Save all candidates with score ≥60 to match_candidates table using admin client
         for (const candidate of highScoreCandidates) {
-          const breakdown = {
-            ...candidate.breakdown,
-            notes: `Score ${candidate.score}: RUT=${candidate.breakdown.rut}, Amount=${candidate.breakdown.amount}, Date=${candidate.breakdown.date}, Name=${candidate.breakdown.name}`
-          };
-          
-          const { error: candidateError } = await supabaseAdmin
-            .from('order_tax_match_candidates')
-            .upsert({
-              tax_document_id: doc.id,
-              order_id: candidate.order.id,
-              match_score: candidate.score,
-              breakdown,
-              status: 'pending'
-            }, { onConflict: 'tax_document_id,order_id' });
-
-          if (!candidateError) {
-            candidatesSavedCount++;
-          } else if (!candidateError.message?.includes('duplicate')) {
-            console.error(`   ⚠️ Candidate save error: ${candidateError.message}`);
-          }
+          simpleCandidates.push({
+            tax_document_id: doc.id, order_id: candidate.order.id, match_score: candidate.score,
+            breakdown: { ...candidate.breakdown, notes: `Score ${candidate.score}` },
+            status: 'pending'
+          });
+          candidatesSavedCount++;
         }
         
         ambiguousCases.push({
@@ -1216,25 +1142,22 @@ Deno.serve(async (req) => {
           notes: `Score ${bestCandidate.score}: Single candidate 60-69, needs manual review`
         };
         
-        const { error: candidateError } = await supabaseAdmin
-          .from('order_tax_match_candidates')
-          .upsert({
-            tax_document_id: doc.id,
-            order_id: bestCandidate.order.id,
-            match_score: bestCandidate.score,
-            breakdown,
-            status: 'pending'
-          }, { onConflict: 'tax_document_id,order_id' });
-
-        if (!candidateError) {
-          candidatesSavedCount++;
-          console.log(`📋 Stage 3: CANDIDATE doc ${doc.document_number} - score ${bestCandidate.score} (saved for review)`);
-        }
+        simpleCandidates.push({
+          tax_document_id: doc.id, order_id: bestCandidate.order.id, match_score: bestCandidate.score,
+          breakdown, status: 'pending'
+        });
+        candidatesSavedCount++;
         ignoredCount++;
       }
     }
 
-    stage3 = autoLinkedCount + autoSoftCount + autoConsolidatedCount + packLinkedDocsCount;
+    if (simpleLinks.length > 0) {
+      await supabaseAdmin.from('order_tax_documents').insert(simpleLinks);
+    }
+    if (simpleCandidates.length > 0) {
+      await supabaseAdmin.from('order_tax_match_candidates').upsert(simpleCandidates, { onConflict: 'tax_document_id,order_id' });
+    }
+    stage3 = autoLinkedCount + autoSoftCount + autoConsolidatedCount + packLinkedDocsCount + hardLinkedCount;
 
     console.log(`\nStage 3 Summary:`);
     console.log(`  Auto-consolidated (1:N): ${autoConsolidatedCount} docs (${autoConsolidatedOrdersCount} orders)`);
@@ -1260,35 +1183,26 @@ Deno.serve(async (req) => {
 
     console.log(`Found ${refundItems?.length || 0} refund items`);
 
-    let refundsProcessed = 0;
-    for (const refund of refundItems || []) {
-      if (!refund.order_id || !refund.orders) continue;
+    const { data: allNCs } = await supabaseAdmin
+      .from('tax_documents')
+      .select('original_tax_document_id')
+      .eq('document_type', 'NC');
+    
+    const ncOriginalIds = new Set(allNCs?.map(nc => nc.original_tax_document_id).filter(Boolean));
+    const refundsToFlag = (refundItems || []).filter(r => r.order_id && !ncOriginalIds.has(r.order_id));
 
-      // Check if there's a matching NC for this order
-      const { data: creditNote } = await supabase
-        .from('tax_documents')
-        .select('id')
-        .eq('document_type', 'NC')
-        .eq('original_tax_document_id', refund.order_id)
-        .maybeSingle();
-
-      if (!creditNote) {
-        // Flag as needs manual review
-        await supabase
-          .from('settlement_items')
-          .update({ 
-            recon_status: 'needs_nc',
-            raw_data: {
-              ...(refund.raw_data || {}),
-              reconciliation_note: 'Refund without matching credit note - requires manual review'
-            }
-          })
-          .eq('id', refund.id);
-
-        stage4++;
-        refundsProcessed++;
-        console.log(`⚠️ Stage 4: Flagged refund ${refund.id} as needing NC`);
-      }
+    for (const refund of refundsToFlag) {
+      await supabaseAdmin
+        .from('settlement_items')
+        .update({ 
+          recon_status: 'needs_nc',
+          raw_data: {
+            ...(refund.raw_data || {}),
+            reconciliation_note: 'Refund without matching credit note - requires manual review'
+          }
+        })
+        .eq('id', refund.id);
+      stage4++;
     }
 
     console.log('\n=== AUTO-RECONCILE SUMMARY ===');
