@@ -816,6 +816,54 @@ export type Database = {
         }
         Relationships: []
       }
+      raw_extraction_jobs: {
+        Row: {
+          created_at: string
+          current_step: string | null
+          error_message: string | null
+          file_path: string | null
+          file_size_bytes: number | null
+          id: string
+          period: string
+          progress: number
+          source: string
+          status: string
+          total: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          current_step?: string | null
+          error_message?: string | null
+          file_path?: string | null
+          file_size_bytes?: number | null
+          id?: string
+          period: string
+          progress?: number
+          source: string
+          status?: string
+          total?: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          current_step?: string | null
+          error_message?: string | null
+          file_path?: string | null
+          file_size_bytes?: number | null
+          id?: string
+          period?: string
+          progress?: number
+          source?: string
+          status?: string
+          total?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       reconciliations: {
         Row: {
           confidence_score: number | null
