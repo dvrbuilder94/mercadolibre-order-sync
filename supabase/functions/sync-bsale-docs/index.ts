@@ -15,14 +15,83 @@ function splitRut(rut: string | null | undefined): { body: string | null; dv: st
 
 // Valid SII codes for tributary documents
 const VALID_SII_CODES = [33, 34, 39, 41, 61, 56];
+const FETCH_TIMEOUT_MS = 20_000;
+const TIME_BUDGET_MS = 85_000;
+const MAX_PAGES_PER_INVOCATION = 20;
+
+function normalizeCodeSii(codeSii: string | number | null | undefined): number | null {
+  if (codeSii === null || codeSii === undefined || codeSii === '') return null;
+  const normalized = Number(codeSii);
+  return Number.isFinite(normalized) ? normalized : null;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchBsalePage(url: URL, bsaleToken: string) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url.toString(), {
+        headers: { 'access_token': bsaleToken, 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      });
+
+      const rawText = await response.text().catch(() => '');
+
+      if (!response.ok) {
+        const error = `Bsale API ${response.status}`;
+        const retryable = response.status >= 500 || response.status === 429 || response.status === 408;
+        if (retryable && attempt < 2) {
+          console.warn(`${error}, retry ${attempt}/2`);
+          await sleep(500 * attempt);
+          continue;
+        }
+        return { ok: false as const, error, detail: rawText.slice(0, 200) };
+      }
+
+      if (!rawText) {
+        return { ok: true as const, data: {} };
+      }
+
+      try {
+        return { ok: true as const, data: JSON.parse(rawText) };
+      } catch {
+        return {
+          ok: false as const,
+          error: 'Bsale API invalid JSON',
+          detail: rawText.slice(0, 200),
+        };
+      }
+    } catch (e: any) {
+      const error = e?.name === 'AbortError'
+        ? `Bsale fetch timeout (${FETCH_TIMEOUT_MS}ms)`
+        : `fetch failed: ${e?.message || 'network'}`;
+
+      if (attempt < 2) {
+        console.warn(`${error}, retry ${attempt}/2`);
+        await sleep(500 * attempt);
+        continue;
+      }
+
+      return { ok: false as const, error, detail: '' };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  return { ok: false as const, error: 'Bsale fetch failed', detail: '' };
+}
 
 // Map Bsale document type to our enum - STRICT: returns null if not valid SII code
 function mapBsaleDocType(codeSii: number | undefined): 'boleta' | 'factura' | 'nota_credito' | 'nota_debito' | 'factura_exenta' | null {
-  if (codeSii === 33) return 'factura';
-  if (codeSii === 34) return 'factura_exenta';
-  if (codeSii === 39 || codeSii === 41) return 'boleta';
-  if (codeSii === 61) return 'nota_credito';
-  if (codeSii === 56) return 'nota_debito';
+  const normalized = normalizeCodeSii(codeSii);
+  if (normalized === 33) return 'factura';
+  if (normalized === 34) return 'factura_exenta';
+  if (normalized === 39 || normalized === 41) return 'boleta';
+  if (normalized === 61) return 'nota_credito';
+  if (normalized === 56) return 'nota_debito';
   
   // STRICT: No fallback - only valid codeSii accepted
   return null;
@@ -132,7 +201,7 @@ function extractExternalOrderId(doc: any): string | null {
 
 // Transform a Bsale document to our tax_documents schema
 function transformBsaleDoc(doc: any, userId: string, batchId: string) {
-  const codeSii = doc.document_type?.codeSii;
+  const codeSii = normalizeCodeSii(doc.document_type?.codeSii);
   const docType = mapBsaleDocType(codeSii);
   
   // STRICT: Skip if not a valid tributary document
@@ -203,7 +272,7 @@ function transformBsaleDoc(doc: any, userId: string, batchId: string) {
 // Filter documents to only valid tributary types (post-fetch security)
 function filterValidTributaryDocs(docs: any[]): { valid: any[], ignored: number } {
   const validDocs = docs.filter((doc: any) => {
-    const codeSii = doc.document_type?.codeSii;
+    const codeSii = normalizeCodeSii(doc.document_type?.codeSii);
     const typeName = (doc.document_type?.name || '').toUpperCase();
     
     // Explicitly exclude dispatch guides and sales notes
@@ -269,6 +338,8 @@ Deno.serve(async (req) => {
       date_to = null,
       is_resync = false,
       resync_batch = null,
+      start_code_sii = null,
+      start_offset = 0,
       reclassify_b2b = false  // If true: fix existing B2B docs to MARKETPLACE (no new sync)
     } = body;
 
@@ -355,13 +426,22 @@ Deno.serve(async (req) => {
     const docTypeCounts: Record<string, number> = {};
 
     const startedAt = Date.now();
-    const TIME_BUDGET_MS = 100_000;
+    const normalizedStartCode = normalizeCodeSii(start_code_sii);
+    const normalizedStartOffset = Number.isFinite(Number(start_offset)) && Number(start_offset) >= 0
+      ? Number(start_offset)
+      : 0;
+    const maxPagesThisRun = Math.min(Number(max_pages) || MAX_PAGES_PER_INVOCATION, MAX_PAGES_PER_INVOCATION);
+    let nextCursor: { code_sii: number; offset: number } | null = null;
+    let pagesThisRun = 0;
 
     // Query per SII code individually. This avoids dragging the full universe
     // (guías de despacho + notas de venta) just to filter them out client-side,
     // which is what was driving the 150s idle timeout.
-    outer: for (const codeSii of VALID_SII_CODES) {
-      let offset = 0;
+    outer: for (let codeIndex = 0; codeIndex < VALID_SII_CODES.length; codeIndex++) {
+      const codeSii = VALID_SII_CODES[codeIndex];
+      if (normalizedStartCode !== null && codeSii < normalizedStartCode) continue;
+
+      let offset = codeSii === normalizedStartCode ? normalizedStartOffset : 0;
       let hasMore = true;
       let codeApiError: string | null = null;
 
@@ -369,6 +449,14 @@ Deno.serve(async (req) => {
         if (Date.now() - startedAt > TIME_BUDGET_MS) {
           console.log(`⏱️ Time budget exceeded at codeSii=${codeSii}, stopping`);
           timedOut = true;
+          nextCursor = { code_sii: codeSii, offset };
+          break outer;
+        }
+
+        if (pagesThisRun >= maxPagesThisRun) {
+          console.log(`⏭️ Invocation page cap reached at codeSii=${codeSii}, stopping`);
+          timedOut = true;
+          nextCursor = { code_sii: codeSii, offset };
           break outer;
         }
 
@@ -381,25 +469,15 @@ Deno.serve(async (req) => {
 
         console.log(`[codeSii=${codeSii}] page ${pageCount + 1}: offset=${offset}`);
 
-        let bsaleResponse: Response;
-        try {
-          bsaleResponse = await fetch(url.toString(), {
-            headers: { 'access_token': bsaleToken, 'Content-Type': 'application/json' },
-          });
-        } catch (e: any) {
-          codeApiError = `fetch failed: ${e?.message || 'network'}`;
-          console.error(`[codeSii=${codeSii}] ${codeApiError}`);
+        const pageResult = await fetchBsalePage(url, bsaleToken);
+        if (!pageResult.ok) {
+          codeApiError = pageResult.error;
+          console.error(`[codeSii=${codeSii}] ${codeApiError}: ${pageResult.detail}`);
+          nextCursor = { code_sii: codeSii, offset };
           break;
         }
 
-        if (!bsaleResponse.ok) {
-          const errorText = await bsaleResponse.text().catch(() => '');
-          codeApiError = `Bsale API ${bsaleResponse.status}`;
-          console.error(`[codeSii=${codeSii}] ${codeApiError}: ${errorText.slice(0, 200)}`);
-          break;
-        }
-
-        const bsaleData = await bsaleResponse.json().catch(() => ({}));
+        const bsaleData = pageResult.data || {};
         const docs: any[] = bsaleData.items || [];
         const totalForCode = bsaleData.count ?? 0;
 
@@ -441,26 +519,33 @@ Deno.serve(async (req) => {
         }
 
         if (taxDocsToUpsert.length > 0) {
-          const { data: upserted, error: upsertError } = await supabaseClient
+            const { error: upsertError } = await supabaseClient
             .from('tax_documents')
             .upsert(taxDocsToUpsert, {
               onConflict: 'user_id,external_system,external_id',
               ignoreDuplicates: false,
-            })
-            .select('id');
+            });
 
           if (upsertError) {
             console.error(`[codeSii=${codeSii}] upsert error:`, upsertError.message);
             totalErrors += taxDocsToUpsert.length;
           } else {
-            totalUpserted += (upserted?.length || 0);
+            totalUpserted += taxDocsToUpsert.length;
           }
         }
 
         offset += limit;
         pageCount++;
+        pagesThisRun++;
         if (totalForCode && offset >= totalForCode) hasMore = false;
-        if (hasMore) await new Promise(r => setTimeout(r, 150));
+        if (hasMore) {
+          nextCursor = { code_sii: codeSii, offset };
+          await sleep(150);
+        } else if (codeIndex + 1 < VALID_SII_CODES.length) {
+          nextCursor = { code_sii: VALID_SII_CODES[codeIndex + 1], offset: 0 };
+        } else {
+          nextCursor = null;
+        }
       }
 
       if (codeApiError && !apiError) apiError = codeApiError;
@@ -477,7 +562,7 @@ Deno.serve(async (req) => {
     if (timedOut) console.log('⏱️ Stopped early due to time budget');
     if (apiError) console.log(`⚠️ Stopped due to Bsale API error: ${apiError}`);
 
-    const partial = timedOut || !!apiError;
+    const partial = timedOut || !!apiError || !!nextCursor;
 
     return new Response(
       JSON.stringify({
@@ -488,8 +573,10 @@ Deno.serve(async (req) => {
         partial,
         ...(apiError ? { error_detail: apiError } : {}),
         resync_batch: batchId,
+        ...(nextCursor ? { next_cursor: nextCursor } : {}),
         summary: {
           pages_processed: pageCount,
+          pages_processed_this_run: pagesThisRun,
           total_fetched: totalFetched,
           total_valid: totalValid,
           total_ignored: totalIgnored,

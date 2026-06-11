@@ -181,17 +181,48 @@ export default function Pipeline() {
     addLog(`› Sincronizando Bsale (${periodLabel(period)})...`);
     try {
       const { from: dateFrom, to: dateTo } = chileMonthUnixRange(period);
-      const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
-        body: { date_from: dateFrom, date_to: dateTo },
-      });
-      if (error) throw error;
-      const total = data?.summary?.total_upserted ?? 0;
-      const byType = data?.summary?.by_type
-        ? Object.entries(data.summary.by_type).map(([k, v]) => `${v} ${k}`).join(" · ")
+      let cursor: { code_sii: number; offset: number } | null = null;
+      let batchId: string | null = null;
+      let totalUpserted = 0;
+      let totalByType: Record<string, number> = {};
+      let partialError: string | null = null;
+      let rounds = 0;
+
+      do {
+        rounds += 1;
+        const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
+          body: {
+            date_from: dateFrom,
+            date_to: dateTo,
+            max_pages: 20,
+            ...(batchId ? { resync_batch: batchId } : {}),
+            ...(cursor ? { start_code_sii: cursor.code_sii, start_offset: cursor.offset } : {}),
+          },
+        });
+        if (error) throw error;
+
+        batchId = data?.resync_batch ?? batchId;
+        totalUpserted += data?.summary?.total_upserted ?? 0;
+        if (data?.summary?.by_type) {
+          for (const [k, v] of Object.entries(data.summary.by_type as Record<string, number>)) {
+            totalByType[k] = (totalByType[k] || 0) + Number(v || 0);
+          }
+        }
+
+        if (data?.error_detail) partialError = data.error_detail;
+        cursor = data?.next_cursor ?? null;
+        if (cursor) {
+          addLog(`› Bsale continúa (${cursor.code_sii}/${cursor.offset})...`);
+        }
+        if (!data?.partial) break;
+      } while (cursor && rounds < 8);
+
+      const byType = Object.keys(totalByType).length > 0
+        ? Object.entries(totalByType).map(([k, v]) => `${v} ${k}`).join(" · ")
         : "";
-      addLog(`✅ Bsale: ${total} documentos${byType ? ` (${byType})` : ""}`);
-      if (data?.partial) {
-        addLog(`⚠️ Sincronización Bsale parcial${data?.error_detail ? ` (${data.error_detail})` : ""}, volvé a tocar "Sincronizar Bsale"`);
+      addLog(`✅ Bsale: ${totalUpserted} documentos${byType ? ` (${byType})` : ""}`);
+      if (cursor || partialError) {
+        addLog(`⚠️ Sincronización Bsale parcial${partialError ? ` (${partialError})` : ""}, volvé a tocar "Sincronizar Bsale"`);
       }
       fetchStats();
     } catch (e: any) {
