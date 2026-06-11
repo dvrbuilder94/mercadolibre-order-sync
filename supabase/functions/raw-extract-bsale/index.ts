@@ -56,6 +56,96 @@ function chainSelf(jobId: string) {
   }).catch((e) => console.error('chainSelf failed', e));
 }
 
+async function uploadStreamToStorage(path: string, stream: ReadableStream<Uint8Array>) {
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  const url = `${Deno.env.get('SUPABASE_URL')}/storage/v1/object/raw-extractions/${path}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${serviceKey}`,
+      apikey: serviceKey,
+      'x-upsert': 'true',
+      'Content-Type': 'application/json',
+    },
+    body: stream,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Storage final: ${response.status} ${await response.text()}`);
+  }
+}
+
+function createBsalePayloadStream(params: {
+  job: any;
+  checkpoint: any;
+  sorted: Array<{ name: string }>;
+  admin: any;
+  tmpDir: string;
+}) {
+  const { job, checkpoint, sorted, admin, tmpDir } = params;
+  const encoder = new TextEncoder();
+  const stats = { bytes: 0, docs: 0 };
+  const seen = new Set<string>();
+  const generatedAt = new Date().toISOString();
+
+  const encode = (chunk: string) => {
+    const bytes = encoder.encode(chunk);
+    stats.bytes += bytes.byteLength;
+    return bytes;
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        controller.enqueue(encode(
+          '{' +
+          `"source":${JSON.stringify('bsale')},` +
+          `"period":${JSON.stringify(job.period)},` +
+          `"generated_at":${JSON.stringify(generatedAt)},` +
+          `"bsale_account":${JSON.stringify(checkpoint.account_name ?? null)},` +
+          `"date_range_unix":${JSON.stringify(checkpoint.date_range_unix ?? null)},` +
+          `"counts":${JSON.stringify({ fetched_total: checkpoint.total_docs || 0, by_code_sii: checkpoint.by_type || {} })},` +
+          '"documents":['
+        ));
+
+        let first = true;
+
+        for (const f of sorted) {
+          const { data: blob, error } = await admin.storage.from('raw-extractions').download(`${tmpDir}/${f.name}`);
+          if (error || !blob) continue;
+
+          let arr: any[] = [];
+          try {
+            const parsed = JSON.parse(await blob.text());
+            if (Array.isArray(parsed)) arr = parsed;
+          } catch (_) {
+            continue;
+          }
+
+          for (const doc of arr) {
+            const key = String(doc?.id ?? '');
+            if (key) {
+              if (seen.has(key)) continue;
+              seen.add(key);
+            }
+
+            controller.enqueue(encode(`${first ? '' : ','}${JSON.stringify(doc)}`));
+            first = false;
+            stats.docs += 1;
+          }
+        }
+
+        controller.enqueue(encode(']}'));
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+
+  return { stream, stats };
+}
+
 async function processJob(jobId: string, admin: any) {
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
@@ -172,49 +262,14 @@ async function processJob(jobId: string, admin: any) {
     }
 
     if (checkpoint.phase === 'assemble') {
-      await admin.from('raw_extraction_jobs').update({ current_step: 'Ensamblando JSON final' }).eq('id', jobId);
+      await admin.from('raw_extraction_jobs').update({ current_step: 'Generando archivo final' }).eq('id', jobId);
 
       const { data: list, error: listErr } = await admin.storage.from('raw-extractions').list(tmpDir, { limit: 10000 });
       if (listErr) throw new Error(`List tmp: ${listErr.message}`);
-
-      const allDocs: any[] = [];
       const sorted = (list || []).slice().sort((a: any, b: any) => a.name.localeCompare(b.name));
-      for (const f of sorted) {
-        const { data: blob, error } = await admin.storage.from('raw-extractions').download(`${tmpDir}/${f.name}`);
-        if (error || !blob) continue;
-        try {
-          const arr = JSON.parse(await blob.text());
-          if (Array.isArray(arr)) allDocs.push(...arr);
-        } catch (_) {}
-      }
-
-      // Dedupe by id
-      const seen = new Set<string>();
-      const docs = allDocs.filter((d: any) => {
-        const k = String(d?.id ?? '');
-        if (!k || seen.has(k)) return false;
-        seen.add(k);
-        return true;
-      });
-
-      const payload = {
-        source: 'bsale',
-        period: job.period,
-        generated_at: new Date().toISOString(),
-        bsale_account: checkpoint.account_name,
-        date_range_unix: checkpoint.date_range_unix,
-        counts: { total: docs.length, by_code_sii: checkpoint.by_type },
-        documents: docs,
-      };
-      const json = JSON.stringify(payload);
       const filePath = `${job.user_id}/bsale-${job.period}-${jobId}.json`;
-      const { error: upErr } = await admin.storage
-        .from('raw-extractions')
-        .upload(filePath, new Blob([json], { type: 'application/json' }), {
-          contentType: 'application/json',
-          upsert: true,
-        });
-      if (upErr) throw new Error(`Storage final: ${upErr.message}`);
+      const { stream, stats } = createBsalePayloadStream({ job, checkpoint, sorted, admin, tmpDir });
+      await uploadStreamToStorage(filePath, stream);
 
       // Cleanup tmp
       const toDelete = sorted.map((f: any) => `${tmpDir}/${f.name}`);
@@ -222,11 +277,11 @@ async function processJob(jobId: string, admin: any) {
 
       await admin.from('raw_extraction_jobs').update({
         status: 'done',
-        current_step: `Listo: ${docs.length} documentos`,
-        progress: docs.length,
-        total: docs.length,
+        current_step: `Listo: ${stats.docs} documentos`,
+        progress: stats.docs,
+        total: stats.docs,
         file_path: filePath,
-        file_size_bytes: json.length,
+        file_size_bytes: stats.bytes,
         checkpoint,
       }).eq('id', jobId);
     }
