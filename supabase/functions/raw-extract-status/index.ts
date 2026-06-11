@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
     let q = admin.from('raw_extraction_jobs')
-      .select('id, source, period, status, current_step, progress, total, file_path, file_size_bytes, error_message, created_at, updated_at')
+      .select('id, source, period, status, current_step, progress, total, file_path, file_size_bytes, error_message, created_at, updated_at, checkpoint, chunks_count')
       .eq('user_id', user.id);
     if (jobId) q = q.eq('id', jobId);
     if (source) q = q.eq('source', source);
@@ -51,6 +51,12 @@ Deno.serve(async (req) => {
         .from('raw-extractions')
         .createSignedUrl(job.file_path, 60 * 60 * 24);
       download_url = signed?.signedUrl || null;
+    } else if (
+      job.source === 'bsale' &&
+      (job?.checkpoint?.phase === 'assemble' || job?.checkpoint?.phase === 'assemble_fallback') &&
+      Number(job?.chunks_count || 0) > 0
+    ) {
+      download_url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/raw-extract-download?job_id=${encodeURIComponent(job.id)}`;
     }
 
     // Auto-resume: si el job lleva > 60s sin avanzar, dispara la función con resume.

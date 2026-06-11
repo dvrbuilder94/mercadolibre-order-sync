@@ -9,6 +9,12 @@ const corsHeaders = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const VALID_SII_CODES = [33, 34, 39, 41, 61, 56];
 const TIME_BUDGET_MS = 180_000;
+const storageHttpClient = Deno.createHttpClient({ http1: true, http2: false });
+
+function isStorageProtocolUploadError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return message.includes('http2 error') || message.includes('unspecific protocol error');
+}
 
 function chileWallToUnix(y: number, mo: number, d: number, h: number, mi: number, s: number): number {
   let ts = Date.UTC(y, mo - 1, d, h, mi, s);
@@ -56,23 +62,38 @@ function chainSelf(jobId: string) {
   }).catch((e) => console.error('chainSelf failed', e));
 }
 
-async function uploadStreamToStorage(path: string, stream: ReadableStream<Uint8Array>) {
+async function uploadStreamToStorage(path: string, buildStream: () => ReadableStream<Uint8Array>) {
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const url = `${Deno.env.get('SUPABASE_URL')}/storage/v1/object/raw-extractions/${path}`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${serviceKey}`,
-      apikey: serviceKey,
-      'x-upsert': 'true',
-      'Content-Type': 'application/json',
-    },
-    body: stream,
-  });
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    throw new Error(`Storage final: ${response.status} ${await response.text()}`);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${serviceKey}`,
+          apikey: serviceKey,
+          'x-upsert': 'true',
+          'Content-Type': 'application/json',
+        },
+        body: buildStream(),
+        client: storageHttpClient,
+        duplex: 'half',
+      } as RequestInit & { client: Deno.HttpClient; duplex: 'half' });
+
+      if (response.ok) return;
+
+      lastError = new Error(`Storage final: ${response.status} ${await response.text()}`);
+    } catch (error: any) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+
+    console.warn(`uploadStreamToStorage retry ${attempt}/3`, lastError?.message || 'unknown');
+    if (attempt < 3) await sleep(1200 * attempt);
   }
+
+  throw lastError || new Error('Storage final: upload failed');
 }
 
 function createBsalePayloadStream(params: {
@@ -268,8 +289,29 @@ async function processJob(jobId: string, admin: any) {
       if (listErr) throw new Error(`List tmp: ${listErr.message}`);
       const sorted = (list || []).slice().sort((a: any, b: any) => a.name.localeCompare(b.name));
       const filePath = `${job.user_id}/bsale-${job.period}-${jobId}.json`;
-      const { stream, stats } = createBsalePayloadStream({ job, checkpoint, sorted, admin, tmpDir });
-      await uploadStreamToStorage(filePath, stream);
+      let stats = { bytes: 0, docs: 0 };
+      try {
+        await uploadStreamToStorage(filePath, () => {
+          const payload = createBsalePayloadStream({ job, checkpoint, sorted, admin, tmpDir });
+          stats = payload.stats;
+          return payload.stream;
+        });
+      } catch (uploadError) {
+        if (!isStorageProtocolUploadError(uploadError)) throw uploadError;
+
+        checkpoint.phase = 'assemble_fallback';
+        await admin.from('raw_extraction_jobs').update({
+          status: 'done',
+          current_step: `Listo para descarga directa: ${checkpoint.total_docs} documentos`,
+          progress: checkpoint.total_docs,
+          total: checkpoint.total_docs,
+          file_path: null,
+          file_size_bytes: null,
+          error_message: null,
+          checkpoint,
+        }).eq('id', jobId);
+        return;
+      }
 
       // Cleanup tmp
       const toDelete = sorted.map((f: any) => `${tmpDir}/${f.name}`);

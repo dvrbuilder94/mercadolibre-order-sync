@@ -81,7 +81,12 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
     if (!downloadUrl) return;
     setDownloading(true);
     try {
-      const response = await fetch(downloadUrl);
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch(downloadUrl, {
+        headers: session?.access_token
+          ? { Authorization: `Bearer ${session.access_token}` }
+          : undefined,
+      });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob();
       const objectUrl = window.URL.createObjectURL(blob);
