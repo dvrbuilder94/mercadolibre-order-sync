@@ -726,7 +726,9 @@ Deno.serve(async (req) => {
 
     let docsQuery = supabaseAdmin
       .from('tax_documents')
-      .select('*')
+      // Excluir raw_data (JSONB ~1.3KB/doc) para evitar que PostgREST trunque
+      // la respuesta a ~600 filas cuando hay miles de docs en el período.
+      .select('id, user_id, external_order_id, external_id, external_system, client_tax_id, client_tax_id_dv, client_name, total_amount, net_amount, tax_amount, document_date, document_number, document_type, sales_channel, detected_channel, status, resync_batch')
       .eq('status', 'issued')
       .in('document_type', ['boleta', 'factura', 'factura_exenta'])
       .limit(10000);
@@ -739,17 +741,9 @@ Deno.serve(async (req) => {
 
     const { data: allDocs } = await docsQuery;
 
-    // Post-filtro por codeSii válido para documentos tributarios
-    // Códigos válidos: 33=Factura, 34=Factura Exenta, 39=Boleta, 41=Boleta Exenta
-    // Excluir explícitamente: 52=Guía de Despacho (no tributario)
-    const validCodesSii = ['33', '34', '39', '41'];
-    const tributaryDocs = (allDocs || []).filter(doc => {
-      const codeSii = doc.raw_data?.codeSii?.toString();
-      // Si no tiene codeSii, confiar en document_type
-      if (!codeSii) return true;
-      // Excluir explícitamente Guías (52) y otros no tributarios
-      return validCodesSii.includes(codeSii);
-    });
+    // El filtro por document_type ya excluye guías y no-tributarios.
+    // (Anteriormente se re-filtraba por raw_data.codeSii, pero raw_data ya no se trae.)
+    const tributaryDocs = (allDocs || []);
 
     // Incluir todos los docs no vinculados — la clasificación B2B puede ser incorrecta
     // si sync-bsale-docs corrió antes que sync-meli-orders (sin órdenes para comparar RUT).
