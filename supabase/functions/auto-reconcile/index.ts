@@ -172,6 +172,7 @@ Deno.serve(async (req) => {
     const periodTo: string | null = body?.date_to || null;
 
     console.log('=== AUTO-RECONCILE 4-STAGE START ===');
+    console.log('=== build:paginate-docs-v2 ===');
     console.log('User ID:', user.id);
     if (periodFrom && periodTo) {
       console.log(`Period scope: ${periodFrom} – ${periodTo} (Stage 3, ±7d buffer)`);
