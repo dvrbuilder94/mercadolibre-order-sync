@@ -410,6 +410,9 @@ export default function Pipeline() {
           </button>
         </div>
 
+        {/* Raw API extractor (Meli + Bsale) */}
+        <RawApiExtractor period={period} onLog={addLog} />
+
         {/* Export sample for external LLM analysis */}
         <div className="bg-white border rounded-lg p-4 mb-8">
           <div className="flex items-start justify-between gap-4">
