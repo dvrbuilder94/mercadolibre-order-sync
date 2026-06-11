@@ -26,6 +26,40 @@ const periodRange = (p: string) => {
   };
 };
 
+// Convert a wall-clock instant (Y/M/D h:m:s) interpreted in America/Santiago
+// to a unix timestamp (seconds). Bsale's emissionDate is stored in Chile time,
+// so the period range must be anchored to Chile's calendar, not UTC.
+const chileWallToUnix = (
+  year: number, month: number, day: number,
+  hour: number, min: number, sec: number
+): number => {
+  let ts = Date.UTC(year, month - 1, day, hour, min, sec);
+  const target = ts;
+  for (let i = 0; i < 3; i++) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Santiago",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date(ts));
+    const get = (t: string) => Number(parts.find(p => p.type === t)!.value);
+    const curr = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour") % 24, get("minute"), get("second"));
+    const diff = target - curr;
+    if (diff === 0) break;
+    ts += diff;
+  }
+  return Math.floor(ts / 1000);
+};
+
+const chileMonthUnixRange = (p: string) => {
+  const [y, m] = p.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  return {
+    from: chileWallToUnix(y, m, 1, 0, 0, 0),
+    to:   chileWallToUnix(y, m, lastDay, 23, 59, 59),
+  };
+};
+
 export default function Pipeline() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
@@ -144,11 +178,9 @@ export default function Pipeline() {
 
   const syncBsale = async () => {
     setSyncingBsale(true);
-    const { from, to } = periodRange(period);
     addLog(`› Sincronizando Bsale (${periodLabel(period)})...`);
     try {
-      const dateFrom = Math.floor(new Date(`${from}T00:00:00Z`).getTime() / 1000);
-      const dateTo   = Math.floor(new Date(`${to}T23:59:59Z`).getTime() / 1000);
+      const { from: dateFrom, to: dateTo } = chileMonthUnixRange(period);
       const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
         body: { date_from: dateFrom, date_to: dateTo },
       });
