@@ -15,14 +15,83 @@ function splitRut(rut: string | null | undefined): { body: string | null; dv: st
 
 // Valid SII codes for tributary documents
 const VALID_SII_CODES = [33, 34, 39, 41, 61, 56];
+const FETCH_TIMEOUT_MS = 20_000;
+const TIME_BUDGET_MS = 85_000;
+const MAX_PAGES_PER_INVOCATION = 20;
+
+function normalizeCodeSii(codeSii: string | number | null | undefined): number | null {
+  if (codeSii === null || codeSii === undefined || codeSii === '') return null;
+  const normalized = Number(codeSii);
+  return Number.isFinite(normalized) ? normalized : null;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchBsalePage(url: URL, bsaleToken: string) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url.toString(), {
+        headers: { 'access_token': bsaleToken, 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      });
+
+      const rawText = await response.text().catch(() => '');
+
+      if (!response.ok) {
+        const error = `Bsale API ${response.status}`;
+        const retryable = response.status >= 500 || response.status === 429 || response.status === 408;
+        if (retryable && attempt < 2) {
+          console.warn(`${error}, retry ${attempt}/2`);
+          await sleep(500 * attempt);
+          continue;
+        }
+        return { ok: false as const, error, detail: rawText.slice(0, 200) };
+      }
+
+      if (!rawText) {
+        return { ok: true as const, data: {} };
+      }
+
+      try {
+        return { ok: true as const, data: JSON.parse(rawText) };
+      } catch {
+        return {
+          ok: false as const,
+          error: 'Bsale API invalid JSON',
+          detail: rawText.slice(0, 200),
+        };
+      }
+    } catch (e: any) {
+      const error = e?.name === 'AbortError'
+        ? `Bsale fetch timeout (${FETCH_TIMEOUT_MS}ms)`
+        : `fetch failed: ${e?.message || 'network'}`;
+
+      if (attempt < 2) {
+        console.warn(`${error}, retry ${attempt}/2`);
+        await sleep(500 * attempt);
+        continue;
+      }
+
+      return { ok: false as const, error, detail: '' };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  return { ok: false as const, error: 'Bsale fetch failed', detail: '' };
+}
 
 // Map Bsale document type to our enum - STRICT: returns null if not valid SII code
 function mapBsaleDocType(codeSii: number | undefined): 'boleta' | 'factura' | 'nota_credito' | 'nota_debito' | 'factura_exenta' | null {
-  if (codeSii === 33) return 'factura';
-  if (codeSii === 34) return 'factura_exenta';
-  if (codeSii === 39 || codeSii === 41) return 'boleta';
-  if (codeSii === 61) return 'nota_credito';
-  if (codeSii === 56) return 'nota_debito';
+  const normalized = normalizeCodeSii(codeSii);
+  if (normalized === 33) return 'factura';
+  if (normalized === 34) return 'factura_exenta';
+  if (normalized === 39 || normalized === 41) return 'boleta';
+  if (normalized === 61) return 'nota_credito';
+  if (normalized === 56) return 'nota_debito';
   
   // STRICT: No fallback - only valid codeSii accepted
   return null;
@@ -132,7 +201,7 @@ function extractExternalOrderId(doc: any): string | null {
 
 // Transform a Bsale document to our tax_documents schema
 function transformBsaleDoc(doc: any, userId: string, batchId: string) {
-  const codeSii = doc.document_type?.codeSii;
+  const codeSii = normalizeCodeSii(doc.document_type?.codeSii);
   const docType = mapBsaleDocType(codeSii);
   
   // STRICT: Skip if not a valid tributary document
@@ -203,7 +272,7 @@ function transformBsaleDoc(doc: any, userId: string, batchId: string) {
 // Filter documents to only valid tributary types (post-fetch security)
 function filterValidTributaryDocs(docs: any[]): { valid: any[], ignored: number } {
   const validDocs = docs.filter((doc: any) => {
-    const codeSii = doc.document_type?.codeSii;
+    const codeSii = normalizeCodeSii(doc.document_type?.codeSii);
     const typeName = (doc.document_type?.name || '').toUpperCase();
     
     // Explicitly exclude dispatch guides and sales notes
