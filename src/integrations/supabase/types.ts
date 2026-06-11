@@ -818,6 +818,8 @@ export type Database = {
       }
       raw_extraction_jobs: {
         Row: {
+          checkpoint: Json | null
+          chunks_count: number
           created_at: string
           current_step: string | null
           error_message: string | null
@@ -833,6 +835,8 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          checkpoint?: Json | null
+          chunks_count?: number
           created_at?: string
           current_step?: string | null
           error_message?: string | null
@@ -848,6 +852,8 @@ export type Database = {
           user_id: string
         }
         Update: {
+          checkpoint?: Json | null
+          chunks_count?: number
           created_at?: string
           current_step?: string | null
           error_message?: string | null
