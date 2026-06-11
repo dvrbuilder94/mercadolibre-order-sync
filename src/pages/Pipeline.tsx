@@ -72,6 +72,9 @@ export default function Pipeline() {
   const [reconciling, setReconciling] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [lastRecon, setLastRecon] = useState<{
+    exact: number; pack: number; consolidated: number; auto: number;
+  } | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -246,11 +249,19 @@ export default function Pipeline() {
       });
       if (error) throw error;
       const s3 = data?.stage3_order_taxdoc || {};
-      const hard = s3.hard_linked ?? 0;
-      const consolidated = s3.auto_consolidated ?? 0;
+      // Contamos ÓRDENES vinculadas (no docs): el match por pack es 1:N, un doc
+      // puede cubrir varias órdenes, así que usamos los contadores *_orders.
+      const exact = s3.hard_linked ?? 0;
+      const packOrders = s3.hard_linked_pack_id_orders ?? 0;
+      const packDocs = s3.hard_linked_pack_id ?? 0;
+      const consolidated = s3.auto_consolidated_orders ?? s3.auto_consolidated ?? 0;
       const auto = s3.auto_linked ?? 0;
-      const total3 = hard + consolidated + auto;
-      addLog(`✅ Conciliación: ${total3} vinculadas (${hard} exactas · ${consolidated} consolidadas · ${auto} por score)`);
+      const totalOrders = exact + packOrders + consolidated + auto;
+      setLastRecon({ exact, pack: packOrders, consolidated, auto });
+      const packLabel = packDocs > 0
+        ? `${packOrders} por pack (${packDocs} doc${packDocs === 1 ? "" : "s"})`
+        : `${packOrders} por pack`;
+      addLog(`✅ Conciliación: ${totalOrders} órdenes vinculadas (${exact} exactas · ${packLabel} · ${consolidated} consolidadas · ${auto} por score)`);
       if (s3.ambiguous > 0) addLog(`⚠️ ${s3.ambiguous} ambiguas — requieren revisión manual`);
       fetchStats();
     } catch (e: any) {
@@ -349,17 +360,24 @@ export default function Pipeline() {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-8">
           {[
-            { label: "Órdenes ML",     value: stats.orders,    color: "text-slate-800" },
-            { label: "Documentos",     value: stats.docs,      color: "text-slate-800" },
-            { label: "Vinculadas",     value: stats.matched,   color: "text-green-700" },
+            { label: "Órdenes ML",     value: stats.orders,    color: "text-slate-800", caption: null as string | null },
+            { label: "Documentos",     value: stats.docs,      color: "text-slate-800", caption: null },
+            { label: "Vinculadas",     value: stats.matched,   color: "text-green-700",
+              caption: lastRecon
+                ? `${lastRecon.exact} exactas · ${lastRecon.pack} pack · ${lastRecon.consolidated} consol · ${lastRecon.auto} score`
+                : null },
             { label: "Sin documento",  value: stats.unmatched,
-              color: loading ? "text-slate-400" : stats.unmatched > 0 ? "text-red-600" : "text-green-700" },
-          ].map(({ label, value, color }) => (
+              color: loading ? "text-slate-400" : stats.unmatched > 0 ? "text-red-600" : "text-green-700",
+              caption: null },
+          ].map(({ label, value, color, caption }) => (
             <div key={label} className="bg-white border rounded-lg p-4">
               <p className="text-xs text-slate-400 mb-1">{label}</p>
               <p className={`text-3xl font-bold ${color}`}>
                 {loading ? <span className="text-slate-300">—</span> : value}
               </p>
+              {caption && !loading && (
+                <p className="text-[10px] leading-tight text-slate-400 mt-1">{caption}</p>
+              )}
             </div>
           ))}
         </div>
