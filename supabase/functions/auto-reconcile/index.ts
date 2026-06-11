@@ -730,13 +730,23 @@ Deno.serve(async (req) => {
         ordersNoRut.push(o);
       }
     }
-    const ordersByDateAsc = [...ordersWithMeta].sort((a, b) => a._dateMs - b._dateMs);
+    for (const orders of ordersByRut.values()) {
+      orders.sort((a, b) => a._dateMs - b._dateMs);
+    }
+    const ordersNoRutByDateAsc = [...ordersNoRut].sort((a, b) => a._dateMs - b._dateMs);
     
     const docListWithMeta = unlinkedDocs.map(d => ({
       ...d,
       _normRut: normalizeRut(d.client_tax_id),
       _dateMs: new Date(d.document_date).getTime(),
     }));
+    const relatedDocsByTieKey = new Map<string, any[]>();
+    for (const doc of docListWithMeta) {
+      const tieKey = `${doc._normRut}|${doc.total_amount}|${doc.document_date}`;
+      if (!relatedDocsByTieKey.has(tieKey)) relatedDocsByTieKey.set(tieKey, []);
+      relatedDocsByTieKey.get(tieKey)!.push(doc);
+    }
+    const hasOrdersWithoutRut = ordersNoRutByDateAsc.length > 0;
 
     console.log(`Found ${ordersNeedingDocs.length} orders needing docs, ${allUnlinked.length} unlinked docs`);
 
