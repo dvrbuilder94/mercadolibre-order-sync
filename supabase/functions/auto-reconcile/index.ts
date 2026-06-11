@@ -911,26 +911,39 @@ Deno.serve(async (req) => {
     for (const doc of docListWithMeta) {
       if (newlyLinkedDocIds.has(doc.id)) continue;
 
+      if ((!doc._normRut || isGenericBoletaRut(doc._normRut)) && !hasOrdersWithoutRut) {
+        ignoredCount++;
+        continue;
+      }
+
       const docTime = doc._dateMs;
       const docAmount = doc.total_amount || 0;
       const amountTolerance = Math.max(docAmount * 0.02, 500);
+      const candidatePool = doc._normRut && !isGenericBoletaRut(doc._normRut)
+        ? (ordersByRut.get(doc._normRut) || [])
+        : ordersNoRutByDateAsc;
+
+      if (candidatePool.length === 0) {
+        ignoredCount++;
+        continue;
+      }
 
       // OPTIMIZED: Use binary search for +/- 5 days
       const windowMs = 5 * 24 * 60 * 60 * 1000;
       const startTime = docTime - windowMs;
       const endTime = docTime + windowMs;
       
-      let startIdx = 0, low = 0, high = ordersByDateAsc.length;
+      let startIdx = 0, low = 0, high = candidatePool.length;
       while (low < high) {
         let mid = (low + high) >>> 1;
-        if (ordersByDateAsc[mid]._dateMs < startTime) low = mid + 1;
+        if (candidatePool[mid]._dateMs < startTime) low = mid + 1;
         else high = mid;
       }
       startIdx = low;
 
       const candidates = [];
-      for (let i = startIdx; i < ordersByDateAsc.length; i++) {
-        const order = ordersByDateAsc[i];
+      for (let i = startIdx; i < candidatePool.length; i++) {
+        const order = candidatePool[i];
         if (order._dateMs > endTime) break;
         if (linkedOrderIds.has(order.id) || newlyLinkedOrderIds.has(order.id)) continue;
 
@@ -941,38 +954,6 @@ Deno.serve(async (req) => {
         candidates.push({ order, score, breakdown });
       }
       candidates.sort((a, b) => b.score - a.score);
-          
-          // DEBUG: Log RUT matches for specific documents
-          if (isDebugDoc && normalizeRut(order.customer_tax_id) === normalizeRut(doc.client_tax_id)) {
-            console.log(`   🎯 RUT match found: Order ${order.order_id}`);
-            console.log(`      Order amount: ${orderAmount}, Doc amount: ${docAmount}, Diff: ${amountDiff}`);
-            console.log(`      Order date: ${order.order_date}, Doc date: ${doc.document_date}, Days diff: ${daysDiff.toFixed(2)}`);
-            console.log(`      Amount tolerance: ${amountTolerance}, Passes: ${amountDiff <= amountTolerance}`);
-            console.log(`      Days tolerance: 5, Passes: ${daysDiff <= 5}`);
-          }
-          
-          // Pre-filter: within ±5 days and ±2% (or ±$500) amount
-          if (daysDiff > 5) return null;
-          if (amountDiff > amountTolerance) return null;
-          
-          const { score, breakdown } = calculateMatchScore(order, doc);
-          
-          // DEBUG: Log score breakdown for RUT matches
-          if (isDebugDoc && normalizeRut(order.customer_tax_id) === normalizeRut(doc.client_tax_id)) {
-            console.log(`      ✅ PASSED filters! Score: ${score}, Breakdown: RUT=${breakdown.rut}, Amount=${breakdown.amount}, Date=${breakdown.date}, Name=${breakdown.name}`);
-          }
-          
-          return { order, score, breakdown };
-        })
-        .filter((c): c is { order: any; score: number; breakdown: any } => c !== null)
-        .sort((a, b) => b.score - a.score);
-
-      if (isDebugDoc) {
-        console.log(`   Candidates found: ${candidates.length}`);
-        candidates.slice(0, 3).forEach(c => {
-          console.log(`      - Order ${c.order.order_id}: score=${c.score}, RUT=${c.order.customer_tax_id}`);
-        });
-      }
 
       if (candidates.length === 0) {
         ignoredCount++;
@@ -1012,21 +993,15 @@ Deno.serve(async (req) => {
         if (uniqueScores.length === 1 && docRut) {
           const tieScore = uniqueScores[0];
           const candidateOrders = highScoreCandidates.map(c => c.order);
-          
-          // Find related documents: same RUT, same amount, same date, not yet linked
-          const relatedDocs = unlinkedDocs.filter(d => 
-            !newlyLinkedDocIds.has(d.id) &&
-            normalizeRut(d.client_tax_id) === docRut &&
-            d.total_amount === doc.total_amount &&
-            d.document_date === doc.document_date
-          );
 
-          console.log(`   🔍 Tie detection: ${relatedDocs.length} related docs, ${candidateOrders.length} candidate orders`);
+          const tieKey = `${doc._normRut}|${doc.total_amount}|${doc.document_date}`;
+          const relatedDocs = (relatedDocsByTieKey.get(tieKey) || []).filter(d => 
+            !newlyLinkedDocIds.has(d.id) &&
+            d._normRut === docRut
+          );
 
           // Perfect N:N tie scenario: same number of docs and orders
           if (relatedDocs.length === candidateOrders.length && relatedDocs.length > 1 && tieScore >= 85) {
-            console.log(`   ⚡ PERFECT TIE ${relatedDocs.length}:${candidateOrders.length} detected! Applying chronological tie-break...`);
-
             // Sort documents by document number (ascending)
             const sortedDocs = [...relatedDocs].sort((a, b) => 
               Number(a.document_number) - Number(b.document_number)
@@ -1050,10 +1025,7 @@ Deno.serve(async (req) => {
               autoLinkedCount++;
             }
 
-            if (tieBreakSuccess) {
-              console.log(`   🎯 Successfully resolved ${sortedDocs.length}:${sortedOrders.length} tie by chronological order`);
-              continue; // Skip to next document, all related docs are now linked
-            }
+            continue; // Skip to next document, all related docs are now linked
           }
         }
 
@@ -1091,7 +1063,6 @@ Deno.serve(async (req) => {
       // Rule 4: If best score <60 → IGNORE (no action)
       else if (bestCandidate.score < 60) {
         ignoredCount++;
-        console.log(`⏭️ Stage 3: IGNORED doc ${doc.document_number} - best score ${bestCandidate.score} < 60`);
       }
       // Edge case: Single candidate with score 60-69 (not high enough for AUTO_SOFT)
       else {
