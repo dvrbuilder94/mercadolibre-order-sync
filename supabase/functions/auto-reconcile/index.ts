@@ -561,10 +561,11 @@ Deno.serve(async (req) => {
       const docDate = new Date(doc.document_date);
       const docAmount = doc.total_amount || 0;
 
-      // GATEKEEPER: only block truly generic consumer RUTs — not missing RUT (ML case)
-      // 66666666-6 is the Chilean "consumidor final" placeholder used for anonymous buyers
-      if (isGenericBoletaRut(docRut)) {
-        return null; // Can't group by generic RUT
+      // GATEKEEPER: consolidated 1:N requires a usable identity signal.
+      // With missing/generic RUT the current scoring model cannot reach the
+      // auto-link threshold (max < 60), so searching combinations only burns CPU.
+      if (!docRut || isGenericBoletaRut(docRut)) {
+        return null;
       }
 
       // Find candidate orders (same RUT or no RUT (ML), ±3 days, CLP, not cancelled, not linked)
@@ -594,8 +595,6 @@ Deno.serve(async (req) => {
       if (candidateOrders.length < 2) {
         return null;
       }
-
-      console.log(`   📦 Doc ${doc.document_number} (RUT: ${docRut}): ${candidateOrders.length} candidate orders for consolidation`);
 
       // Group orders by "naturalness" - prioritize same day
       const docDateStr = docDate.toISOString().split('T')[0];
@@ -874,7 +873,7 @@ Deno.serve(async (req) => {
       // Try consolidated match first
       const consolidatedMatch = findConsolidatedMatch(
         doc, 
-        ordersNeedingDocs.filter(o => !linkedOrderIds.has(o.id) && !newlyLinkedOrderIds.has(o.id)),
+        ordersNeedingDocs,
         new Set([...linkedOrderIds, ...newlyLinkedOrderIds])
       );
 
