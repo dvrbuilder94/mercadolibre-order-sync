@@ -135,14 +135,17 @@ export default function Pipeline() {
       const matched = all.filter(o => (o.order_tax_documents as any[])?.length > 0);
       const unmatchedCount = all.length - matched.length;
 
-      setStats({
+      const next: Stats = {
         orders:    all.length,
         docs:      docCount || 0,
         matched:   matched.length,
         unmatched: unmatchedCount,
-      });
+      };
+      setStats(next);
+      return next;
     } catch (e: any) {
       addLog(`❌ Error cargando datos: ${e?.message || "desconocido"}`);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -168,9 +171,13 @@ export default function Pipeline() {
         },
       });
       if (error) throw error;
-      addLog(`✅ ML: ${data?.synced || 0} órdenes guardadas`);
-      if (data?.partial) {
-        addLog(`⚠️ Sincronización parcial (quedan órdenes por traer), volvé a tocar "Sincronizar MercadoLibre"`);
+      const synced = data?.synced ?? 0;
+      const available = data?.available ?? 0;
+      const target = available > 0 ? ` de ${available} disponibles en MELI` : "";
+      addLog(`✅ ML: ${synced}${target} órdenes sincronizadas`);
+      if (data?.partial || data?.timedOut) {
+        const faltan = available > 0 ? Math.max(available - synced, 0) : 0;
+        addLog(`⚠️ Parcial${faltan ? ` — faltan ~${faltan}` : ""}, volvé a tocar "Sincronizar MercadoLibre" para continuar`);
       }
       fetchStats();
     } catch (e: any) {
@@ -188,6 +195,7 @@ export default function Pipeline() {
       let cursor: { code_sii: number; offset: number } | null = null;
       let batchId: string | null = null;
       let totalUpserted = 0;
+      let totalFetched = 0;
       let totalByType: Record<string, number> = {};
       let partialError: string | null = null;
       let rounds = 0;
@@ -207,6 +215,7 @@ export default function Pipeline() {
 
         batchId = data?.resync_batch ?? batchId;
         totalUpserted += data?.summary?.total_upserted ?? 0;
+        totalFetched += data?.summary?.total_fetched ?? 0;
         if (data?.summary?.by_type) {
           for (const [k, v] of Object.entries(data.summary.by_type as Record<string, number>)) {
             totalByType[k] = (totalByType[k] || 0) + Number(v || 0);
@@ -224,7 +233,8 @@ export default function Pipeline() {
       const byType = Object.keys(totalByType).length > 0
         ? Object.entries(totalByType).map(([k, v]) => `${v} ${k}`).join(" · ")
         : "";
-      addLog(`✅ Bsale: ${totalUpserted} documentos${byType ? ` (${byType})` : ""}`);
+      const fetchedLabel = totalFetched > totalUpserted ? ` de ${totalFetched} traídos` : "";
+      addLog(`✅ Bsale: ${totalUpserted}${fetchedLabel} documentos guardados${byType ? ` (${byType})` : ""}`);
       if (cursor || partialError) {
         addLog(`⚠️ Sincronización Bsale parcial${partialError ? ` (${partialError})` : ""}, volvé a tocar "Sincronizar Bsale"`);
       }
@@ -256,14 +266,22 @@ export default function Pipeline() {
       const packDocs = s3.hard_linked_pack_id ?? 0;
       const consolidated = s3.auto_consolidated_orders ?? s3.auto_consolidated ?? 0;
       const auto = s3.auto_linked ?? 0;
-      const totalOrders = exact + packOrders + consolidated + auto;
+      const nuevas = exact + packOrders + consolidated + auto;
       setLastRecon({ exact, pack: packOrders, consolidated, auto });
       const packLabel = packDocs > 0
         ? `${packOrders} por pack (${packDocs} doc${packDocs === 1 ? "" : "s"})`
         : `${packOrders} por pack`;
-      addLog(`✅ Conciliación: ${totalOrders} órdenes vinculadas (${exact} exactas · ${packLabel} · ${consolidated} consolidadas · ${auto} por score)`);
+      // Refrescamos primero para reportar el ACUMULADO real (no solo el delta).
+      const fresh = await fetchStats();
+      if (fresh) {
+        addLog(`✅ Conciliación: ${fresh.matched}/${fresh.orders} órdenes vinculadas · +${nuevas} nuevas esta corrida · faltan ${fresh.unmatched}`);
+      } else {
+        addLog(`✅ Conciliación: +${nuevas} órdenes vinculadas esta corrida`);
+      }
+      if (nuevas > 0) {
+        addLog(`   ↳ ${exact} exactas · ${packLabel} · ${consolidated} consolidadas · ${auto} por score`);
+      }
       if (s3.ambiguous > 0) addLog(`⚠️ ${s3.ambiguous} ambiguas — requieren revisión manual`);
-      fetchStats();
     } catch (e: any) {
       addLog(`❌ Conciliación: ${await errorDetail(e)}`);
     } finally {
@@ -360,21 +378,28 @@ export default function Pipeline() {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-8">
           {[
-            { label: "Órdenes ML",     value: stats.orders,    color: "text-slate-800", caption: null as string | null },
-            { label: "Documentos",     value: stats.docs,      color: "text-slate-800", caption: null },
+            { label: "Órdenes ML",     value: stats.orders,    color: "text-slate-800", caption: null as string | null, progress: null as number | null },
+            { label: "Documentos",     value: stats.docs,      color: "text-slate-800", caption: null, progress: null },
             { label: "Vinculadas",     value: stats.matched,   color: "text-green-700",
-              caption: lastRecon
-                ? `${lastRecon.exact} exactas · ${lastRecon.pack} pack · ${lastRecon.consolidated} consol · ${lastRecon.auto} score`
-                : null },
+              caption: stats.orders > 0
+                ? `${stats.matched}/${stats.orders} · faltan ${stats.unmatched}${lastRecon ? ` · +${lastRecon.exact + lastRecon.pack + lastRecon.consolidated + lastRecon.auto} esta corrida` : ""}`
+                : null,
+              progress: stats.orders > 0 ? stats.matched / stats.orders : 0 },
             { label: "Sin documento",  value: stats.unmatched,
               color: loading ? "text-slate-400" : stats.unmatched > 0 ? "text-red-600" : "text-green-700",
-              caption: null },
-          ].map(({ label, value, color, caption }) => (
+              caption: null, progress: null },
+          ].map(({ label, value, color, caption, progress }) => (
             <div key={label} className="bg-white border rounded-lg p-4">
               <p className="text-xs text-slate-400 mb-1">{label}</p>
               <p className={`text-3xl font-bold ${color}`}>
                 {loading ? <span className="text-slate-300">—</span> : value}
               </p>
+              {progress !== null && !loading && (
+                <div className="h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden">
+                  <div className="h-full bg-green-500 rounded-full transition-all"
+                    style={{ width: `${Math.round(progress * 100)}%` }} />
+                </div>
+              )}
               {caption && !loading && (
                 <p className="text-[10px] leading-tight text-slate-400 mt-1">{caption}</p>
               )}
