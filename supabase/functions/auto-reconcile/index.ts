@@ -553,122 +553,71 @@ Deno.serve(async (req) => {
       allOrders: any[],
       linkedOrderIds: Set<string>
     ): { orders: any[]; score: number; breakdown: any } | null => {
-      const docRut = normalizeRut(doc.client_tax_id);
-      const docDate = new Date(doc.document_date);
+      const docRut = doc._normRut !== undefined ? doc._normRut : normalizeRut(doc.client_tax_id);
+      const docTime = doc._dateMs !== undefined ? doc._dateMs : new Date(doc.document_date).getTime();
       const docAmount = doc.total_amount || 0;
 
-      // GATEKEEPER: consolidated 1:N requires a usable identity signal.
-      // With missing/generic RUT the current scoring model cannot reach the
-      // auto-link threshold (max < 60), so searching combinations only burns CPU.
-      if (!docRut || isGenericBoletaRut(docRut)) {
-        return null;
-      }
+      if (!docRut || isGenericBoletaRut(docRut)) return null;
 
-      // Find candidate orders (same RUT or no RUT (ML), ±3 days, CLP, not cancelled, not linked)
-      const candidateOrders = allOrders.filter(order => {
-        const orderRut = normalizeRut(order.customer_tax_id);
-        // If document has RUT, order must match. If doc has no RUT, only match orders without RUT.
-        if (docRut && orderRut && orderRut !== docRut) return false;
+      const rutCandidates = docRut ? (ordersByRut.get(docRut) || []) : [];
+      const potentialOrders = [...rutCandidates, ...ordersNoRut];
 
-        // Not already linked
+      const candidateOrders = potentialOrders.filter(order => {
         if (linkedOrderIds.has(order.id)) return false;
-
-        // Not cancelled
         if (order.status === 'cancelled') return false;
-
-        // CLP currency
         if (order.currency_id && order.currency_id !== 'CLP') return false;
-
-        // Within ±3 days
-        const orderDate = new Date(order.order_date);
-        const daysDiff = Math.abs((docDate.getTime() - orderDate.getTime()) / (24 * 60 * 60 * 1000));
-        if (daysDiff > 3) return false;
-
-        return true;
+        const orderTime = order._dateMs || new Date(order.order_date).getTime();
+        return Math.abs((docTime - orderTime) / (24 * 60 * 60 * 1000)) <= 3;
       });
 
-      // Need at least 2 orders for consolidated match
-      if (candidateOrders.length < 2) {
-        return null;
-      }
+      if (candidateOrders.length < 2) return null;
 
-      // Group orders by "naturalness" - prioritize same day
-      const docDateStr = docDate.toISOString().split('T')[0];
       const sameDayOrders = candidateOrders.filter(o => 
-        new Date(o.order_date).toISOString().split('T')[0] === docDateStr
-      );
-      const otherOrders = candidateOrders.filter(o => 
-        new Date(o.order_date).toISOString().split('T')[0] !== docDateStr
+        Math.abs((docTime - (o._dateMs || new Date(o.order_date).getTime())) / (24 * 60 * 60 * 1000)) < 0.5
       );
 
-      // Process groups in priority order
       const orderedGroups = [
         { name: 'same_day', orders: sameDayOrders },
-        { name: 'other', orders: candidateOrders } // Include all for broader search
+        { name: 'other', orders: candidateOrders }
       ];
 
       const validCombinations: { orders: any[]; score: number; breakdown: any }[] = [];
-      const tolerance = 100; // ±$100 tolerance
+      const tolerance = 100;
 
       for (const group of orderedGroups) {
         if (group.orders.length < 2) continue;
-
-        // Generate combinations of sizes 2, 3, 4, 5
         for (let size = 2; size <= Math.min(5, group.orders.length); size++) {
           let combinationsChecked = 0;
-          const maxCombinations = 100; // Safety limit
-
           for (const combo of generateCombinations(group.orders, size)) {
-            combinationsChecked++;
-            if (combinationsChecked > maxCombinations) break;
-
-            const sum = combo.reduce((acc, o) => acc + (o.gross_amount || o.amount || 0), 0);
-            
-            // Check if sum matches document amount
+            if (++combinationsChecked > 100) break;
+            const sum = combo.reduce((acc, o) => acc + (o._amount || 0), 0);
             if (Math.abs(sum - docAmount) <= tolerance) {
               const { score, breakdown } = calculateConsolidatedScore(combo, doc);
-              
-              // Only consider if score >= 60
-              if (score >= 60) {
-                validCombinations.push({ orders: combo, score, breakdown });
-              }
+              if (score >= 60) validCombinations.push({ orders: combo, score, breakdown });
             }
           }
         }
-
-        // Short-circuit: If we found valid combinations in same-day group, don't search further
-        if (group.name === 'same_day' && validCombinations.length > 0) {
-          break;
-        }
+        if (group.name === 'same_day' && validCombinations.length > 0) break;
       }
 
-      if (validCombinations.length === 0) {
-        return null;
-      }
+      if (validCombinations.length === 0) return null;
 
-      // Sort by score (desc), then by order count (asc - fewer is better)
       validCombinations.sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
         return a.orders.length - b.orders.length;
       });
 
-      // Check for ambiguity
       const topScore = validCombinations[0].score;
       const topMatches = validCombinations.filter(c => c.score === topScore);
 
       if (topMatches.length > 1) {
-        // Multiple combinations with same score - prefer fewer orders
         const sortedByOrders = topMatches.sort((a, b) => a.orders.length - b.orders.length);
-        if (sortedByOrders[0].orders.length < sortedByOrders[1].orders.length) {
-          return sortedByOrders[0]; // Clear winner by order count
-        }
-        // Still ambiguous - mark the best one with AMBIGUOUS flag
+        if (sortedByOrders[0].orders.length < sortedByOrders[1].orders.length) return sortedByOrders[0];
         const best = sortedByOrders[0];
         best.breakdown.ambiguous = true;
         best.breakdown.alternative_combinations = topMatches.length;
         return best;
       }
-
       return validCombinations[0];
     };
 
