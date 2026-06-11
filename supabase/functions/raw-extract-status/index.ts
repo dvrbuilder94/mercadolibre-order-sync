@@ -53,6 +53,24 @@ Deno.serve(async (req) => {
       download_url = signed?.signedUrl || null;
     }
 
+    // Auto-resume: si el job lleva > 60s sin avanzar, dispara la función con resume.
+    if (job.status === 'running' || job.status === 'pending') {
+      const ageMs = Date.now() - new Date(job.updated_at).getTime();
+      if (ageMs > 60_000) {
+        const fn = job.source === 'meli' ? 'raw-extract-meli' : 'raw-extract-bsale';
+        const resumeUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/${fn}`;
+        fetch(resumeUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-internal-resume': Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+            'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!}`,
+          },
+          body: JSON.stringify({ job_id: job.id, resume: true }),
+        }).catch((e) => console.error('auto-resume failed', e));
+      }
+    }
+
     return new Response(JSON.stringify({ job, download_url }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
