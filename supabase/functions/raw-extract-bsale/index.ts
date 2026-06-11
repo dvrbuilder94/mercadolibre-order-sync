@@ -11,6 +11,11 @@ const VALID_SII_CODES = [33, 34, 39, 41, 61, 56];
 const TIME_BUDGET_MS = 180_000;
 const storageHttpClient = Deno.createHttpClient({ http1: true, http2: false });
 
+function isStorageProtocolUploadError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return message.includes('http2 error') || message.includes('unspecific protocol error');
+}
+
 function chileWallToUnix(y: number, mo: number, d: number, h: number, mi: number, s: number): number {
   let ts = Date.UTC(y, mo - 1, d, h, mi, s);
   const target = ts;
@@ -285,11 +290,28 @@ async function processJob(jobId: string, admin: any) {
       const sorted = (list || []).slice().sort((a: any, b: any) => a.name.localeCompare(b.name));
       const filePath = `${job.user_id}/bsale-${job.period}-${jobId}.json`;
       let stats = { bytes: 0, docs: 0 };
-      await uploadStreamToStorage(filePath, () => {
-        const payload = createBsalePayloadStream({ job, checkpoint, sorted, admin, tmpDir });
-        stats = payload.stats;
-        return payload.stream;
-      });
+      try {
+        await uploadStreamToStorage(filePath, () => {
+          const payload = createBsalePayloadStream({ job, checkpoint, sorted, admin, tmpDir });
+          stats = payload.stats;
+          return payload.stream;
+        });
+      } catch (uploadError) {
+        if (!isStorageProtocolUploadError(uploadError)) throw uploadError;
+
+        checkpoint.phase = 'assemble_fallback';
+        await admin.from('raw_extraction_jobs').update({
+          status: 'done',
+          current_step: `Listo para descarga directa: ${checkpoint.total_docs} documentos`,
+          progress: checkpoint.total_docs,
+          total: checkpoint.total_docs,
+          file_path: null,
+          file_size_bytes: null,
+          error_message: null,
+          checkpoint,
+        }).eq('id', jobId);
+        return;
+      }
 
       // Cleanup tmp
       const toDelete = sorted.map((f: any) => `${tmpDir}/${f.name}`);
