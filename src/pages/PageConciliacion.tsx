@@ -84,22 +84,33 @@ export default function PageConciliacion() {
     setLoading(true);
     try {
       const { from, to } = periodRange(period);
-      const { data, error } = await supabase
-        .from("orders")
-        .select(`
-          id, order_id, order_date, status, product_title, gross_amount, amount,
-          order_tax_documents (
-            match_source, match_score, allocated_amount,
-            tax_documents ( id, document_number, document_type, total_amount, external_url )
-          )
-        `)
-        .gte("order_date", from + "T00:00:00")
-        .lte("order_date", to + "T23:59:59")
-        .neq("status", "cancelled")
-        .order("order_date", { ascending: false })
-        .limit(2000);
-      if (error) throw error;
-      setRows((data || []) as unknown as OrderRow[]);
+      // Paginado: Supabase corta en 1000 filas por request, así que traemos
+      // en páginas hasta agotar (un período puede tener >1000 órdenes).
+      const PAGE = 1000;
+      let offset = 0;
+      const acc: OrderRow[] = [];
+      while (true) {
+        const { data, error } = await supabase
+          .from("orders")
+          .select(`
+            id, order_id, order_date, status, product_title, gross_amount, amount,
+            order_tax_documents (
+              match_source, match_score, allocated_amount,
+              tax_documents ( id, document_number, document_type, total_amount, external_url )
+            )
+          `)
+          .gte("order_date", from + "T00:00:00")
+          .lte("order_date", to + "T23:59:59")
+          .neq("status", "cancelled")
+          .order("order_date", { ascending: false })
+          .range(offset, offset + PAGE - 1);
+        if (error) throw error;
+        const batch = (data || []) as unknown as OrderRow[];
+        acc.push(...batch);
+        if (batch.length < PAGE) break;
+        offset += PAGE;
+      }
+      setRows(acc);
     } catch (e) {
       console.error("Error cargando conciliación:", e);
       setRows([]);

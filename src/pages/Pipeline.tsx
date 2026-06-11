@@ -110,16 +110,27 @@ export default function Pipeline() {
     try {
       const { from, to } = periodRange(period);
 
-      // Orders + their links in one query (max 1000)
-      const { data: orders, error: ordersErr } = await supabase
-        .from("orders")
-        .select("id, order_tax_documents(id)")
-        .gte("order_date", from + "T00:00:00")
-        .lte("order_date", to   + "T23:59:59")
-        .neq("status", "cancelled")
-        .limit(1000);
-
-      if (ordersErr) throw ordersErr;
+      // Orders + their links — paginado: Supabase corta en 1000 filas por
+      // request, así que traemos en páginas hasta agotar (si no, el conteo
+      // se quedaba topado en 1000 aunque hubiera más órdenes).
+      const PAGE = 1000;
+      let offset = 0;
+      const orders: { id: string; order_tax_documents: any[] }[] = [];
+      while (true) {
+        const { data, error: ordersErr } = await supabase
+          .from("orders")
+          .select("id, order_tax_documents(id)")
+          .gte("order_date", from + "T00:00:00")
+          .lte("order_date", to   + "T23:59:59")
+          .neq("status", "cancelled")
+          .order("id", { ascending: true })
+          .range(offset, offset + PAGE - 1);
+        if (ordersErr) throw ordersErr;
+        const batch = (data || []) as any[];
+        orders.push(...batch);
+        if (batch.length < PAGE) break;
+        offset += PAGE;
+      }
 
       // Docs count
       const { count: docCount, error: docsErr } = await supabase
@@ -192,6 +203,7 @@ export default function Pipeline() {
     addLog(`› Sincronizando Bsale (${periodLabel(period)})...`);
     try {
       const { from: dateFrom, to: dateTo } = chileMonthUnixRange(period);
+      const ckptKey = `bsale_ckpt_${period}`;
       let cursor: { code_sii: number; offset: number } | null = null;
       let batchId: string | null = null;
       let totalUpserted = 0;
@@ -199,6 +211,17 @@ export default function Pipeline() {
       let totalByType: Record<string, number> = {};
       let partialError: string | null = null;
       let rounds = 0;
+
+      // Checkpoint: si una corrida anterior quedó a medias, reanudamos desde
+      // donde quedó en vez de dar toda la vuelta de nuevo.
+      try {
+        const saved = JSON.parse(localStorage.getItem(ckptKey) || "null");
+        if (saved?.cursor) {
+          cursor = saved.cursor;
+          batchId = saved.batchId ?? null;
+          addLog(`↻ Reanudando desde checkpoint (${cursor.code_sii}/${cursor.offset})`);
+        }
+      } catch { /* checkpoint corrupto, empezamos de cero */ }
 
       do {
         rounds += 1;
@@ -225,10 +248,16 @@ export default function Pipeline() {
         if (data?.error_detail) partialError = data.error_detail;
         cursor = data?.next_cursor ?? null;
         if (cursor) {
-          addLog(`› Bsale continúa (${cursor.code_sii}/${cursor.offset})...`);
+          // Persistimos el checkpoint en cada ronda: si cierras la pestaña a
+          // mitad, el próximo click retoma acá.
+          localStorage.setItem(ckptKey, JSON.stringify({ cursor, batchId }));
+          addLog(`› Bsale: ${totalFetched} traídos · continúa (${cursor.code_sii}/${cursor.offset})...`);
         }
         if (!data?.partial) break;
       } while (cursor && rounds < 8);
+
+      // Completó todo el período → limpiamos el checkpoint.
+      if (!cursor) localStorage.removeItem(ckptKey);
 
       const byType = Object.keys(totalByType).length > 0
         ? Object.entries(totalByType).map(([k, v]) => `${v} ${k}`).join(" · ")
@@ -236,7 +265,7 @@ export default function Pipeline() {
       const fetchedLabel = totalFetched > totalUpserted ? ` de ${totalFetched} traídos` : "";
       addLog(`✅ Bsale: ${totalUpserted}${fetchedLabel} documentos guardados${byType ? ` (${byType})` : ""}`);
       if (cursor || partialError) {
-        addLog(`⚠️ Sincronización Bsale parcial${partialError ? ` (${partialError})` : ""}, volvé a tocar "Sincronizar Bsale"`);
+        addLog(`⚠️ Bsale parcial${partialError ? ` (${partialError})` : ""} — checkpoint guardado, volvé a tocar "Sync Bsale" y retoma donde quedó`);
       }
       fetchStats();
     } catch (e: any) {
