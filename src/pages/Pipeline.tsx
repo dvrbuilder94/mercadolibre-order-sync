@@ -242,6 +242,7 @@ export default function Pipeline() {
       let batchId: string | null = null;
       let totalUpserted = 0;
       let totalFetched = 0;
+      let totalAvailable: number | null = null;  // meta: total de docs en Bsale del período
       let totalByType: Record<string, number> = {};
       let partialError: string | null = null;
       let rounds = 0;
@@ -253,6 +254,7 @@ export default function Pipeline() {
         if (saved?.cursor) {
           cursor = saved.cursor;
           batchId = saved.batchId ?? null;
+          totalAvailable = saved.totalAvailable ?? null;
           addLog(`↻ Reanudando desde checkpoint (${cursor.code_sii}/${cursor.offset})`);
         }
       } catch { /* checkpoint corrupto, empezamos de cero */ }
@@ -273,6 +275,7 @@ export default function Pipeline() {
         batchId = data?.resync_batch ?? batchId;
         totalUpserted += data?.summary?.total_upserted ?? 0;
         totalFetched += data?.summary?.total_fetched ?? 0;
+        if (data?.summary?.total_available != null) totalAvailable = data.summary.total_available;
         if (data?.summary?.by_type) {
           for (const [k, v] of Object.entries(data.summary.by_type as Record<string, number>)) {
             totalByType[k] = (totalByType[k] || 0) + Number(v || 0);
@@ -284,8 +287,9 @@ export default function Pipeline() {
         if (cursor) {
           // Persistimos el checkpoint en cada ronda: si cierras la pestaña a
           // mitad, el próximo click retoma acá.
-          localStorage.setItem(ckptKey, JSON.stringify({ cursor, batchId }));
-          addLog(`› Bsale: ${totalFetched} traídos · continúa (${cursor.code_sii}/${cursor.offset})...`);
+          localStorage.setItem(ckptKey, JSON.stringify({ cursor, batchId, totalAvailable }));
+          const metaLbl = totalAvailable ? ` (meta ${totalAvailable})` : "";
+          addLog(`› Bsale: ${totalFetched} traídos esta tanda${metaLbl} · continúa (${cursor.code_sii}/${cursor.offset})...`);
         }
         if (!data?.partial) break;
       } while (cursor && rounds < 8);
@@ -296,12 +300,18 @@ export default function Pipeline() {
       const byType = Object.keys(totalByType).length > 0
         ? Object.entries(totalByType).map(([k, v]) => `${v} ${k}`).join(" · ")
         : "";
-      const fetchedLabel = totalFetched > totalUpserted ? ` de ${totalFetched} traídos` : "";
-      addLog(`✅ Bsale: ${totalUpserted}${fetchedLabel} documentos guardados${byType ? ` (${byType})` : ""}`);
+      // Refrescamos para reportar el progreso REAL (documentos ya en la BD vs meta).
+      const fresh = await fetchStats();
+      const enBD = fresh?.docs ?? stats.docs;
+      const progreso = totalAvailable
+        ? ` · en BD: ${enBD} de ${totalAvailable} (${Math.round(enBD / totalAvailable * 100)}%)`
+        : "";
+      addLog(`✅ Bsale: +${totalUpserted} guardados esta tanda${byType ? ` (${byType})` : ""}${progreso}`);
       if (cursor || partialError) {
         addLog(`⚠️ Bsale parcial${partialError ? ` (${partialError})` : ""} — checkpoint guardado, volvé a tocar "Sync Bsale" y retoma donde quedó`);
+      } else if (totalAvailable && enBD >= totalAvailable) {
+        addLog(`🎉 Bsale completo: ${enBD} de ${totalAvailable} documentos del período`);
       }
-      fetchStats();
     } catch (e: any) {
       addLog(`❌ Bsale: ${await errorDetail(e)}`);
     } finally {

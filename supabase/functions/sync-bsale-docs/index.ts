@@ -437,6 +437,24 @@ Deno.serve(async (req) => {
     let nextCursor: { code_sii: number; offset: number } | null = null;
     let pagesThisRun = 0;
 
+    // Total disponible (suma del `count` de Bsale por cada código SII), para
+    // que el frontend pueda mostrar "X de N". Solo se calcula en arranque
+    // fresco (sin cursor); en reanudaciones el front ya lo tiene en el checkpoint.
+    let totalAvailable: number | null = null;
+    if (normalizedStartCode === null) {
+      totalAvailable = 0;
+      for (const code of VALID_SII_CODES) {
+        const u = new URL(`${BSALE_API_URL}/v1/documents.json`);
+        u.searchParams.set('emissiondaterange', `[${emissionDateFrom},${emissionDateTo}]`);
+        u.searchParams.set('codesii', String(code));
+        u.searchParams.set('limit', '1');
+        u.searchParams.set('offset', '0');
+        const r = await fetchBsalePage(u, bsaleToken);
+        if (r.ok) totalAvailable += (r.data?.count ?? 0);
+      }
+      console.log(`Total disponible (todos los códigos): ${totalAvailable}`);
+    }
+
     // Query per SII code individually. This avoids dragging the full universe
     // (guías de despacho + notas de venta) just to filter them out client-side,
     // which is what was driving the 150s idle timeout.
@@ -584,6 +602,7 @@ Deno.serve(async (req) => {
           total_valid: totalValid,
           total_ignored: totalIgnored,
           total_upserted: totalUpserted,
+          total_available: totalAvailable,
           errors: totalErrors,
           by_type: docTypeCounts,
           date_range: {
