@@ -8,16 +8,28 @@ import { ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2, UserCheck, Arr
 import { RawApiExtractor } from "@/components/RawApiExtractor";
 
 interface Stats {
-  orders: number;
+  orders: number;      // órdenes vigentes (no canceladas) — base de la conciliación
+  total: number;       // todas las órdenes del período (incl. canceladas)
+  cancelled: number;
   docs: number;
+  docsBoleta: number;
+  docsFactura: number;
+  docsNC: number;      // notas de crédito (devoluciones)
   matched: number;
   unmatched: number;
+  grossSales: number;  // Σ gross_amount (ventas brutas)
+  totalFees: number;   // Σ comisión + financiamiento
+  netEconomic: number; // bruto − fees
+  ivaVentas: number;   // Σ vat_amount (IVA débito de ventas)
 }
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
   return format(new Date(y, m - 1, 1), "MMMM yyyy", { locale: es });
 };
+
+const clp = (n: number) =>
+  new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n || 0);
 
 const periodRange = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -64,7 +76,12 @@ const chileMonthUnixRange = (p: string) => {
 export default function Pipeline() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
-  const [stats, setStats] = useState<Stats>({ orders: 0, docs: 0, matched: 0, unmatched: 0 });
+  const [stats, setStats] = useState<Stats>({
+    orders: 0, total: 0, cancelled: 0,
+    docs: 0, docsBoleta: 0, docsFactura: 0, docsNC: 0,
+    matched: 0, unmatched: 0,
+    grossSales: 0, totalFees: 0, netEconomic: 0, ivaVentas: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [log, setLog] = useState<string[]>([]);
   const [syncingML, setSyncingML] = useState(false);
@@ -110,19 +127,18 @@ export default function Pipeline() {
     try {
       const { from, to } = periodRange(period);
 
-      // Orders + their links — paginado: Supabase corta en 1000 filas por
-      // request, así que traemos en páginas hasta agotar (si no, el conteo
-      // se quedaba topado en 1000 aunque hubiera más órdenes).
+      // Órdenes + links + campos contables — paginado: Supabase corta en 1000
+      // filas por request, así que traemos en páginas hasta agotar. Incluimos
+      // canceladas (se filtran client-side) para poder mostrarlas aparte.
       const PAGE = 1000;
       let offset = 0;
-      const orders: { id: string; order_tax_documents: any[] }[] = [];
+      const orders: any[] = [];
       while (true) {
         const { data, error: ordersErr } = await supabase
           .from("orders")
-          .select("id, order_tax_documents(id)")
+          .select("id, status, gross_amount, commission_amount, financing_fee, net_amount, vat_amount, order_tax_documents(id)")
           .gte("order_date", from + "T00:00:00")
           .lte("order_date", to   + "T23:59:59")
-          .neq("status", "cancelled")
           .order("id", { ascending: true })
           .range(offset, offset + PAGE - 1);
         if (ordersErr) throw ordersErr;
@@ -132,25 +148,43 @@ export default function Pipeline() {
         offset += PAGE;
       }
 
-      // Docs count
-      const { count: docCount, error: docsErr } = await supabase
+      // Documentos: total + desglose por tipo (conteos head, sin traer filas)
+      const docBase = () => supabase
         .from("tax_documents")
         .select("*", { count: "exact", head: true })
         .gte("document_date", from)
         .lte("document_date", to)
         .eq("status", "issued");
+      const [docTotal, docBoleta, docFactura, docNC] = await Promise.all([
+        docBase(),
+        docBase().eq("document_type", "boleta"),
+        docBase().eq("document_type", "factura"),
+        docBase().eq("document_type", "nota_credito"),
+      ]);
+      const firstErr = [docTotal, docBoleta, docFactura, docNC].find(r => r.error);
+      if (firstErr?.error) throw firstErr.error;
 
-      if (docsErr) throw docsErr;
-
-      const all = orders || [];
-      const matched = all.filter(o => (o.order_tax_documents as any[])?.length > 0);
-      const unmatchedCount = all.length - matched.length;
+      const num = (v: any) => Number(v) || 0;
+      const vigentes = orders.filter(o => o.status !== "cancelled");
+      const matched = vigentes.filter(o => (o.order_tax_documents as any[])?.length > 0);
+      const grossSales = vigentes.reduce((s, o) => s + num(o.gross_amount), 0);
+      const totalFees  = vigentes.reduce((s, o) => s + num(o.commission_amount) + num(o.financing_fee), 0);
+      const ivaVentas  = vigentes.reduce((s, o) => s + num(o.vat_amount), 0);
 
       const next: Stats = {
-        orders:    all.length,
-        docs:      docCount || 0,
-        matched:   matched.length,
-        unmatched: unmatchedCount,
+        orders:      vigentes.length,
+        total:       orders.length,
+        cancelled:   orders.length - vigentes.length,
+        docs:        docTotal.count || 0,
+        docsBoleta:  docBoleta.count || 0,
+        docsFactura: docFactura.count || 0,
+        docsNC:      docNC.count || 0,
+        matched:     matched.length,
+        unmatched:   vigentes.length - matched.length,
+        grossSales,
+        totalFees,
+        netEconomic: grossSales - totalFees,
+        ivaVentas,
       };
       setStats(next);
       return next;
@@ -407,16 +441,24 @@ export default function Pipeline() {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-8">
           {[
-            { label: "Órdenes ML",     value: stats.orders,    color: "text-slate-800", caption: null as string | null, progress: null as number | null },
-            { label: "Documentos",     value: stats.docs,      color: "text-slate-800", caption: null, progress: null },
+            { label: "Órdenes ML",     value: stats.total,     color: "text-slate-800",
+              caption: stats.total > 0
+                ? `${stats.orders} pagadas · ${stats.cancelled} canceladas (${Math.round(stats.cancelled / stats.total * 100)}%)`
+                : null,
+              progress: null as number | null },
+            { label: "Documentos",     value: stats.docs,      color: "text-slate-800",
+              caption: stats.docs > 0
+                ? `${stats.docsBoleta} boletas · ${stats.docsFactura} facturas · ${stats.docsNC} n.crédito`
+                : null,
+              progress: null },
             { label: "Vinculadas",     value: stats.matched,   color: "text-green-700",
               caption: stats.orders > 0
-                ? `${stats.matched}/${stats.orders} · faltan ${stats.unmatched}${lastRecon ? ` · +${lastRecon.exact + lastRecon.pack + lastRecon.consolidated + lastRecon.auto} esta corrida` : ""}`
+                ? `${stats.matched}/${stats.orders} · ${Math.round(stats.matched / stats.orders * 100)}% cobertura · faltan ${stats.unmatched}${lastRecon ? ` · +${lastRecon.exact + lastRecon.pack + lastRecon.consolidated + lastRecon.auto} esta corrida` : ""}`
                 : null,
               progress: stats.orders > 0 ? stats.matched / stats.orders : 0 },
             { label: "Sin documento",  value: stats.unmatched,
               color: loading ? "text-slate-400" : stats.unmatched > 0 ? "text-red-600" : "text-green-700",
-              caption: null, progress: null },
+              caption: stats.unmatched > 0 ? "ventas pagadas sin respaldo tributario" : null, progress: null },
           ].map(({ label, value, color, caption, progress }) => (
             <div key={label} className="bg-white border rounded-lg p-4">
               <p className="text-xs text-slate-400 mb-1">{label}</p>
@@ -432,6 +474,27 @@ export default function Pipeline() {
               {caption && !loading && (
                 <p className="text-[10px] leading-tight text-slate-400 mt-1">{caption}</p>
               )}
+            </div>
+          ))}
+        </div>
+
+        {/* KPIs contables ($) */}
+        <div className="grid grid-cols-4 gap-4 mb-8">
+          {[
+            { label: "Ventas brutas", value: stats.grossSales, color: "text-slate-800",
+              hint: "Total vendido al cliente, antes de comisiones." },
+            { label: "Fees MELI",     value: stats.totalFees,  color: "text-orange-600",
+              hint: "Comisión + financiamiento cobrados por Mercado Libre." },
+            { label: "Neto",          value: stats.netEconomic, color: "text-green-700",
+              hint: "Ingreso del negocio: ventas brutas − fees." },
+            { label: "IVA ventas",    value: stats.ivaVentas,  color: "text-slate-800",
+              hint: "IVA débito de las ventas del período (para el F29)." },
+          ].map(({ label, value, color, hint }) => (
+            <div key={label} className="bg-white border rounded-lg p-4" title={hint}>
+              <p className="text-xs text-slate-400 mb-1">{label}</p>
+              <p className={`text-2xl font-bold ${color}`}>
+                {loading ? <span className="text-slate-300">—</span> : clp(value)}
+              </p>
             </div>
           ))}
         </div>
