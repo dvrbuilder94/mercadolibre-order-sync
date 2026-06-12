@@ -13,8 +13,11 @@ function splitRut(rut: string | null | undefined): { body: string | null; dv: st
   return { body: clean.slice(0, -1), dv: clean.slice(-1) };
 }
 
-// Valid SII codes for tributary documents
-const VALID_SII_CODES = [33, 34, 39, 41, 61, 56];
+// Valid SII codes for tributary documents.
+// MUST stay sorted ascending: el cursor de reanudación (más abajo) salta los
+// códigos con `codeSii < start_code_sii`, así que un orden no ascendente hace
+// que al reanudar se reprocese un código anterior en loop infinito.
+const VALID_SII_CODES = [33, 34, 39, 41, 56, 61];
 const FETCH_TIMEOUT_MS = 20_000;
 const TIME_BUDGET_MS = 85_000;
 const MAX_PAGES_PER_INVOCATION = 20;
