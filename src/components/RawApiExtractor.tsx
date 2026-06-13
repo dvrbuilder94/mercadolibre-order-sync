@@ -83,10 +83,84 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
     }
   };
 
+  // Baja directo de Storage (aguanta archivos grandes; la Edge Function se
+  // moría re-armando los 68MB de Bsale en cada descarga → "Failed to fetch").
+  // Devuelve null si no puede (ej. RLS del bucket) para caer al fallback.
+  const assembleFromStorage = async (): Promise<Blob | null> => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || !job) return null;
+
+      // Caso archivo único ya ensamblado (MELI, o Bsale con file_path).
+      if (job.file_path) {
+        const { data, error } = await supabase.storage.from("raw-extractions").download(job.file_path);
+        return error || !data ? null : data;
+      }
+
+      // Caso Bsale en chunks: bajamos cada chunk y ensamblamos en el browser.
+      if (job.source === "bsale") {
+        const tmpDir = `${user.id}/.tmp/${job.id}`;
+        const { data: list, error: listErr } = await supabase.storage
+          .from("raw-extractions").list(tmpDir, { limit: 10000 });
+        if (listErr || !list || list.length === 0) return null;
+        const sorted = list.slice().sort((a, b) => a.name.localeCompare(b.name));
+        const docs: any[] = [];
+        const seen = new Set<string>();
+        let i = 0;
+        for (const f of sorted) {
+          i++;
+          const { data: blob, error } = await supabase.storage
+            .from("raw-extractions").download(`${tmpDir}/${f.name}`);
+          if (error || !blob) continue;
+          let arr: any[] = [];
+          try { const p = JSON.parse(await blob.text()); if (Array.isArray(p)) arr = p; } catch { continue; }
+          for (const d of arr) {
+            const k = String(d?.id ?? "");
+            if (k) { if (seen.has(k)) continue; seen.add(k); }
+            docs.push(d);
+          }
+          if (i % 5 === 0) onLog?.(`  Raw Bsale: ensamblando ${docs.length} docs (${i}/${sorted.length} chunks)...`);
+        }
+        if (docs.length === 0) return null;
+        const payload = {
+          source: "bsale", period: job.period,
+          generated_at: new Date().toISOString(),
+          counts: { fetched_total: docs.length },
+          documents: docs,
+        };
+        return new Blob([JSON.stringify(payload)], { type: "application/json" });
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const triggerDownload = (blob: Blob) => {
+    const blobUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = blobUrl;
+    anchor.download = `${source}-${period}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  };
+
   const handleDownload = async () => {
     if (!downloadUrl) return;
     setDownloading(true);
     try {
+      // 1) Intento directo desde Storage (robusto para archivos grandes).
+      const storageBlob = await assembleFromStorage();
+      if (storageBlob) {
+        triggerDownload(storageBlob);
+        onLog?.(`✓ Raw API ${labels[source]}: descarga iniciada (${(storageBlob.size / 1024 / 1024).toFixed(1)} MB)`);
+        return;
+      }
+
+      // 2) Fallback a la Edge Function (por si el bucket no es legible).
+      onLog?.(`  Raw API ${labels[source]}: Storage no disponible, usando función...`);
       const { data: { session } } = await supabase.auth.getSession();
       const isEdgeFn = downloadUrl.includes("/functions/v1/");
       const finalUrl = isEdgeFn && session?.access_token
@@ -97,16 +171,7 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
         const errorText = await response.text().catch(() => "");
         throw new Error(errorText || `HTTP ${response.status}`);
       }
-
-      const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = blobUrl;
-      anchor.download = `${source}-${period}.json`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+      triggerDownload(await response.blob());
       onLog?.(`✓ Raw API ${labels[source]}: descarga iniciada`);
     } catch (e: any) {
       onLog?.(`❌ Raw API ${labels[source]}: no se pudo descargar (${e?.message || "error"})`);
