@@ -126,7 +126,7 @@ Deno.serve(async (req) => {
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
     const { data: job, error } = await admin
       .from('raw_extraction_jobs')
-      .select('id, user_id, source, period, status, checkpoint, chunks_count')
+      .select('id, user_id, source, period, status, checkpoint, chunks_count, file_path')
       .eq('id', jobId)
       .eq('user_id', user.id)
       .maybeSingle();
