@@ -169,7 +169,12 @@ export default function Pipeline() {
       const matched = vigentes.filter(o => (o.order_tax_documents as any[])?.length > 0);
       const grossSales = vigentes.reduce((s, o) => s + num(o.gross_amount), 0);
       const totalFees  = vigentes.reduce((s, o) => s + num(o.commission_amount) + num(o.financing_fee), 0);
-      const ivaVentas  = vigentes.reduce((s, o) => s + num(o.vat_amount), 0);
+      // vat_amount no se puebla en el sync (queda en 0). Si algún día se puebla
+      // lo usamos; si no, estimamos el IVA débito como la parte afecta del bruto
+      // (bruto = neto × 1,19 → IVA = bruto − bruto/1,19). El exacto saldrá de
+      // sumar tax_amount de los documentos Bsale (pendiente en BACKLOG).
+      const ivaReal = vigentes.reduce((s, o) => s + num(o.vat_amount), 0);
+      const ivaVentas = ivaReal > 0 ? ivaReal : Math.round(grossSales - grossSales / 1.19);
 
       const next: Stats = {
         orders:      vigentes.length,
@@ -497,8 +502,8 @@ export default function Pipeline() {
               hint: "Comisión + financiamiento cobrados por Mercado Libre." },
             { label: "Neto",          value: stats.netEconomic, color: "text-green-700",
               hint: "Ingreso del negocio: ventas brutas − fees." },
-            { label: "IVA ventas",    value: stats.ivaVentas,  color: "text-slate-800",
-              hint: "IVA débito de las ventas del período (para el F29)." },
+            { label: "IVA ventas (est.)", value: stats.ivaVentas, color: "text-slate-800",
+              hint: "Estimado: 19% de la parte afecta del bruto. El exacto saldrá de sumar el IVA de los documentos Bsale emitidos." },
           ].map(({ label, value, color, hint }) => (
             <div key={label} className="bg-white border rounded-lg p-4" title={hint}>
               <p className="text-xs text-slate-400 mb-1">{label}</p>
