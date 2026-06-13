@@ -70,7 +70,9 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
   try {
-    const authHeader = req.headers.get('Authorization');
+    const url = new URL(req.url);
+    const tokenParam = url.searchParams.get('token');
+    const authHeader = req.headers.get('Authorization') || (tokenParam ? `Bearer ${tokenParam}` : null);
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
@@ -91,7 +93,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const jobId = new URL(req.url).searchParams.get('job_id');
+    const jobId = url.searchParams.get('job_id');
     if (!jobId) {
       return new Response(JSON.stringify({ error: 'job_id requerido' }), {
         status: 400,
