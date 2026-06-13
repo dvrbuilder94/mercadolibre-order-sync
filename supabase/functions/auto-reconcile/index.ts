@@ -638,23 +638,21 @@ Deno.serve(async (req) => {
       bufferedToISO   = new Date(new Date(periodTo).getTime() + BUFFER_MS).toISOString();
     }
 
-    // Paginar con .range(): igual que tax_documents más abajo, .limit(5000) se
-    // cortaba en ~1000 filas server-side y dejaba miles de órdenes fuera de Stage 3.
+    // Paginar órdenes igual que docs: PostgREST cap-ea a 1000 filas por request
+    // aunque uses .limit(5000). En meses con muchas ventas (ej. mayo) esto dejaba
+    // miles de órdenes fuera del Stage 3.
     const ordersWithPayment: any[] = [];
-    for (let page = 0; page < 10; page++) {
-      let q = supabaseAdmin
+    for (let page = 0; page < 20; page++) {
+      let oq = supabaseAdmin
         .from('orders')
-        .select(`
-          *,
-          order_tax_documents(id)
-        `)
+        .select(`*, order_tax_documents(id)`)
         .neq('status', 'cancelled')
         .order('order_date', { ascending: false })
         .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
       if (bufferedFromISO && bufferedToISO) {
-        q = q.gte('order_date', bufferedFromISO).lte('order_date', bufferedToISO);
+        oq = oq.gte('order_date', bufferedFromISO).lte('order_date', bufferedToISO);
       }
-      const { data: pageData, error: pageErr } = await q;
+      const { data: pageData, error: pageErr } = await oq;
       if (pageErr) { console.error('orders page error:', pageErr.message); break; }
       if (!pageData || pageData.length === 0) break;
       ordersWithPayment.push(...pageData);
