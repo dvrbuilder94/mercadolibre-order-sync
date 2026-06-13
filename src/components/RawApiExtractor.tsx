@@ -92,13 +92,21 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
       const finalUrl = isEdgeFn && session?.access_token
         ? `${downloadUrl}${downloadUrl.includes("?") ? "&" : "?"}token=${encodeURIComponent(session.access_token)}`
         : downloadUrl;
+      const response = await fetch(finalUrl);
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(errorText || `HTTP ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
-      anchor.href = finalUrl;
+      anchor.href = blobUrl;
       anchor.download = `${source}-${period}.json`;
-      anchor.rel = "noopener";
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
       onLog?.(`✓ Raw API ${labels[source]}: descarga iniciada`);
     } catch (e: any) {
       onLog?.(`❌ Raw API ${labels[source]}: no se pudo descargar (${e?.message || "error"})`);
