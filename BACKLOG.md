@@ -1,89 +1,102 @@
 # Backlog — LedgerSync
 
-Pendientes priorizados. Actualizado: 2026-06-13.
+Priorizado y curado. Actualizado: 2026-06-13.
 
-> **Nota de deploy:** las Edge Functions corren en **Lovable Cloud** y solo las
-> despliega Lovable (no hay token/CLI/CI). Tras cambiar código en
-> `supabase/functions/`, hay que pedirle a Lovable que redespliegue.
+> **Cuello de botella de todo el backend:** las Edge Functions corren en
+> **Lovable Cloud** y solo las despliega Lovable (no hay token/CLI/CI). Tras
+> cambiar código en `supabase/functions/`, hay que pedirle a Lovable que
+> redespliegue. Nada de backend avanza hasta que este flujo esté aceitado.
 
-## 🟡 Bsale — fix de loop hecho, falta deploy
+---
 
-- [x] Código arreglado (commit `dd89091`): `VALID_SII_CODES` ordenado a
-  `[33,34,39,41,56,61]`. El array desordenado hacía que al reanudar en code 56
-  reprocesara las notas de crédito (61) en loop infinito.
-- [ ] **Pendiente: que Lovable despliegue `sync-bsale-docs`.** Hasta entonces sigue
-  corriendo la versión vieja (en el terminal: `(56/0)` en loop, sin "meta").
-- [ ] Tras el deploy, correr Bsale **de cero** (no desde el checkpoint viejo) para
-  rellenar las ~1.880 boletas que faltan (DB tiene ~8.805 / Bsale tiene ~10.672).
+## 🔴 Crítico — desbloquea todo
 
-## 💸 Épica: Conciliación de Pagos (3ª pata) — ¿me pagó MELI? ¿bien? ¿cuándo?
+- [ ] **Que Lovable despliegue `sync-bsale-docs`.** El fix del loop ya está en el
+  código (`dd89091`); corre la versión vieja hasta que Lovable la despliegue.
+  Sirve además de **prueba del flujo de deploy**: si después de esto Bsale anda,
+  confirmamos que "push a GitHub → pedir deploy a Lovable" funciona, y recién ahí
+  tiene sentido tocar más backend.
+- [ ] Tras el deploy, correr Bsale **de cero** para rellenar las ~1.880 boletas
+  faltantes (DB ~8.805 / Bsale ~10.672).
 
-La cadena completa es: `Venta → Documento (SII)` | `Venta → Liberación MELI` |
-`Liberación → Depósito banco`. Hoy solo tenemos la 1ª (tributaria). La 2ª es la
-que le importa al dueño ("¿dónde está mi plata?").
+## 🟢 Hacer apenas el deploy funcione (alto valor, bajo riesgo)
 
-### Paso 0 — diagnóstico de la data de pagos (HECHO). Veredicto: NO está lista.
+- [ ] **Bsale: sacar `details` del `expand`.** Es lo más pesado del payload y no se
+  usa para conciliar (matcheamos por `references`/montos/cliente). Aligera cada
+  página. *(1 línea, gran efecto.)*
+- [ ] **`sync-meli-orders` incremental + checkpoint.** Hoy re-barre todo el período
+  desde offset 0 cada vez. (a) Traer solo lo nuevo con `order.last_updated.from =
+  último sync` (de ~1.176 a unas pocas por corrida); (b) guardar el offset como
+  checkpoint (igual que Bsale) para no re-fetchear desde 0 si queda parcial.
+- [ ] **IVA exacto desde los documentos.** Hoy la card muestra IVA *estimado* (19%
+  del bruto) porque `vat_amount` queda en 0. El exacto = sumar `tax_amount` de las
+  boletas/facturas Bsale menos el de las notas de crédito. Quitar el "(est.)".
 
-- [ ] **`sync-meli-settlements` fabrica los pagos, no los trae.** Lee las órdenes
-  de la BD y agrupa por `money_release_date`, armando "payments" sintéticos con los
-  campos de la propia orden (`source:'orders_table'`, `ledger_type:'LOGICAL_BATCH'`).
-  No hay fuente independiente → un dashboard sobre esto sería circular (falso verde).
-  Las "11 liquidaciones / 322 links" salen de acá.
-- [ ] **`sync-payments` sí pega a MercadoPago real pero está roto:** tope de 100 sin
-  paginación (`sync-payments/index.ts:110`), ventana fija de 90 días, y **no está
-  cableado al Pipeline** (los 4 botones son ML/Bsale/RUTs/Conciliar). Probablemente
-  dormido.
-- [ ] **La fuente REAL sí existe: `sync-meli-payment-details`** → llama a
-  `mercadopago.com/v1/payments/{id}` y trae neto real, `fee_details` y
-  `money_release_date` real; guarda en `meli_payment_details` y enriquece la orden
-  (`has_exact_data=true`). PERO: capado a **50 órdenes/llamada**, ventana **30 días**,
-  y `sync-meli-settlements` **no lo usa** (sigue leyendo campos de la orden).
-- [ ] **El "35% (322/917)" no es "plata recibida"** — es "órdenes cuya liberación
-  *estimada* cae dentro de hoy+30 días" (`sync-meli-settlements:113` descarta el resto).
+## 🟡 Vale la pena — más esfuerzo / después de cerrar lo tributario
 
-### Antes de construir el dashboard de pagos
-- [ ] Usar la fuente real (`meli_payment_details` / Settlement Report de MELI), no la
-  sintética. Comparar **esperado (orden) vs real (release)**.
-- [ ] Despertar y despaginar `sync-meli-payment-details` (uncap 50, ampliar ventana,
-  cablear al pipeline) para cobertura completa.
-- [ ] Indicador de **aging**: ventas con `money_release_date` vencido y sin pago real
-  vinculado = plata trabada para reclamar (lo que saca al vendedor de la ceguera).
-- [ ] Auditoría de comisión: comisión real del release vs `commission_amount` estimado.
-- [ ] Diseño: columna **"Pago"** en la página Conciliación (no una pantalla aparte) —
-  una fila por venta con Documento + Pago + Estado.
-- [ ] 4ª pata (después): conciliación bancaria con `import-bank-movements`.
+- [ ] **💸 Épica: Conciliación de Pagos (3ª pata).** La grande, el "para qué" del
+  dueño ("¿dónde está mi plata?"). Diagnóstico del Paso 0 abajo. Es 100% backend
+  → depende de que el deploy esté aceitado.
+- [ ] **Bsale incremental con watermark** (más barrido completo periódico para
+  capturar anulaciones, que el incremental no ve). Más complejo que sacar `details`.
+- [ ] **Nivel 2 — progreso "X de N" en vivo** (streaming o fila `sync_progress` +
+  Realtime) para ML y Bsale. Mejor UX que el loop por clicks del frontend.
 
-## ⚡ Optimización del sync de Bsale
+## ⚪ Park / baja prioridad / al pasar
 
-- [ ] **Sacar `details` del `expand`** (líneas de cada doc) — es lo más pesado y no se
-  usa para conciliar (matcheamos por `references`/montos/cliente). Aligera todo.
-- [ ] **Sync incremental con watermark** — hoy re-barre el mes entero y hace upsert de
-  11k aunque casi nada cambió. Traer solo lo nuevo desde el último sync.
-- [ ] **Barrido completo periódico** (semanal/manual) para capturar anulaciones, que el
-  incremental no ve (Bsale filtra por fecha de emisión, no "modificado desde").
-- [ ] Saltar códigos SII con count 0 (ya los conocemos por el total).
+- [ ] **Limpieza de páginas muertas** (sweep único): `SellerDashboard`, `OrderDetail`,
+  `ReportConciliation`, `Dashboard`, `Payments`, `Sales`, `Reports*`. Reusar las
+  útiles para el dashboard de pagos (`DashboardCashForecast`, `DashboardCoherence`)
+  y borrar el resto.
+- [ ] **`pipeline-diagnostic`: eliminar** (no actualizar). Está desconectado del
+  router y su `phase0_analysis` ignora `pack_id`. No vale mantenerlo; borrarlo en
+  el sweep de limpieza.
+- [ ] **Nivel 3 — botón "Sincronizar todo"** encadenando los 4 pasos. Comodidad, no
+  esencial.
+- [ ] **Δ doc en Conciliación**: posible falso positivo si un pack cruza el filtro de
+  período. Correctitud menor; anotar el caso por ahora.
 
-## Progreso en vivo de los syncs (diferido a propósito)
+---
 
-- [ ] **Nivel 2 — "X de N" en vivo** (streaming SSE o fila `sync_progress` + Realtime).
-  Aplica tanto a Sync ML como a Bsale (mejor UX que el loop por clicks del frontend).
-- [ ] **Nivel 3 — botón "Sincronizar todo"** encadenando ML → Bsale → RUTs → Conciliar.
+## 📋 Detalle: Épica de Pagos — diagnóstico del Paso 0 (HECHO)
 
-## Datos / bugs conocidos
+Veredicto: **la data de pagos NO está lista** — no por sub-sincronizar (como Bsale)
+sino porque la fuente está mal cableada.
 
-- [ ] **IVA ventas = $0** en el dashboard: `sync-meli-payment-details:304` setea
-  `tax_amount: 0` al enriquecer la orden, y `vat_amount` tampoco se puebla. Resolver
-  de dónde sale el IVA débito (calcularlo del neto afecto o traerlo del documento).
-- [ ] **`pipeline-diagnostic` desactualizado:** su `phase0_analysis` ignora `pack_id`.
-- [ ] **Δ doc en Conciliación** puede dar falso positivo si un pack cruza el filtro de período.
+- `sync-meli-settlements` **fabrica** pagos sintéticos desde las órdenes
+  (`ledger_type:'LOGICAL_BATCH'`, `source:'orders_table'`) → falso verde. Las "11
+  liquidaciones / 322 links" salen de acá.
+- `sync-payments` pega a MercadoPago real pero está **roto**: cap 100 sin paginar
+  (`:110`), ventana 90d, **no cableado al pipeline** → dormido.
+- `sync-meli-payment-details` **es la fuente real** (neto, `fee_details`,
+  `money_release_date` reales) pero capado a **50/llamada**, ventana 30d,
+  desconectado de `payment_sales`, y setea `tax_amount=0` (causa el IVA $0).
+- El "35% (322/917)" = órdenes con liberación *estimada* dentro de hoy+30d, no plata
+  real recibida.
 
-## Limpieza / deuda técnica
+**Para construir el dashboard de pagos:** usar la fuente real
+(`sync-meli-payment-details` despaginado y conectado a `payment_sales`), jubilar lo
+sintético, indicador de **aging** (liberación vencida sin pago real = plata a
+reclamar), auditoría de comisión (real vs estimada), y columna **"Pago"** en la
+página Conciliación (no pantalla aparte). 4ª pata (después): banco con
+`import-bank-movements`.
 
-- [ ] **Páginas muertas sin ruta:** `SellerDashboard`, `OrderDetail`, `ReportConciliation`,
-  `Dashboard`, `Payments`, `Sales`, `Reports*`. Reusar (Dashboard de pagos puede tomar
-  `DashboardCashForecast`/`DashboardCoherence`) o borrar.
+## ✅ Resuelto
 
-## Resuelto
+- Match por `pack_id` confirmado en producción ("115 por pack" en el log).
+- Dashboard contable: cards (pagadas/canceladas, tipos de doc) + KPIs $ (Ventas/Fees/
+  Neto/IVA estimado).
+- Conteo real >1000 (paginación), página Conciliación (auditoría venta↔doc).
+- Bsale: fix del loop (código), checkpoint, total "de N" — **todo pendiente de deploy**.
 
-- [x] Match por `pack_id` confirmado en producción (el log mostró "115 por pack").
-- [x] Cards contables + KPIs $ (Ventas/Fees/Neto/IVA), conteo real >1000, checkpoint Bsale.
+## Salud de los syncs (referencia)
+
+| Sync | Estado |
+|---|---|
+| `sync-meli-orders` (1) | 🟢 sano — falta incremental/checkpoint |
+| `sync-bsale-docs` (2) | 🟡 fix hecho, falta deploy |
+| `enrich-meli-billing` (3) | 🟢 sano (batches + auto-chaining) |
+| `auto-reconcile` (4) | 🟢 sano (pack confirmado) |
+| `sync-payments` | 🔴 roto + dormido |
+| `sync-meli-settlements` | 🔴 sintético |
+| `sync-meli-payment-details` | 🟠 real pero capado y desconectado |
