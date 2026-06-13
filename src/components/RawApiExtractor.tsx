@@ -88,21 +88,17 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
     setDownloading(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const response = await fetch(downloadUrl, {
-        headers: session?.access_token
-          ? { Authorization: `Bearer ${session.access_token}` }
-          : undefined,
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const blob = await response.blob();
-      const objectUrl = window.URL.createObjectURL(blob);
+      const isEdgeFn = downloadUrl.includes("/functions/v1/");
+      const finalUrl = isEdgeFn && session?.access_token
+        ? `${downloadUrl}${downloadUrl.includes("?") ? "&" : "?"}token=${encodeURIComponent(session.access_token)}`
+        : downloadUrl;
       const anchor = document.createElement("a");
-      anchor.href = objectUrl;
+      anchor.href = finalUrl;
       anchor.download = `${source}-${period}.json`;
+      anchor.rel = "noopener";
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
-      window.URL.revokeObjectURL(objectUrl);
       onLog?.(`✓ Raw API ${labels[source]}: descarga iniciada`);
     } catch (e: any) {
       onLog?.(`❌ Raw API ${labels[source]}: no se pudo descargar (${e?.message || "error"})`);
