@@ -147,6 +147,15 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
     window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
   };
 
+  const triggerDownloadFromUrl = (url: string) => {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.rel = "noopener";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  };
+
   const handleDownload = async () => {
     if (!downloadUrl) return;
     setDownloading(true);
@@ -166,6 +175,15 @@ function SourceCard({ source, period, onLog }: { source: Source; period: string;
       const finalUrl = isEdgeFn && session?.access_token
         ? `${downloadUrl}${downloadUrl.includes("?") ? "&" : "?"}token=${encodeURIComponent(session.access_token)}`
         : downloadUrl;
+
+      // Para archivos grandes, dejar que el navegador haga la descarga directa
+      // es mucho más robusto que cargar todo el JSON en memoria JS.
+      if (isEdgeFn) {
+        triggerDownloadFromUrl(finalUrl);
+        onLog?.(`✓ Raw API ${labels[source]}: descarga iniciada`);
+        return;
+      }
+
       const response = await fetch(finalUrl);
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");
