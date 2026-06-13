@@ -324,6 +324,22 @@ export default function Pipeline() {
     }
   };
 
+  // Re-sincroniza Bsale del período DESDE CERO: borra solo el checkpoint (un
+  // marcador en el navegador, NO datos) para que el sync re-lea todos los docs
+  // y re-extraiga external_order_id. No borra documentos ni toca conexiones.
+  // Útil cuando un período se sincronizó antes con código que no guardaba la
+  // referencia (la conciliación queda baja aunque el doc exista).
+  const resetBsale = async () => {
+    if (!window.confirm(
+      `¿Re-sincronizar Bsale de ${periodLabel(period)} desde cero?\n\n` +
+      `Vuelve a leer TODOS los documentos del período y re-extrae sus referencias. ` +
+      `NO borra documentos ni toca tus conexiones — solo reinicia el progreso del sync.`
+    )) return;
+    localStorage.removeItem(`bsale_ckpt_${period}`);
+    addLog(`↺ Bsale ${periodLabel(period)}: reiniciado desde cero (checkpoint borrado)`);
+    await syncBsale();
+  };
+
   const reconcile = async () => {
     setReconciling(true);
     const { from, to } = periodRange(period);
@@ -558,6 +574,20 @@ export default function Pipeline() {
             {reconciling ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
             4. Conciliar
           </button>
+        </div>
+
+        {/* Acción avanzada: re-sync Bsale desde cero (no borra datos ni conexiones) */}
+        <div className="mb-8 -mt-4">
+          <button
+            onClick={resetBsale}
+            disabled={busy}
+            className="text-xs text-slate-400 hover:text-blue-600 disabled:opacity-40 underline underline-offset-2"
+          >
+            ↺ Re-sincronizar Bsale de {periodLabel(period)} desde cero
+          </button>
+          <span className="text-xs text-slate-300 ml-2">
+            (si la conciliación quedó baja por datos viejos — no borra nada)
+          </span>
         </div>
 
         {/* Raw API extractor (Meli + Bsale) */}
