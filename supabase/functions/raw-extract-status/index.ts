@@ -46,15 +46,12 @@ Deno.serve(async (req) => {
     if (!job) return new Response(JSON.stringify({ job: null }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
     let download_url: string | null = null;
-    if (job.file_path) {
-      const { data: signed } = await admin.storage
-        .from('raw-extractions')
-        .createSignedUrl(job.file_path, 60 * 60 * 24);
-      download_url = signed?.signedUrl || null;
-    } else if (
-      job.source === 'bsale' &&
-      (job?.checkpoint?.phase === 'assemble' || job?.checkpoint?.phase === 'assemble_fallback') &&
-      Number(job?.chunks_count || 0) > 0
+    if (
+      job.file_path || (
+        job.source === 'bsale' &&
+        (job?.checkpoint?.phase === 'assemble' || job?.checkpoint?.phase === 'assemble_fallback') &&
+        Number(job?.chunks_count || 0) > 0
+      )
     ) {
       download_url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/raw-extract-download?job_id=${encodeURIComponent(job.id)}`;
     }

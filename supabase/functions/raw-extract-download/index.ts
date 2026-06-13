@@ -66,6 +66,28 @@ function createBsaleDownloadStream(params: {
   });
 }
 
+async function createStoredFileResponse(params: {
+  admin: any;
+  filePath: string;
+  filename: string;
+}) {
+  const { admin, filePath, filename } = params;
+  const { data: blob, error } = await admin.storage.from('raw-extractions').download(filePath);
+  if (error || !blob) {
+    throw new Error('No se pudo descargar el archivo almacenado');
+  }
+
+  return new Response(blob, {
+    status: 200,
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
@@ -110,8 +132,23 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (error) throw error;
-    if (!job || job.source !== 'bsale') {
+    if (!job) {
       return new Response(JSON.stringify({ error: 'Job no encontrado' }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (job.file_path) {
+      return await createStoredFileResponse({
+        admin,
+        filePath: job.file_path,
+        filename: `${job.source}-${job.period}.json`,
+      });
+    }
+
+    if (job.source !== 'bsale') {
+      return new Response(JSON.stringify({ error: 'Archivo no disponible para este job' }), {
         status: 404,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
