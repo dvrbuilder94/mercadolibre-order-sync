@@ -383,6 +383,51 @@ export default function Pipeline() {
     }
   };
 
+  // Re-concilia el período DESDE CERO: borra los VÍNCULOS existentes (no
+  // documentos, no órdenes, no conexiones — los vínculos se regeneran) y vuelve
+  // a correr el match limpio. Útil cuando una conciliación previa quedó a medias
+  // y re-correr da "+0" porque los docs ya están "consumidos" por links viejos.
+  const reconcileFromScratch = async () => {
+    if (!window.confirm(
+      `¿Re-conciliar ${periodLabel(period)} desde cero?\n\n` +
+      `Borra las VINCULACIONES del período y rehace el match limpio. ` +
+      `NO borra órdenes, documentos ni conexiones — los vínculos se regeneran al conciliar.`
+    )) return;
+    setReconciling(true);
+    try {
+      const { from, to } = periodRange(period);
+      // ids de las órdenes del período (paginado)
+      const PAGE = 1000; let offset = 0; const ids: string[] = [];
+      while (true) {
+        const { data, error } = await supabase
+          .from("orders").select("id")
+          .gte("order_date", from + "T00:00:00").lte("order_date", to + "T23:59:59")
+          .order("id", { ascending: true }).range(offset, offset + PAGE - 1);
+        if (error) throw error;
+        const batch = (data || []) as any[];
+        ids.push(...batch.map(o => o.id));
+        if (batch.length < PAGE) break;
+        offset += PAGE;
+      }
+      // borrar vínculos de esas órdenes, en lotes
+      let deleted = 0;
+      for (let i = 0; i < ids.length; i += 200) {
+        const { error, count } = await supabase
+          .from("order_tax_documents")
+          .delete({ count: "exact" })
+          .in("order_id", ids.slice(i, i + 200));
+        if (error) throw error;
+        deleted += count || 0;
+      }
+      addLog(`↺ ${periodLabel(period)}: ${deleted} vínculos borrados — re-conciliando limpio...`);
+    } catch (e: any) {
+      addLog(`❌ Reset conciliación: ${await errorDetail(e)}`);
+      setReconciling(false);
+      return;
+    }
+    await reconcile();
+  };
+
   const enrichRuts = async () => {
     setEnriching(true);
     addLog("› Enriqueciendo RUTs desde API de ML...");
@@ -576,18 +621,24 @@ export default function Pipeline() {
           </button>
         </div>
 
-        {/* Acción avanzada: re-sync Bsale desde cero (no borra datos ni conexiones) */}
-        <div className="mb-8 -mt-4">
+        {/* Acciones avanzadas: re-hacer desde cero (no borran datos ni conexiones) */}
+        <div className="mb-8 -mt-4 flex flex-col gap-1">
           <button
             onClick={resetBsale}
             disabled={busy}
-            className="text-xs text-slate-400 hover:text-blue-600 disabled:opacity-40 underline underline-offset-2"
+            className="text-xs text-slate-400 hover:text-blue-600 disabled:opacity-40 underline underline-offset-2 text-left w-fit"
           >
             ↺ Re-sincronizar Bsale de {periodLabel(period)} desde cero
+            <span className="text-slate-300 no-underline ml-2">(si quedó con datos viejos)</span>
           </button>
-          <span className="text-xs text-slate-300 ml-2">
-            (si la conciliación quedó baja por datos viejos — no borra nada)
-          </span>
+          <button
+            onClick={reconcileFromScratch}
+            disabled={busy}
+            className="text-xs text-slate-400 hover:text-blue-600 disabled:opacity-40 underline underline-offset-2 text-left w-fit"
+          >
+            ↺ Re-conciliar {periodLabel(period)} desde cero
+            <span className="text-slate-300 no-underline ml-2">(borra los vínculos y rehace el match — no borra documentos)</span>
+          </button>
         </div>
 
         {/* Raw API extractor (Meli + Bsale) */}
