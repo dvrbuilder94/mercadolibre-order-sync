@@ -630,29 +630,35 @@ Deno.serve(async (req) => {
     // causes orders to never be reconciled even when a Bsale doc exists.
     const BUFFER_MS = 7 * 24 * 60 * 60 * 1000; // catch cross-month order/doc pairs near period edges
 
-    let ordersQuery = supabaseAdmin
-      .from('orders')
-      .select(`
-        *,
-        order_tax_documents(id)
-      `)
-      .neq('status', 'cancelled')
-      .order('order_date', { ascending: false })
-      .limit(5000);
-
+    // Paginar órdenes igual que docs: PostgREST cap-ea a 1000 filas por request
+    // aunque uses .limit(5000). En meses con muchas ventas (ej. mayo) esto dejaba
+    // miles de órdenes fuera del Stage 3.
+    const ORDERS_PAGE_SIZE = 1000;
+    const ordersWithPayment: any[] = [];
+    let bufferedFromIso: string | null = null;
+    let bufferedToIso: string | null = null;
     if (periodFrom && periodTo) {
-      const bufferedFrom = new Date(new Date(periodFrom).getTime() - BUFFER_MS).toISOString();
-      const bufferedTo   = new Date(new Date(periodTo).getTime() + BUFFER_MS).toISOString();
-      ordersQuery = ordersQuery.gte('order_date', bufferedFrom).lte('order_date', bufferedTo);
+      bufferedFromIso = new Date(new Date(periodFrom).getTime() - BUFFER_MS).toISOString();
+      bufferedToIso   = new Date(new Date(periodTo).getTime()   + BUFFER_MS).toISOString();
+    }
+    for (let page = 0; page < 20; page++) {
+      let oq = supabaseAdmin
+        .from('orders')
+        .select(`*, order_tax_documents(id)`)
+        .neq('status', 'cancelled')
+        .order('order_date', { ascending: false })
+        .range(page * ORDERS_PAGE_SIZE, (page + 1) * ORDERS_PAGE_SIZE - 1);
+      if (bufferedFromIso && bufferedToIso) {
+        oq = oq.gte('order_date', bufferedFromIso).lte('order_date', bufferedToIso);
+      }
+      const { data: pageData, error: pageErr } = await oq;
+      if (pageErr) { console.error('orders page error:', pageErr.message); break; }
+      if (!pageData || pageData.length === 0) break;
+      ordersWithPayment.push(...pageData);
+      if (pageData.length < ORDERS_PAGE_SIZE) break;
     }
 
-    const { data: ordersWithPayment, error: ordersError } = await ordersQuery;
-
-    if (ordersError) {
-      console.error('Error fetching orders:', ordersError.message);
-    }
-
-    console.log(`Fetched ${ordersWithPayment?.length || 0} non-cancelled orders (limit: 5000)`);
+    console.log(`Fetched ${ordersWithPayment.length} non-cancelled orders (paginated)`);
 
     // Filter to orders with payment but no document
     const ordersNeedingDocs = (ordersWithPayment || []).filter(order => {
