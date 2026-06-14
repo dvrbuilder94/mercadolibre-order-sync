@@ -1,6 +1,6 @@
 # Backlog — LedgerSync
 
-Priorizado y curado. Actualizado: 2026-06-13.
+Priorizado y curado. Actualizado: 2026-06-14.
 
 > **Cuello de botella de todo el backend:** las Edge Functions corren en
 > **Lovable Cloud** y solo las despliega Lovable (no hay token/CLI/CI). Tras
@@ -35,8 +35,9 @@ Priorizado y curado. Actualizado: 2026-06-13.
 ## 🟡 Vale la pena — más esfuerzo / después de cerrar lo tributario
 
 - [ ] **💸 Épica: Conciliación de Pagos (3ª pata).** La grande, el "para qué" del
-  dueño ("¿dónde está mi plata?"). Diagnóstico del Paso 0 abajo. Es 100% backend
-  → depende de que el deploy esté aceitado.
+  dueño ("¿dónde está mi plata?"). Diagnóstico del Paso 0 y detalle del Paso 1/2
+  abajo. Es 100% backend → depende de que el deploy esté aceitado. **Paso 1 ya
+  está en el código** (`sync-meli-payment-details`), falta deploy + correr backfill.
 - [ ] **Bsale incremental con watermark** (más barrido completo periódico para
   capturar anulaciones, que el incremental no ve). Más complejo que sacar `details`.
 - [ ] **Nivel 2 — progreso "X de N" en vivo** (streaming o fila `sync_progress` +
@@ -88,6 +89,27 @@ reclamar), auditoría de comisión (real vs estimada), y columna **"Pago"** en l
 página Conciliación (no pantalla aparte). 4ª pata (después): banco con
 `import-bank-movements`.
 
+### Paso 1 (HECHO en código, falta deploy + backfill)
+
+`sync-meli-payment-details` ya no tiene el cap de 50/ventana de 30 días: ahora
+recorre **todas** las órdenes `has_exact_data=false` (más recientes primero) y
+se auto-encadena (mismo patrón que `enrich-meli-billing`) hasta vaciar el backlog.
+Por cada pago real de MP procesado, además de actualizar `orders`, hace upsert en
+`payments` (`external_payment_id = payment_id` de MP, `status: 'ALLOCATED'`) y
+crea el link en `payment_sales` (`allocated_amount = net_received_amount`) — esta
+es la data real que hoy solo fabricaba `sync-meli-settlements`.
+
+### Paso 2 (después del backfill)
+
+- **Jubilar `sync-meli-settlements`**: dejar de invocarlo y limpiar las filas
+  sintéticas (`raw_data->>source = 'sync-meli-settlements'`) en `payments`/
+  `payment_sales` para que no dupliquen los links reales del Paso 1.
+- Indicador de **aging** (liberación vencida sin pago real = plata a reclamar).
+- Auditoría de comisión (real vs estimada).
+- Columna **"Pago"** en la página Conciliación.
+- Sacar el `tax_amount: 0` hardcodeado de `sync-meli-payment-details` si
+  corresponde calcularlo (relacionado con el ítem de IVA exacto de Bsale).
+
 ## ✅ Resuelto
 
 - **Sweep de limpieza (Fase 1):** borradas 14 páginas sin ruta (`Config`,
@@ -113,5 +135,5 @@ página Conciliación (no pantalla aparte). 4ª pata (después): banco con
 | `enrich-meli-billing` (3) | 🟢 sano (batches + auto-chaining) |
 | `auto-reconcile` (4) | 🟢 sano (pack confirmado) |
 | `sync-payments` | 🔴 roto + dormido |
-| `sync-meli-settlements` | 🔴 sintético |
-| `sync-meli-payment-details` | 🟠 real pero capado y desconectado |
+| `sync-meli-settlements` | 🔴 sintético — a jubilar (ver Paso 2 de la épica de pagos) |
+| `sync-meli-payment-details` | 🟡 Paso 1 hecho en código (despaginado + conecta `payments`/`payment_sales`), falta deploy |
