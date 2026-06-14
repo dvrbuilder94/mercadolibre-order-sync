@@ -2,6 +2,12 @@
 
 Priorizado y curado. Actualizado: 2026-06-14.
 
+> **🎯 Foco actual: MercadoLibre.** Una sola fuente de ventas (MELI) + sus
+> documentos (Bsale) + sus pagos (MercadoPago). NO meter todavía: datos
+> bancarios / conciliación con depósito, capa canónica multi-marketplace
+> (Falabella/etc.), ni la pantalla de cash waterfall (dependía del banco).
+> Esas quedan fuera de foco hasta validar el core MELI con el primer cliente.
+
 > **Cuello de botella de todo el backend:** las Edge Functions corren en
 > **Lovable Cloud** y solo las despliega Lovable (no hay token/CLI/CI). Tras
 > cambiar código en `supabase/functions/`, hay que pedirle a Lovable que
@@ -93,13 +99,17 @@ Priorizado y curado. Actualizado: 2026-06-14.
 - [ ] **Comisión real vs. estimada** y **aging de liberación** — depende del
   deploy + backfill de `sync-meli-payment-details` (Paso 1/2).
 
-### ⚪ Descartado
-- Ratios (% comisión efectiva, ticket promedio, tasa de cancelación, ratio
-  NC/ventas) — no aportan, fuera de foco.
+### ⚪ Fuera de foco (no ahora — foco MELI)
+- **Pantalla Cash esperado / waterfall** — la cascada cierra contra el depósito
+  bancario real, y banco está fuera de foco. Sin esa línea es solo repetir lo que
+  ya muestra `/pipeline`. Posponer.
+- **Datos bancarios** (`bank_movements`, import CSV, Fintoc) — fuera de foco; el
+  cliente MELI no lo necesita para validar el core.
+- **Capa canónica multi-marketplace** (Falabella/etc., adapters, tabla unificada
+  con presets) — es el cimiento para escalar, pero recién después de cerrar MELI.
+- Ratios (% comisión efectiva, ticket promedio, tasa de cancelación) — no aportan.
 - **Margen bruto / COGS** — columnas siempre vacías, requeriría catálogo de
   costos por producto (carga manual). No es dato real disponible.
-- **Fintoc** para `bank_movements` — el CSV manual (ya construido) cubre el
-  caso de uso; posponer hasta que el dato bancario manual demuestre valor.
 
 ---
 
@@ -151,6 +161,12 @@ es la data real que hoy solo fabricaba `sync-meli-settlements`.
 
 ## ✅ Resuelto
 
+- **P0/P1 + rediseño de Conciliación (jun-2026, PRs #2-#4):** fix columna
+  Δ (venta − doc) real, filtro de mes (header UTC → local), contadores por
+  período (no por página) en `/mercadolibre` y `/bsale`, Bsale reencuadrado
+  (docs no-MELI ya no son alarma), KPIs de cash en `/pipeline`, y Conciliación
+  como **bandeja de excepciones** (vista "requieren atención" por defecto, score
+  numérico por fila, paginación). Todo frontend, en `main`.
 - **Sweep de limpieza (Fase 1):** borradas 14 páginas sin ruta (`Config`,
   `Dashboard`, `Payments`, `BsaleDocuments`, `OrderDetail`, `PaymentDetail`,
   `Sales`, `Reports*`), 6 componentes huérfanos (`HeroSection`,
