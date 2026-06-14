@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2, Wallet } from "lucide-react";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -59,6 +59,9 @@ interface OrderRow {
   product_title: string | null;
   gross_amount: number | null;
   amount: number;
+  net_amount: number | null;
+  money_release_date: string | null;
+  has_exact_data: boolean | null;
   order_tax_documents: Link[];
 }
 
@@ -73,6 +76,8 @@ export default function PageConciliacion() {
   const [rows, setRows] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("all");
+  const [syncingPayments, setSyncingPayments] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -94,6 +99,7 @@ export default function PageConciliacion() {
           .from("orders")
           .select(`
             id, order_id, order_date, status, product_title, gross_amount, amount,
+            net_amount, money_release_date, has_exact_data,
             order_tax_documents (
               match_source, match_score, allocated_amount,
               tax_documents ( id, document_number, document_type, total_amount, external_url )
@@ -124,6 +130,40 @@ export default function PageConciliacion() {
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
     setPeriod(format(new Date(y, m - 1 + delta, 1), "yyyy-MM"));
+  };
+
+  // Trae el neto real + fecha de liberación desde MercadoPago (sync-meli-payment-details).
+  // La función se auto-encadena en el backend, pero acá iteramos también para
+  // saber cuándo terminó y refrescar la tabla con los datos nuevos.
+  const syncPayments = async () => {
+    setSyncingPayments(true);
+    setSyncMsg(null);
+    let totalLinked = 0;
+    let round = 0;
+    try {
+      while (true) {
+        round++;
+        const { data, error } = await supabase.functions.invoke("sync-meli-payment-details", {
+          body: { limit: 50 },
+        });
+        if (error) throw error;
+        totalLinked += data?.paymentsLinked ?? 0;
+        const remaining = data?.remaining ?? 0;
+        if (remaining === 0 || (data?.updated ?? 0) === 0 || round >= 20) {
+          setSyncMsg(
+            remaining > 0
+              ? `✅ ${totalLinked} pagos vinculados · faltan ~${remaining}, volvé a tocar para continuar`
+              : `✅ ${totalLinked} pagos vinculados · backlog completo`
+          );
+          break;
+        }
+      }
+      await fetchRows();
+    } catch (e: any) {
+      setSyncMsg(`❌ ${e?.message || "error desconocido"}`);
+    } finally {
+      setSyncingPayments(false);
+    }
   };
 
   // Δ a nivel documento: suma de lo asignado a cada doc vs total del doc.
@@ -160,6 +200,24 @@ export default function PageConciliacion() {
       bySource[src] = (bySource[src] || 0) + 1;
     }
     return { total: rows.length, linked, nodoc, bySource };
+  }, [rows]);
+
+  // Plata real de MercadoPago: liberado (ya en mi saldo MP) vs pendiente de liberación.
+  const paymentSummary = useMemo(() => {
+    const today = new Date();
+    let released = 0, releasedCount = 0;
+    let pending = 0, pendingCount = 0;
+    let noData = 0;
+    for (const o of rows) {
+      if (!o.has_exact_data) { noData++; continue; }
+      const net = o.net_amount || 0;
+      if (o.money_release_date && new Date(o.money_release_date) > today) {
+        pending += net; pendingCount++;
+      } else {
+        released += net; releasedCount++;
+      }
+    }
+    return { released, releasedCount, pending, pendingCount, noData };
   }, [rows]);
 
   const filtered = useMemo(() => {
@@ -231,6 +289,33 @@ export default function PageConciliacion() {
           )}
         </div>
 
+        {/* Plata real de MercadoPago: cuánto me pagaron / cuándo me pagan */}
+        <div className="bg-white border rounded-lg p-4 mb-6">
+          <div className="flex items-start justify-between gap-4 mb-3">
+            <p className="text-xs text-slate-400">Plata real de MercadoPago en este período</p>
+            <button
+              onClick={syncPayments}
+              disabled={syncingPayments}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors shrink-0"
+            >
+              {syncingPayments ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wallet className="h-3.5 w-3.5" />}
+              Sincronizar pagos
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-xs px-2 py-1 rounded-md font-medium bg-green-100 text-green-700">
+              Liberado: {clp(paymentSummary.released)} ({paymentSummary.releasedCount})
+            </span>
+            <span className="text-xs px-2 py-1 rounded-md font-medium bg-amber-100 text-amber-700">
+              Pendiente de liberación: {clp(paymentSummary.pending)} ({paymentSummary.pendingCount})
+            </span>
+            <span className="text-xs px-2 py-1 rounded-md font-medium bg-slate-100 text-slate-600">
+              Sin datos exactos: {paymentSummary.noData}
+            </span>
+          </div>
+          {syncMsg && <p className="text-xs text-slate-500 mt-3">{syncMsg}</p>}
+        </div>
+
         {/* Filtros */}
         <div className="flex flex-wrap gap-2 mb-4">
           {filters.map((f) => (
@@ -256,15 +341,16 @@ export default function PageConciliacion() {
                 <th className="px-4 py-2 font-medium text-right">Monto doc</th>
                 <th className="px-4 py-2 font-medium">Match</th>
                 <th className="px-4 py-2 font-medium text-right">Δ doc</th>
+                <th className="px-4 py-2 font-medium">Pago</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">
+                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin inline" />
                 </td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">Sin resultados</td></tr>
+                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">Sin resultados</td></tr>
               ) : filtered.map((o) => {
                 const l = (o.order_tax_documents || [])[0];
                 const d = l ? firstDoc(l) : null;
@@ -304,6 +390,25 @@ export default function PageConciliacion() {
                       dd !== null && Math.abs(dd) > 1 ? "text-red-600 font-medium" : "text-slate-400"
                     }`}>
                       {dd === null ? "—" : dd === 0 ? "$0" : clp(dd)}
+                    </td>
+                    <td className="px-4 py-2">
+                      {!o.has_exact_data ? (
+                        <span className="text-slate-300">—</span>
+                      ) : (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="tabular-nums text-slate-700">{clp(o.net_amount)}</span>
+                          {o.money_release_date && (() => {
+                            const liberado = new Date(o.money_release_date) <= new Date();
+                            return (
+                              <span className={`text-xs px-1.5 py-0.5 rounded font-medium w-fit ${
+                                liberado ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                              }`}>
+                                {liberado ? "Liberado" : "Pendiente"} {format(new Date(o.money_release_date), "dd/MM", { locale: es })}
+                              </span>
+                            );
+                          })()}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );
