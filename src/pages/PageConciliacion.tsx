@@ -166,26 +166,34 @@ export default function PageConciliacion() {
     }
   };
 
-  // Δ a nivel documento: suma de lo asignado a cada doc vs total del doc.
+  // Δ a nivel documento: suma de las ventas vinculadas a cada doc vs total del doc.
+  // Usa allocated_amount cuando viene poblado; si no (los matches AUTO_HARD lo
+  // dejan en 0/null), cae al monto bruto de la orden. Así un match 1:1 cuadra en
+  // $0 y un pack (1 doc ↔ N órdenes) también, sin pintar Δ falsos.
   const docAlloc = useMemo(() => {
     const m = new Map<string, { total: number; alloc: number }>();
     for (const o of rows) {
+      const venta = o.gross_amount ?? o.amount ?? 0;
       for (const l of o.order_tax_documents || []) {
         const d = firstDoc(l);
         if (!d) continue;
         const cur = m.get(d.id) || { total: d.total_amount || 0, alloc: 0 };
-        cur.alloc += l.allocated_amount || 0;
+        cur.alloc += (l.allocated_amount != null && l.allocated_amount > 0)
+          ? l.allocated_amount
+          : venta;
         m.set(d.id, cur);
       }
     }
     return m;
   }, [rows]);
 
+  // Δ (venta − doc): suma de ventas asignadas al doc menos el total del doc.
+  // Positivo = las ventas superan al documento; negativo = el doc es mayor.
   const docDelta = (d: Doc | null): number | null => {
     if (!d) return null;
     const a = docAlloc.get(d.id);
     if (!a) return null;
-    return Math.round((a.total - a.alloc) * 100) / 100;
+    return Math.round((a.alloc - a.total) * 100) / 100;
   };
 
   // Resumen / diagnóstico
@@ -340,7 +348,7 @@ export default function PageConciliacion() {
                 <th className="px-4 py-2 font-medium">Documento</th>
                 <th className="px-4 py-2 font-medium text-right">Monto doc</th>
                 <th className="px-4 py-2 font-medium">Match</th>
-                <th className="px-4 py-2 font-medium text-right">Δ doc</th>
+                <th className="px-4 py-2 font-medium text-right">Δ (venta − doc)</th>
                 <th className="px-4 py-2 font-medium">Pago</th>
               </tr>
             </thead>
@@ -387,9 +395,15 @@ export default function PageConciliacion() {
                       )}
                     </td>
                     <td className={`px-4 py-2 text-right tabular-nums ${
-                      dd !== null && Math.abs(dd) > 1 ? "text-red-600 font-medium" : "text-slate-400"
+                      dd === null ? "text-slate-300"
+                        : Math.abs(dd) > 1 ? "text-red-600 font-medium"
+                        : "text-green-600"
                     }`}>
-                      {dd === null ? "—" : dd === 0 ? "$0" : clp(dd)}
+                      {dd === null
+                        ? "—"
+                        : Math.abs(dd) <= 1
+                          ? "$0 ✓"
+                          : `${dd > 0 ? "+" : ""}${clp(dd)}`}
                     </td>
                     <td className="px-4 py-2">
                       {!o.has_exact_data ? (
@@ -418,8 +432,9 @@ export default function PageConciliacion() {
         </div>
 
         <p className="text-xs text-slate-400 mt-3">
-          Δ doc = total del documento − suma asignada a sus órdenes. En multiventa (pack) un documento cubre
-          varias ventas; Δ ≈ $0 confirma que el match cuadra en plata.
+          Δ (venta − doc) = suma de las ventas vinculadas al documento − total del documento. En multiventa
+          (pack) un documento cubre varias ventas, así que se compara contra la suma de todas; Δ ≈ $0 (✓)
+          confirma que el match cuadra en plata. Sin documento se muestra «—».
         </p>
       </main>
     </div>

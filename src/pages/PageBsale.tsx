@@ -20,6 +20,14 @@ const periodRange = (p: string) => {
   };
 };
 
+// Construir la fecha con el constructor local (y, m-1, 1). `new Date("2026-06-01")`
+// se parsea como UTC y en husos negativos (Chile, UTC-4) retrocede al mes anterior,
+// mostrando "Mayo" cuando las filas son de junio.
+const periodLabel = (p: string) => {
+  const [y, m] = p.split("-").map(Number);
+  return format(new Date(y, m - 1, 1), "MMMM yyyy", { locale: es });
+};
+
 const DOC_LABEL: Record<string, string> = {
   boleta: "Boleta", factura: "Factura", nota_credito: "N. Crédito",
   nota_debito: "N. Débito", factura_exenta: "Fact. Exenta",
@@ -150,7 +158,7 @@ export default function PageBsale() {
               <ChevronLeft className="h-5 w-5" />
             </button>
             <h1 className="text-xl font-semibold capitalize w-44 text-center">
-              {format(new Date(period + "-01"), "MMMM yyyy", { locale: es })}
+              {periodLabel(period)}
             </h1>
             <button onClick={() => changePeriod(1)} className="p-1 hover:bg-slate-200 rounded">
               <ChevronRight className="h-5 w-5" />
