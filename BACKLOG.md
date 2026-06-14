@@ -53,13 +53,11 @@ Priorizado y curado. Actualizado: 2026-06-13.
 
 ## ⚪ Park / baja prioridad / al pasar
 
-- [ ] **Limpieza de páginas muertas** (sweep único): `SellerDashboard`, `OrderDetail`,
-  `ReportConciliation`, `Dashboard`, `Payments`, `Sales`, `Reports*`. Reusar las
-  útiles para el dashboard de pagos (`DashboardCashForecast`, `DashboardCoherence`)
-  y borrar el resto.
-- [ ] **`pipeline-diagnostic`: eliminar** (no actualizar). Está desconectado del
-  router y su `phase0_analysis` ignora `pack_id`. No vale mantenerlo; borrarlo en
-  el sweep de limpieza.
+- [ ] **`SellerDashboard`: rescatar antes de borrar.** Sigue huérfana (sin ruta),
+  pero `DashboardCoherence`, `DashboardCashForecast`, `DashboardKPIs` y
+  `DashboardAccountingAlerts` sirven para el dashboard de pagos (fase 2). Mover/
+  reusar esos componentes y luego borrar la página + `DashboardExport` (y la dep
+  `xlsx`, que solo ella usa).
 - [ ] **Nivel 3 — botón "Sincronizar todo"** encadenando los 4 pasos. Comodidad, no
   esencial.
 - [ ] **Δ doc en Conciliación**: posible falso positivo si un pack cruza el filtro de
@@ -92,6 +90,14 @@ página Conciliación (no pantalla aparte). 4ª pata (después): banco con
 
 ## ✅ Resuelto
 
+- **Sweep de limpieza (Fase 1):** borradas 14 páginas sin ruta (`Config`,
+  `Dashboard`, `Payments`, `BsaleDocuments`, `OrderDetail`, `PaymentDetail`,
+  `Sales`, `Reports*`), 6 componentes huérfanos (`HeroSection`,
+  `InvoiceDataDialog`, `OrdersFilter`, `OrdersTable`, `ReconciliationTable`,
+  `DashboardChart`), 3 primitivas shadcn sin uso (`ui/chart`, `ui/carousel`,
+  `ui/resizable`), edge function `pipeline-diagnostic`, y deps npm `recharts`,
+  `embla-carousel-react`, `react-resizable-panels`. `SellerDashboard` queda
+  pendiente (ver arriba). Build + typecheck verdes.
 - Match por `pack_id` confirmado en producción ("115 por pack" en el log).
 - Dashboard contable: cards (pagadas/canceladas, tipos de doc) + KPIs $ (Ventas/Fees/
   Neto/IVA estimado).
