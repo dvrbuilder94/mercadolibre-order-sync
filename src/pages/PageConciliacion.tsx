@@ -23,6 +23,15 @@ const clp = (n: number | null | undefined) =>
   new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 })
     .format(n || 0);
 
+const PAGE_SIZE = 50;
+
+// Matches por ID determinístico: se consideran conciliados sin revisión humana.
+const HARD_SOURCES = new Set([
+  "AUTO_HARD_ORDER_ID", "AUTO_HARD_PACK_ID", "AUTO_CONSOLIDATED",
+  "webhook_external_order_id", "webhook_fallback_boleta",
+]);
+const SCORE_OK = 80; // umbral de confianza para los matches por score
+
 // match_source → etiqueta + estilo. Es la clave del diagnóstico:
 // si "Pack" aparece en 0, el match por pack_id no está corriendo en producción.
 const MATCH_META: Record<string, { label: string; cls: string }> = {
@@ -68,14 +77,20 @@ interface OrderRow {
 const firstDoc = (l: Link): Doc | null =>
   Array.isArray(l.tax_documents) ? (l.tax_documents[0] || null) : l.tax_documents;
 
-type Filter = "all" | "nodoc" | "pack" | "exact" | "delta";
+type Filter = "attention" | "nodoc" | "delta" | "lowscore" | "clean" | "all";
+type Reason = "nodoc" | "delta" | "lowscore" | null;
+interface Classified {
+  o: OrderRow; l: Link | null; d: Doc | null;
+  dd: number | null; score: number | null; reason: Reason;
+}
 
 export default function PageConciliacion() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [rows, setRows] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filter, setFilter] = useState<Filter>("attention");
+  const [page, setPage] = useState(0);
   const [syncingPayments, setSyncingPayments] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
@@ -196,19 +211,48 @@ export default function PageConciliacion() {
     return Math.round((a.alloc - a.total) * 100) / 100;
   };
 
-  // Resumen / diagnóstico
-  const summary = useMemo(() => {
-    const bySource: Record<string, number> = {};
-    let linked = 0, nodoc = 0;
-    for (const o of rows) {
+  // Clasificación por fila: ¿requiere atención (sin doc / Δ≠0 / score bajo) o
+  // concilió limpio? Un workbench de conciliación es una bandeja de excepciones,
+  // no un libro mayor: lo que cuadra solo se colapsa, lo dudoso sube.
+  const classified = useMemo<Classified[]>(() => {
+    return rows.map((o) => {
       const links = o.order_tax_documents || [];
-      if (links.length === 0) { nodoc++; continue; }
-      linked++;
-      const src = links[0].match_source || "Manual";
-      bySource[src] = (bySource[src] || 0) + 1;
+      const l = links[0] || null;
+      const d = l ? firstDoc(l) : null;
+      const dd = docDelta(d);
+      const score = l?.match_score ?? null;
+      let reason: Reason = null;
+      if (links.length === 0) reason = "nodoc";
+      else if (dd !== null && Math.abs(dd) > 1) reason = "delta";
+      else if (l && !HARD_SOURCES.has(l.match_source || "") && score !== null && score < SCORE_OK) reason = "lowscore";
+      return { o, l, d, dd, score, reason };
+    });
+  }, [rows, docAlloc]);
+
+  const counts = useMemo(() => {
+    const c = { total: classified.length, attention: 0, clean: 0, nodoc: 0, delta: 0, lowscore: 0, bySource: {} as Record<string, number> };
+    for (const x of classified) {
+      if (x.reason) { c.attention++; (c as any)[x.reason]++; }
+      else c.clean++;
+      if (x.l) c.bySource[x.l.match_source || "Manual"] = (c.bySource[x.l.match_source || "Manual"] || 0) + 1;
     }
-    return { total: rows.length, linked, nodoc, bySource };
-  }, [rows]);
+    return c;
+  }, [classified]);
+
+  const REASON_RANK: Record<string, number> = { nodoc: 0, delta: 1, lowscore: 2 };
+  const attentionRows = useMemo(() => {
+    return classified
+      .filter((c) => c.reason !== null)
+      .sort((a, b) => {
+        const ra = REASON_RANK[a.reason!] - REASON_RANK[b.reason!];
+        if (ra !== 0) return ra;
+        if (a.reason === "delta") return Math.abs(b.dd!) - Math.abs(a.dd!);
+        if (a.reason === "lowscore") return (a.score ?? 0) - (b.score ?? 0);
+        return 0;
+      });
+  }, [classified]);
+
+  const cleanRows = useMemo(() => classified.filter((c) => c.reason === null), [classified]);
 
   // Plata real de MercadoPago: liberado (ya en mi saldo MP) vs pendiente de liberación.
   const paymentSummary = useMemo(() => {
@@ -228,27 +272,32 @@ export default function PageConciliacion() {
     return { released, releasedCount, pending, pendingCount, noData };
   }, [rows]);
 
-  const filtered = useMemo(() => {
-    return rows.filter((o) => {
-      const links = o.order_tax_documents || [];
-      const l = links[0];
-      const d = l ? firstDoc(l) : null;
-      switch (filter) {
-        case "nodoc": return links.length === 0;
-        case "pack":  return l?.match_source === "AUTO_HARD_PACK_ID";
-        case "exact": return l?.match_source === "AUTO_HARD_ORDER_ID";
-        case "delta": { const dd = docDelta(d); return dd !== null && Math.abs(dd) > 1; }
-        default:      return true;
-      }
-    });
-  }, [rows, filter, docAlloc]);
+  // Lista visible según el filtro.
+  const visible = useMemo(() => {
+    switch (filter) {
+      case "nodoc":    return attentionRows.filter((c) => c.reason === "nodoc");
+      case "delta":    return attentionRows.filter((c) => c.reason === "delta");
+      case "lowscore": return attentionRows.filter((c) => c.reason === "lowscore");
+      case "clean":    return cleanRows;
+      case "all":      return classified;
+      default:         return attentionRows; // "attention"
+    }
+  }, [filter, attentionRows, cleanRows, classified]);
 
-  const filters: { key: Filter; label: string }[] = [
-    { key: "all",   label: `Todas (${summary.total})` },
-    { key: "nodoc", label: `Sin documento (${summary.nodoc})` },
-    { key: "pack",  label: `Por pack (${summary.bySource["AUTO_HARD_PACK_ID"] || 0})` },
-    { key: "exact", label: `Exactas (${summary.bySource["AUTO_HARD_ORDER_ID"] || 0})` },
-    { key: "delta", label: "Δ monto ≠ 0" },
+  // Paginación client-side: ya tenemos todo el período en memoria (el Δ de los
+  // packs necesita todas las filas hermanas, por eso no se pagina en el servidor).
+  const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  const pageRows = visible.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+
+  useEffect(() => { setPage(0); }, [filter, period]);
+
+  const filters: { key: Filter; label: string; tone?: string }[] = [
+    { key: "attention", label: `Requieren atención (${counts.attention})` },
+    { key: "nodoc",     label: `Sin documento (${counts.nodoc})` },
+    { key: "delta",     label: `Δ ≠ 0 (${counts.delta})` },
+    { key: "lowscore",  label: `Score bajo (${counts.lowscore})` },
+    { key: "clean",     label: `Conciliadas (${counts.clean})` },
+    { key: "all",       label: `Todas (${counts.total})` },
   ];
 
   return (
@@ -273,9 +322,13 @@ export default function PageConciliacion() {
 
         {/* Resumen / diagnóstico de cómo machearon */}
         <div className="bg-white border rounded-lg p-4 mb-6">
-          <p className="text-xs text-slate-400 mb-3">Cómo conciliaron las {summary.total} ventas del período</p>
+          <p className="text-xs text-slate-400 mb-3">
+            {counts.attention > 0
+              ? <><b className="text-slate-700">{counts.attention}</b> de {counts.total} ventas requieren atención · {counts.clean} conciliadas automáticamente</>
+              : <>✓ Las {counts.total} ventas del período conciliaron sin excepciones</>}
+          </p>
           <div className="flex flex-wrap gap-2 items-center">
-            {Object.entries(summary.bySource)
+            {Object.entries(counts.bySource)
               .sort((a, b) => b[1] - a[1])
               .map(([src, n]) => {
                 const meta = matchMeta(src);
@@ -286,10 +339,10 @@ export default function PageConciliacion() {
                 );
               })}
             <span className="text-xs px-2 py-1 rounded-md font-medium bg-red-100 text-red-700">
-              Sin documento: {summary.nodoc}
+              Sin documento: {counts.nodoc}
             </span>
           </div>
-          {!loading && (summary.bySource["AUTO_HARD_PACK_ID"] || 0) === 0 && (
+          {!loading && (counts.bySource["AUTO_HARD_PACK_ID"] || 0) === 0 && (
             <p className="text-xs text-amber-600 mt-3">
               ⚠️ No hay matches por <b>Pack</b>. Si tienes ventas multiventa, el match por <code>pack_id</code> no
               está corriendo en producción (función desplegada desactualizada o falta data).
@@ -357,12 +410,13 @@ export default function PageConciliacion() {
                 <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin inline" />
                 </td></tr>
-              ) : filtered.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">Sin resultados</td></tr>
-              ) : filtered.map((o) => {
-                const l = (o.order_tax_documents || [])[0];
-                const d = l ? firstDoc(l) : null;
-                const dd = docDelta(d);
+              ) : visible.length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                  {filter === "attention"
+                    ? "✓ Nada requiere atención en este período"
+                    : "Sin resultados"}
+                </td></tr>
+              ) : pageRows.map(({ o, l, d, dd, score }) => {
                 const venta = o.gross_amount ?? o.amount;
                 return (
                   <tr key={o.id} className="border-b last:border-0 hover:bg-slate-50">
@@ -386,7 +440,7 @@ export default function PageConciliacion() {
                     <td className="px-4 py-2">
                       {l ? (
                         <span className={`text-xs px-2 py-0.5 rounded font-medium ${matchMeta(l.match_source).cls}`}>
-                          {matchMeta(l.match_source).label}
+                          {matchMeta(l.match_source).label}{score !== null ? ` · ${Math.round(score)}%` : ""}
                         </span>
                       ) : (
                         <span className="text-xs px-2 py-0.5 rounded font-medium bg-red-100 text-red-700">
@@ -430,6 +484,26 @@ export default function PageConciliacion() {
             </tbody>
           </table>
         </div>
+
+        {/* Paginación */}
+        {!loading && visible.length > PAGE_SIZE && (
+          <div className="flex items-center justify-between mt-3">
+            <p className="text-xs text-slate-400">
+              {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, visible.length)} de {visible.length}
+            </p>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}
+                className="p-1 hover:bg-slate-200 rounded disabled:opacity-30">
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="text-xs text-slate-500">{page + 1} / {totalPages}</span>
+              <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+                className="p-1 hover:bg-slate-200 rounded disabled:opacity-30">
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
 
         <p className="text-xs text-slate-400 mt-3">
           Δ (venta − doc) = suma de las ventas vinculadas al documento − total del documento. En multiventa
