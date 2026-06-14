@@ -629,64 +629,68 @@ Deno.serve(async (req) => {
     // ML API sometimes doesn't return payment dates on first sync; excluding them
     // causes orders to never be reconciled even when a Bsale doc exists.
     const BUFFER_MS = 7 * 24 * 60 * 60 * 1000; // catch cross-month order/doc pairs near period edges
+    const PAGE_SIZE = 1000; // PostgREST impone un max-rows de ~1000 que .limit() no supera
+
+    let bufferedFromISO: string | null = null;
+    let bufferedToISO: string | null = null;
+    if (periodFrom && periodTo) {
+      bufferedFromISO = new Date(new Date(periodFrom).getTime() - BUFFER_MS).toISOString();
+      bufferedToISO   = new Date(new Date(periodTo).getTime() + BUFFER_MS).toISOString();
+    }
 
     // Paginar órdenes igual que docs: PostgREST cap-ea a 1000 filas por request
     // aunque uses .limit(5000). En meses con muchas ventas (ej. mayo) esto dejaba
     // miles de órdenes fuera del Stage 3.
-    const ORDERS_PAGE_SIZE = 1000;
     const ordersWithPayment: any[] = [];
-    let bufferedFromIso: string | null = null;
-    let bufferedToIso: string | null = null;
-    if (periodFrom && periodTo) {
-      bufferedFromIso = new Date(new Date(periodFrom).getTime() - BUFFER_MS).toISOString();
-      bufferedToIso   = new Date(new Date(periodTo).getTime()   + BUFFER_MS).toISOString();
-    }
     for (let page = 0; page < 20; page++) {
       let oq = supabaseAdmin
         .from('orders')
         .select(`*, order_tax_documents(id)`)
         .neq('status', 'cancelled')
         .order('order_date', { ascending: false })
-        .range(page * ORDERS_PAGE_SIZE, (page + 1) * ORDERS_PAGE_SIZE - 1);
-      if (bufferedFromIso && bufferedToIso) {
-        oq = oq.gte('order_date', bufferedFromIso).lte('order_date', bufferedToIso);
+        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+      if (bufferedFromISO && bufferedToISO) {
+        oq = oq.gte('order_date', bufferedFromISO).lte('order_date', bufferedToISO);
       }
       const { data: pageData, error: pageErr } = await oq;
       if (pageErr) { console.error('orders page error:', pageErr.message); break; }
       if (!pageData || pageData.length === 0) break;
       ordersWithPayment.push(...pageData);
-      if (pageData.length < ORDERS_PAGE_SIZE) break;
+      if (pageData.length < PAGE_SIZE) break;
     }
 
     console.log(`Fetched ${ordersWithPayment.length} non-cancelled orders (paginated)`);
 
     // Filter to orders with payment but no document
-    const ordersNeedingDocs = (ordersWithPayment || []).filter(order => {
+    const ordersNeedingDocs = ordersWithPayment.filter(order => {
       const hasDocument = order.order_tax_documents && order.order_tax_documents.length > 0;
       return !hasDocument;
     });
 
-    // Fetch linked orders for consolidated matching check (using admin for consistency)
-    const { data: linkedOrderTaxDocs } = await supabaseAdmin
-      .from('order_tax_documents')
-      .select('order_id, tax_document_id')
-      .limit(10000);
-    
-    const linkedOrderIds = new Set((linkedOrderTaxDocs || []).map(d => d.order_id));
-    const linkedDocIds = new Set((linkedOrderTaxDocs || []).map(d => d.tax_document_id));
+    // Fetch linked orders for consolidated matching check (using admin for consistency),
+    // paginado por la misma razón que la query de orders arriba.
+    const linkedOrderTaxDocs: any[] = [];
+    for (let page = 0; page < 10; page++) {
+      const { data: pageData, error: pageErr } = await supabaseAdmin
+        .from('order_tax_documents')
+        .select('order_id, tax_document_id')
+        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+      if (pageErr) { console.error('order_tax_documents page error:', pageErr.message); break; }
+      if (!pageData || pageData.length === 0) break;
+      linkedOrderTaxDocs.push(...pageData);
+      if (pageData.length < PAGE_SIZE) break;
+    }
+
+    const linkedOrderIds = new Set(linkedOrderTaxDocs.map(d => d.order_id));
+    const linkedDocIds = new Set(linkedOrderTaxDocs.map(d => d.tax_document_id));
 
     // Paginar explícitamente con .range() porque PostgREST impone un max-rows
     // de ~1000 en el servidor que .limit() no supera. Sin paginar, Stage 3
     // procesaba solo los primeros 600 docs y dejaba miles sin matchear.
     // Excluimos raw_data (JSONB pesado) para reducir tamaño de respuesta.
     const DOCS_COLUMNS = 'id, user_id, external_order_id, external_id, external_system, client_tax_id, client_tax_id_dv, client_name, total_amount, net_amount, tax_amount, document_date, document_number, document_type, sales_channel, detected_channel, status, resync_batch';
-    const PAGE_SIZE = 1000;
-    let bufferedFromDate: string | null = null;
-    let bufferedToDate: string | null = null;
-    if (periodFrom && periodTo) {
-      bufferedFromDate = new Date(new Date(periodFrom).getTime() - BUFFER_MS).toISOString().split('T')[0];
-      bufferedToDate   = new Date(new Date(periodTo).getTime() + BUFFER_MS).toISOString().split('T')[0];
-    }
+    const bufferedFromDate = bufferedFromISO ? bufferedFromISO.split('T')[0] : null;
+    const bufferedToDate   = bufferedToISO ? bufferedToISO.split('T')[0] : null;
     const allDocs: any[] = [];
     for (let page = 0; page < 20; page++) {
       let q = supabaseAdmin
