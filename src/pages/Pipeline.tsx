@@ -21,6 +21,11 @@ interface Stats {
   totalFees: number;   // Σ comisión + financiamiento
   netEconomic: number; // bruto − fees
   ivaVentas: number;   // Σ vat_amount (IVA débito de ventas)
+  cashAvailable: number;     // Σ net_amount ya liberado (en mi saldo MP)
+  cashAvailableCount: number;
+  cashPending: number;       // Σ net_amount cobrado pero aún retenido por MELI
+  cashPendingCount: number;
+  cashNoDataCount: number;   // órdenes pagadas sin dato exacto de pago aún (falta sync)
 }
 
 const periodLabel = (p: string) => {
@@ -81,6 +86,9 @@ export default function Pipeline() {
     docs: 0, docsBoleta: 0, docsFactura: 0, docsNC: 0,
     matched: 0, unmatched: 0,
     grossSales: 0, totalFees: 0, netEconomic: 0, ivaVentas: 0,
+    cashAvailable: 0, cashAvailableCount: 0,
+    cashPending: 0, cashPendingCount: 0,
+    cashNoDataCount: 0,
   });
   const [loading, setLoading] = useState(true);
   const [log, setLog] = useState<string[]>([]);
@@ -136,7 +144,7 @@ export default function Pipeline() {
       while (true) {
         const { data, error: ordersErr } = await supabase
           .from("orders")
-          .select("id, status, gross_amount, commission_amount, financing_fee, net_amount, vat_amount, order_tax_documents(id)")
+          .select("id, status, gross_amount, commission_amount, financing_fee, net_amount, vat_amount, money_release_date, has_exact_data, order_tax_documents(id)")
           .gte("order_date", from + "T00:00:00")
           .lte("order_date", to   + "T23:59:59")
           .order("id", { ascending: true })
@@ -176,6 +184,23 @@ export default function Pipeline() {
       const ivaReal = vigentes.reduce((s, o) => s + num(o.vat_amount), 0);
       const ivaVentas = ivaReal > 0 ? ivaReal : Math.round(grossSales - grossSales / 1.19);
 
+      // Plata real: liberado (ya en mi saldo MP) vs cobrado pero retenido por MELI.
+      // Solo cuenta lo que tiene dato exacto de pago (sync-meli-payment-details);
+      // lo que todavía no se sincronizó queda en cashNoDataCount.
+      const today = new Date();
+      let cashAvailable = 0, cashAvailableCount = 0;
+      let cashPending = 0, cashPendingCount = 0;
+      let cashNoDataCount = 0;
+      for (const o of vigentes) {
+        if (!o.has_exact_data) { cashNoDataCount++; continue; }
+        const net = num(o.net_amount);
+        if (o.money_release_date && new Date(o.money_release_date) > today) {
+          cashPending += net; cashPendingCount++;
+        } else {
+          cashAvailable += net; cashAvailableCount++;
+        }
+      }
+
       const next: Stats = {
         orders:      vigentes.length,
         total:       orders.length,
@@ -190,6 +215,9 @@ export default function Pipeline() {
         totalFees,
         netEconomic: grossSales - totalFees,
         ivaVentas,
+        cashAvailable, cashAvailableCount,
+        cashPending, cashPendingCount,
+        cashNoDataCount,
       };
       setStats(next);
       return next;
@@ -555,25 +583,40 @@ export default function Pipeline() {
         </div>
 
         {/* KPIs contables ($) */}
-        <div className="grid grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-3 gap-4 mb-2">
           {[
             { label: "Ventas brutas", value: stats.grossSales, color: "text-slate-800",
-              hint: "Total vendido al cliente, antes de comisiones." },
+              hint: "Total vendido al cliente, antes de comisiones.", caption: null as string | null },
             { label: "Fees MELI",     value: stats.totalFees,  color: "text-orange-600",
-              hint: "Comisión + financiamiento cobrados por Mercado Libre." },
+              hint: "Comisión + financiamiento cobrados por Mercado Libre.", caption: null },
             { label: "Neto",          value: stats.netEconomic, color: "text-green-700",
-              hint: "Ingreso del negocio: ventas brutas − fees." },
+              hint: "Ingreso del negocio: ventas brutas − fees.", caption: null },
             { label: "IVA ventas (est.)", value: stats.ivaVentas, color: "text-slate-800",
-              hint: "Estimado: 19% de la parte afecta del bruto. El exacto saldrá de sumar el IVA de los documentos Bsale emitidos." },
-          ].map(({ label, value, color, hint }) => (
+              hint: "Estimado: 19% de la parte afecta del bruto. El exacto saldrá de sumar el IVA de los documentos Bsale emitidos.",
+              caption: null },
+            { label: "Cobrado (liberado)", value: stats.cashAvailable, color: "text-green-700",
+              hint: "Plata real ya liberada por MELI a tu cuenta de Mercado Pago.",
+              caption: stats.cashAvailableCount > 0 ? `${stats.cashAvailableCount} órdenes` : null },
+            { label: "Por liberar", value: stats.cashPending, color: "text-amber-600",
+              hint: "Plata ya cobrada al comprador, pero todavía retenida por MELI hasta su fecha de liberación.",
+              caption: stats.cashPendingCount > 0 ? `${stats.cashPendingCount} órdenes` : null },
+          ].map(({ label, value, color, hint, caption }) => (
             <div key={label} className="bg-white border rounded-lg p-4" title={hint}>
               <p className="text-xs text-slate-400 mb-1">{label}</p>
               <p className={`text-2xl font-bold ${color}`}>
                 {loading ? <span className="text-slate-300">—</span> : clp(value)}
               </p>
+              {caption && !loading && (
+                <p className="text-[10px] leading-tight text-slate-400 mt-1">{caption}</p>
+              )}
             </div>
           ))}
         </div>
+        <p className="text-xs text-slate-400 mb-8">
+          {!loading && stats.cashNoDataCount > 0
+            ? `${stats.cashNoDataCount} órdenes pagadas sin dato exacto de pago aún (corré "Conciliación" en /conciliacion para traerlo).`
+            : " "}
+        </p>
 
         {/* Pipeline steps */}
         <p className="text-xs text-slate-400 mb-2">Ejecutar en orden:</p>
