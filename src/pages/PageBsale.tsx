@@ -65,6 +65,7 @@ export default function PageBsale() {
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [docs, setDocs] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
+  const [meliCount, setMeliCount] = useState(0);
   const [monthlyTotal, setMonthlyTotal] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -83,10 +84,16 @@ export default function PageBsale() {
     try {
       const { from, to } = periodRange(period);
 
-      const [{ count }, { data: sumData }] = await Promise.all([
+      const [{ count }, { count: meliC }, { data: sumData }] = await Promise.all([
         supabase
           .from("tax_documents")
           .select("*", { count: "exact", head: true })
+          .gte("document_date", from).lte("document_date", to),
+        // Documentos que corresponden a una venta MELI (inner join a la tabla puente).
+        // El resto son de otros canales (tienda física, web) — sin orden ML es lo normal.
+        supabase
+          .from("tax_documents")
+          .select("*, order_tax_documents!inner(id)", { count: "exact", head: true })
           .gte("document_date", from).lte("document_date", to),
         supabase
           .from("tax_documents")
@@ -96,6 +103,7 @@ export default function PageBsale() {
           .single(),
       ]);
       setTotal(count || 0);
+      setMeliCount(meliC || 0);
       setMonthlyTotal((sumData as any)?.sum ?? null);
 
       const { data } = await supabase
@@ -141,10 +149,8 @@ export default function PageBsale() {
     setSyncMsg("");
   };
 
-  const issued      = docs.filter(d => d.status === "issued");
-  const linked      = issued.filter(d => (d.order_tax_documents as any[])?.length > 0);
-  const unlinked    = issued.filter(d => !((d.order_tax_documents as any[])?.length > 0));
-  const totalPages  = Math.ceil(total / PAGE_SIZE);
+  const otherChannels = Math.max(total - meliCount, 0);
+  const totalPages    = Math.ceil(total / PAGE_SIZE);
 
   return (
     <div className="flex min-h-screen bg-slate-50">
@@ -184,11 +190,11 @@ export default function PageBsale() {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[
-            { label: "Documentos",   value: loading ? "—" : total,                                       sub: "en el período" },
-            { label: "Total",        value: loading || monthlyTotal === null ? "—" : CLP(monthlyTotal), sub: "facturado mensual" },
-            { label: "Vinculados",   value: loading ? "—" : linked.length,                              sub: "con orden ML", color: "text-green-600" },
-            { label: "Sin vincular", value: loading ? "—" : unlinked.length,                            sub: "sin orden ML",
-              color: unlinked.length > 0 ? "text-orange-600" : "text-green-600" },
+            { label: "Documentos",      value: loading ? "—" : total,                                       sub: "en el período" },
+            { label: "Total",           value: loading || monthlyTotal === null ? "—" : CLP(monthlyTotal), sub: "facturado mensual" },
+            { label: "De ventas MELI",  value: loading ? "—" : meliCount,                                  sub: "vinculados a una orden ML", color: "text-green-600" },
+            { label: "De otros canales", value: loading ? "—" : otherChannels,                             sub: "tienda física / web — sin orden ML (normal)",
+              color: "text-slate-700" },
           ].map(({ label, value, sub, color }) => (
             <div key={label} className="bg-white border rounded-lg p-4">
               <p className="text-xs text-slate-400 mb-1">{label}</p>

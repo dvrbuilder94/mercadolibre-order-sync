@@ -42,6 +42,7 @@ export default function PageMeli() {
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [orders, setOrders] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
+  const [withDocCount, setWithDocCount] = useState(0);
   const [monthlyTotal, setMonthlyTotal] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -62,11 +63,17 @@ export default function PageMeli() {
       const from_ = from + "T00:00:00";
       const to_   = to   + "T23:59:59";
 
-      // Count + monthly sum (in parallel)
-      const [{ count }, { data: sumData }] = await Promise.all([
+      // Counts + monthly sum del PERÍODO completo (no de la página actual).
+      const [{ count }, { count: withDocC }, { data: sumData }] = await Promise.all([
         supabase
           .from("orders")
           .select("*", { count: "exact", head: true })
+          .gte("order_date", from_).lte("order_date", to_)
+          .neq("status", "cancelled"),
+        // Órdenes con al menos un documento vinculado (inner join a la tabla puente).
+        supabase
+          .from("orders")
+          .select("*, order_tax_documents!inner(id)", { count: "exact", head: true })
           .gte("order_date", from_).lte("order_date", to_)
           .neq("status", "cancelled"),
         supabase
@@ -77,6 +84,7 @@ export default function PageMeli() {
           .single(),
       ]);
       setTotal(count || 0);
+      setWithDocCount(withDocC || 0);
       setMonthlyTotal((sumData as any)?.sum ?? null);
 
       // Page
@@ -118,8 +126,7 @@ export default function PageMeli() {
     setSyncMsg("");
   };
 
-  const withDoc    = orders.filter(o => (o.order_tax_documents as any[])?.length > 0).length;
-  const withoutDoc = orders.length - withDoc;
+  const withoutDocCount = Math.max(total - withDocCount, 0);
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
@@ -162,9 +169,9 @@ export default function PageMeli() {
           {[
             { label: "Órdenes",       value: loading ? "—" : total,                                          sub: "en el período" },
             { label: "Total ventas",  value: loading || monthlyTotal === null ? "—" : CLP(monthlyTotal),    sub: "bruto mensual" },
-            { label: "Con documento", value: loading ? "—" : withDoc,                                       sub: "en esta página", color: "text-green-600" },
-            { label: "Sin documento", value: loading ? "—" : withoutDoc,                                    sub: "en esta página",
-              color: withoutDoc > 0 ? "text-red-600" : "text-green-600" },
+            { label: "Con documento", value: loading ? "—" : withDocCount,                                  sub: "en el período", color: "text-green-600" },
+            { label: "Sin documento", value: loading ? "—" : withoutDocCount,                               sub: "en el período",
+              color: withoutDocCount > 0 ? "text-red-600" : "text-green-600" },
           ].map(({ label, value, sub, color }) => (
             <div key={label} className="bg-white border rounded-lg p-4">
               <p className="text-xs text-slate-400 mb-1">{label}</p>
