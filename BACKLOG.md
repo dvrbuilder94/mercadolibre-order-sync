@@ -72,6 +72,50 @@ Priorizado y curado. Actualizado: 2026-06-14.
   superado por `sale_status`/`payment_sales`). Candidatos a borrar en el próximo
   sweep, confirmando antes que nada los necesite.
 
+## 📊 KPIs financieros nuevos — priorizados por facilidad y datos reales
+
+Repaso (jun-2026) de qué KPIs se pueden sacar con la data que YA está poblada
+(`orders`, `tax_documents`, `payments`/`payment_sales`). Todo lo de acá usa
+columnas reales — afuera queda `cost_of_goods_sold`/`gross_profit`/
+`net_taxable_amount` (siempre vacías, requerirían carga manual de costos).
+
+### 🟢 Trivial — solo agregar al cálculo de `stats` en `Pipeline.tsx` (mismos datos ya traídos)
+- [ ] **% comisión efectiva** = `totalFees / grossSales`.
+- [ ] **Ticket promedio** = `grossSales / orders`.
+- [ ] **Tasa de cancelación** = `cancelled / total` (%).
+- [ ] **Ratio NC/ventas** = `docsNC / docs` (%) — señal de devoluciones.
+
+### 🟢 Fácil — nueva agregación sobre `orders`, datos reales (Paso 1 ya los pobló)
+- [ ] **Cash disponible / Cash retenido agregados** (Σ `net_amount` con
+  `has_exact_data`, separado por `money_release_date` ≤/> hoy). Hoy se ve fila
+  por fila en Conciliación; falta el total.
+- [ ] **Coherencia financiera** (Neto económico = Cash disponible + Cash
+  retenido) — rescatar `DashboardCoherence` (ya implementado), solo cablear
+  con los totales de arriba.
+
+### 🟡 Medio — rescatar componente huérfano + query nueva
+- [ ] **Forecast de liberación 7/14/30 días** — rescatar
+  `DashboardCashForecast`, agrupando `orders` por `money_release_date`. Es el
+  "¿dónde va a estar mi plata?" que pide el dueño.
+- [ ] **Alertas de compliance** (ventas pagadas sin doc, devoluciones sin NC)
+  — rescatar `DashboardAccountingAlerts` (lógica ya hecha), falta cablear la
+  query y montarlo en `/conciliacion` o `/pipeline`.
+- [ ] **Ventas por SKU/producto** y **mix de medios de pago/cuotas**
+  (`seller_sku`, `payment_method_type`, `installments`) — agrupaciones nuevas,
+  datos ya poblados por `sync-meli-orders`.
+
+### ⏳ Bloqueado por deploy (Paso 1/2 de la épica de pagos)
+- [ ] **IVA exacto** (ya listado arriba como 🟢) — depende del deploy de Bsale.
+- [ ] **Comisión real vs. estimada** y **aging de liberación** — depende del
+  deploy + backfill de `sync-meli-payment-details` (Paso 1/2).
+
+### ⚪ No vale hoy
+- [ ] **Margen bruto / COGS** — columnas siempre vacías, requeriría catálogo de
+  costos por producto (carga manual). No es dato real disponible; posponer.
+- [ ] **Fintoc** para `bank_movements` — el CSV manual (ya construido) cubre el
+  caso de uso; Fintoc es integración nueva completa (conexión por banco + costo),
+  posponer hasta que el dato bancario manual demuestre valor.
+
 ---
 
 ## 📋 Detalle: Épica de Pagos — diagnóstico del Paso 0 (HECHO)
