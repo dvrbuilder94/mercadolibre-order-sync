@@ -1,6 +1,6 @@
 # Backlog — LedgerSync
 
-Priorizado y curado. Actualizado: 2026-06-13.
+Priorizado y curado. Actualizado: 2026-06-14.
 
 > **Cuello de botella de todo el backend:** las Edge Functions corren en
 > **Lovable Cloud** y solo las despliega Lovable (no hay token/CLI/CI). Tras
@@ -35,8 +35,9 @@ Priorizado y curado. Actualizado: 2026-06-13.
 ## 🟡 Vale la pena — más esfuerzo / después de cerrar lo tributario
 
 - [ ] **💸 Épica: Conciliación de Pagos (3ª pata).** La grande, el "para qué" del
-  dueño ("¿dónde está mi plata?"). Diagnóstico del Paso 0 abajo. Es 100% backend
-  → depende de que el deploy esté aceitado.
+  dueño ("¿dónde está mi plata?"). Diagnóstico del Paso 0 y detalle del Paso 1/2
+  abajo. Es 100% backend → depende de que el deploy esté aceitado. **Paso 1 ya
+  está en el código** (`sync-meli-payment-details`), falta deploy + correr backfill.
 - [ ] **Bsale incremental con watermark** (más barrido completo periódico para
   capturar anulaciones, que el incremental no ve). Más complejo que sacar `details`.
 - [ ] **Nivel 2 — progreso "X de N" en vivo** (streaming o fila `sync_progress` +
@@ -62,6 +63,43 @@ Priorizado y curado. Actualizado: 2026-06-13.
   esencial.
 - [ ] **Δ doc en Conciliación**: posible falso positivo si un pack cruza el filtro de
   período. Correctitud menor; anotar el caso por ahora.
+- [ ] **Fase 2 de limpieza — código zombie del modelo viejo.** Auditoría de schema
+  vs. uso real (jun-2026) encontró dos islas sin consumidores:
+  `settlements` + `orders.settlement_id` + edge function `calculate-settlements`
+  (0 referencias en `src/`, ni desde páginas huérfanas — completamente muerto); y
+  `reconciliations` + edge function `manual-reconcile` + componente
+  `ManualReconcileDialog` (modelo pre-refactor MVP, sin `import` en ningún lado,
+  superado por `sale_status`/`payment_sales`). Candidatos a borrar en el próximo
+  sweep, confirmando antes que nada los necesite.
+
+## 📊 KPIs financieros — foco en cash position (sin ratios)
+
+- [x] **Cobrado (liberado) / Por liberar** en `/pipeline` — Σ `net_amount`
+  separado por `has_exact_data` + `money_release_date` (mismo criterio que
+  `/conciliacion`). Implementado jun-2026. Va a mostrar $0 hasta que corra el
+  backfill de Paso 1 (`sync-meli-payment-details`); caption avisa cuántas
+  órdenes pagadas todavía no tienen dato exacto.
+- [ ] **Coherencia financiera** (Neto económico = Cobrado + Por liberar) —
+  rescatar `DashboardCoherence`, cablear con los totales de arriba.
+- [ ] **Forecast de liberación 7/14/30 días** — rescatar
+  `DashboardCashForecast`, agrupando `orders` por `money_release_date`. Es el
+  "¿dónde va a estar mi plata?" que pide el dueño.
+- [ ] **Alertas de compliance** (ventas pagadas sin doc, devoluciones sin NC)
+  — rescatar `DashboardAccountingAlerts` (lógica ya hecha), falta cablear la
+  query y montarlo en `/conciliacion` o `/pipeline`.
+
+### ⏳ Bloqueado por deploy (Paso 1/2 de la épica de pagos)
+- [ ] **IVA exacto** (ya listado arriba como 🟢) — depende del deploy de Bsale.
+- [ ] **Comisión real vs. estimada** y **aging de liberación** — depende del
+  deploy + backfill de `sync-meli-payment-details` (Paso 1/2).
+
+### ⚪ Descartado
+- Ratios (% comisión efectiva, ticket promedio, tasa de cancelación, ratio
+  NC/ventas) — no aportan, fuera de foco.
+- **Margen bruto / COGS** — columnas siempre vacías, requeriría catálogo de
+  costos por producto (carga manual). No es dato real disponible.
+- **Fintoc** para `bank_movements` — el CSV manual (ya construido) cubre el
+  caso de uso; posponer hasta que el dato bancario manual demuestre valor.
 
 ---
 
@@ -86,7 +124,30 @@ sino porque la fuente está mal cableada.
 sintético, indicador de **aging** (liberación vencida sin pago real = plata a
 reclamar), auditoría de comisión (real vs estimada), y columna **"Pago"** en la
 página Conciliación (no pantalla aparte). 4ª pata (después): banco con
-`import-bank-movements`.
+`import-bank-movements`. *(Esta pata ya existe: tabla `bank_movements`
+con RLS/índices + edge function que parsea CSV y extrae referencia MELI/MP
+— migración oct-2025. No es desde cero, falta ruta/UI que la use.)*
+
+### Paso 1 (HECHO en código, falta deploy + backfill)
+
+`sync-meli-payment-details` ya no tiene el cap de 50/ventana de 30 días: ahora
+recorre **todas** las órdenes `has_exact_data=false` (más recientes primero) y
+se auto-encadena (mismo patrón que `enrich-meli-billing`) hasta vaciar el backlog.
+Por cada pago real de MP procesado, además de actualizar `orders`, hace upsert en
+`payments` (`external_payment_id = payment_id` de MP, `status: 'ALLOCATED'`) y
+crea el link en `payment_sales` (`allocated_amount = net_received_amount`) — esta
+es la data real que hoy solo fabricaba `sync-meli-settlements`.
+
+### Paso 2 (después del backfill)
+
+- **Jubilar `sync-meli-settlements`**: dejar de invocarlo y limpiar las filas
+  sintéticas (`raw_data->>source = 'sync-meli-settlements'`) en `payments`/
+  `payment_sales` para que no dupliquen los links reales del Paso 1.
+- Indicador de **aging** (liberación vencida sin pago real = plata a reclamar).
+- Auditoría de comisión (real vs estimada).
+- Columna **"Pago"** en la página Conciliación.
+- Sacar el `tax_amount: 0` hardcodeado de `sync-meli-payment-details` si
+  corresponde calcularlo (relacionado con el ítem de IVA exacto de Bsale).
 
 ## ✅ Resuelto
 
@@ -113,5 +174,5 @@ página Conciliación (no pantalla aparte). 4ª pata (después): banco con
 | `enrich-meli-billing` (3) | 🟢 sano (batches + auto-chaining) |
 | `auto-reconcile` (4) | 🟢 sano (pack confirmado) |
 | `sync-payments` | 🔴 roto + dormido |
-| `sync-meli-settlements` | 🔴 sintético |
-| `sync-meli-payment-details` | 🟠 real pero capado y desconectado |
+| `sync-meli-settlements` | 🔴 sintético — a jubilar (ver Paso 2 de la épica de pagos) |
+| `sync-meli-payment-details` | 🟡 Paso 1 hecho en código (despaginado + conecta `payments`/`payment_sales`), falta deploy |

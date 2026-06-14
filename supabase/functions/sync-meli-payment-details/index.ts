@@ -45,10 +45,10 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { days_back = 30, limit = 50 } = await req.json();
-    const effectiveLimit = Math.min(limit, 50); // Force max 50 orders to prevent timeout
+    const { days_back, limit = 50 } = await req.json().catch(() => ({}));
+    const effectiveLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
 
-    console.log(`🚀 Fetching exact payment details for orders from last ${days_back} days (limit: ${effectiveLimit})`);
+    console.log(`🚀 Fetching exact payment details (limit: ${effectiveLimit}, days_back: ${days_back ?? 'sin límite — backfill completo'})`);
 
     // 1. Get MELI account
     const { data: meliAccount, error: accountError } = await supabase
@@ -106,17 +106,22 @@ Deno.serve(async (req) => {
       }).eq('id', meliAccount.id);
     }
 
-    // 3. Get orders without exact data
-    const cutoffDate = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
-    
-    const { data: orders, error: ordersError } = await supabase
+    // 3. Get orders without exact data (most recent first; self-chains until none remain)
+    let ordersQuery = supabase
       .from('orders')
       .select('id, order_id, amount, raw_data')
       .eq('channel', 'meli')
       .eq('channel_account_id', meliAccount.id)
       .eq('has_exact_data', false)
-      .gte('order_date', cutoffDate)
+      .order('order_date', { ascending: false })
       .limit(effectiveLimit);
+
+    if (days_back) {
+      const cutoffDate = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
+      ordersQuery = ordersQuery.gte('order_date', cutoffDate);
+    }
+
+    const { data: orders, error: ordersError } = await ordersQuery;
 
     if (ordersError) throw ordersError;
 
@@ -142,6 +147,7 @@ Deno.serve(async (req) => {
     let updated = 0;
     let errors = 0;
     let skipped = 0;
+    let paymentsLinked = 0;
 
     // 4. Process orders in batches of 10
     const BATCH_SIZE = 10;
@@ -255,12 +261,57 @@ Deno.serve(async (req) => {
                 orderHasValidPayment = true;
                 totalNetReceived += actualNetReceived;
                 totalFees += paymentFees;
-                
+
                 // Track latest money release date
                 const releaseDate = paymentDetails.money_release_date || paymentDetails.date_approved;
                 if (releaseDate) {
                   if (!latestMoneyReleaseDate || new Date(releaseDate) > new Date(latestMoneyReleaseDate)) {
                     latestMoneyReleaseDate = releaseDate;
+                  }
+                }
+
+                // Mirror the real MP payment into the ledger (payments + payment_sales),
+                // replacing the synthetic rows that sync-meli-settlements used to fabricate.
+                const { data: paymentRow, error: paymentUpsertError } = await supabase
+                  .from('payments')
+                  .upsert({
+                    user_id: user.id,
+                    payment_provider: 'MERCADOPAGO',
+                    external_payment_id: paymentId.toString(),
+                    payment_date: paymentDetails.date_approved || releaseDate || new Date().toISOString(),
+                    gross_amount: transactionAmount,
+                    net_amount: actualNetReceived,
+                    fees_amount: paymentFees,
+                    amount: actualNetReceived,
+                    status: 'ALLOCATED',
+                    reference: `MP ${paymentId} · Orden ${order.order_id}`,
+                    raw_data: {
+                      source: 'sync-meli-payment-details',
+                      order_id: order.order_id,
+                      money_release_date: releaseDate,
+                      mp_status: paymentDetails.status,
+                    },
+                  }, { onConflict: 'external_payment_id' })
+                  .select('id')
+                  .single();
+
+                if (paymentUpsertError) {
+                  console.error(`    ❌ Error upserting payment ledger row: ${paymentUpsertError.message}`);
+                  errors++;
+                } else {
+                  const { error: linkError } = await supabase
+                    .from('payment_sales')
+                    .upsert({
+                      payment_id: paymentRow.id,
+                      sale_id: order.id,
+                      allocated_amount: actualNetReceived,
+                    }, { onConflict: 'payment_id,sale_id' });
+
+                  if (linkError) {
+                    console.error(`    ❌ Error linking payment_sales: ${linkError.message}`);
+                    errors++;
+                  } else {
+                    paymentsLinked++;
                   }
                 }
               }
@@ -325,15 +376,43 @@ Deno.serve(async (req) => {
     }
 
     const successRate = processed > 0 ? ((updated / processed) * 100).toFixed(1) : '0';
-    
+
+    // 5. Count remaining orders and self-chain if there's more backlog to process
+    let remainingQuery = supabase
+      .from('orders')
+      .select('*', { count: 'exact', head: true })
+      .eq('channel', 'meli')
+      .eq('channel_account_id', meliAccount.id)
+      .eq('has_exact_data', false);
+
+    if (days_back) {
+      const cutoffDate = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
+      remainingQuery = remainingQuery.gte('order_date', cutoffDate);
+    }
+
+    const { count: remainingCount } = await remainingQuery;
+
     console.log(`\n✅ SYNC COMPLETED:
       - Total orders: ${totalOrders}
       - Processed: ${processed}
       - Updated: ${updated}
+      - Payments linked to ledger: ${paymentsLinked}
       - Skipped: ${skipped} (no payments)
       - Errors: ${errors}
       - Success rate: ${successRate}%
+      - Remaining without exact data: ${remainingCount ?? 0}
     `);
+
+    if ((remainingCount || 0) > 0 && updated > 0) {
+      console.log(`Chaining: ${remainingCount} orders remain, invoking sync-meli-payment-details again`);
+      try {
+        supabase.functions.invoke('sync-meli-payment-details', { body: { days_back, limit } }).catch((e) =>
+          console.error('Chain invoke failed:', e)
+        );
+      } catch (e) {
+        console.error('Chain invoke threw:', e);
+      }
+    }
 
     // Return final results
     return new Response(
@@ -341,8 +420,10 @@ Deno.serve(async (req) => {
         success: true,
         processed,
         updated,
+        paymentsLinked,
         skipped,
         errors,
+        remaining: remainingCount ?? 0,
         successRate: parseFloat(successRate),
         message: `✅ Sincronización completada: ${updated}/${totalOrders} órdenes actualizadas`
       }),
