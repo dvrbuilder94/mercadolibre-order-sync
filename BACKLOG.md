@@ -63,6 +63,14 @@ Priorizado y curado. Actualizado: 2026-06-14.
   esencial.
 - [ ] **Δ doc en Conciliación**: posible falso positivo si un pack cruza el filtro de
   período. Correctitud menor; anotar el caso por ahora.
+- [ ] **Fase 2 de limpieza — código zombie del modelo viejo.** Auditoría de schema
+  vs. uso real (jun-2026) encontró dos islas sin consumidores:
+  `settlements` + `orders.settlement_id` + edge function `calculate-settlements`
+  (0 referencias en `src/`, ni desde páginas huérfanas — completamente muerto); y
+  `reconciliations` + edge function `manual-reconcile` + componente
+  `ManualReconcileDialog` (modelo pre-refactor MVP, sin `import` en ningún lado,
+  superado por `sale_status`/`payment_sales`). Candidatos a borrar en el próximo
+  sweep, confirmando antes que nada los necesite.
 
 ---
 
@@ -87,7 +95,9 @@ sino porque la fuente está mal cableada.
 sintético, indicador de **aging** (liberación vencida sin pago real = plata a
 reclamar), auditoría de comisión (real vs estimada), y columna **"Pago"** en la
 página Conciliación (no pantalla aparte). 4ª pata (después): banco con
-`import-bank-movements`.
+`import-bank-movements`. *(Esta pata ya existe: tabla `bank_movements`
+con RLS/índices + edge function que parsea CSV y extrae referencia MELI/MP
+— migración oct-2025. No es desde cero, falta ruta/UI que la use.)*
 
 ### Paso 1 (HECHO en código, falta deploy + backfill)
 
