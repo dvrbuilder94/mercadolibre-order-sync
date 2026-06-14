@@ -41,6 +41,15 @@ Priorizado y curado. Actualizado: 2026-06-13.
   capturar anulaciones, que el incremental no ve). Más complejo que sacar `details`.
 - [ ] **Nivel 2 — progreso "X de N" en vivo** (streaming o fila `sync_progress` +
   Realtime) para ML y Bsale. Mejor UX que el loop por clicks del frontend.
+- [ ] **"Exacta" (`AUTO_HARD_ORDER_ID`) sin validar — devoluciones/cambios/notas.**
+  Phase 0 (`auto-reconcile/index.ts:784-800`) matchea por igualdad de
+  `external_order_id` con `match_score:100`, sin chequear monto ni producto. Caso
+  real (jun-2026): boleta de cambio ("Nota de Crédito Devolución") con el order_id
+  original como referencia, pero de un producto distinto — Δ=$0, no lo detecta el
+  filtro actual. Mejora: flag visual cuando `reference_reason`/`payment_method_name`
+  (ya en `raw_data`, `sync-bsale-docs:527-530`) matchee "DEVOLUCION"/"CAMBIO"/"NOTA
+  DE CREDITO". No urgente — medir primero cuántos de los 264 "Exacta" de junio caen
+  en este patrón.
 
 ## ⚪ Park / baja prioridad / al pasar
 
