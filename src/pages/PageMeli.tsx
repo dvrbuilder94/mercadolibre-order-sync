@@ -37,6 +37,22 @@ const STATUS_COLOR: Record<string, string> = {
   shipped: "text-blue-600", pending: "text-yellow-600", cancelled: "text-slate-400",
 };
 
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  account_money: "Mercado Pago", visa: "Visa", master: "Mastercard", amex: "Amex",
+  diners: "Diners Club", debvisa: "Débito Visa", debmaster: "Débito Mastercard",
+  debmagna: "Débito Magna", magna: "Magna", pagofacil: "Pago Fácil", rapipago: "Rapipago",
+};
+
+// Humaniza payment_method_id desconocidos (ej. "ventipay" → "Ventipay",
+// "consumer_credits" → "Consumer credits") para que se vea legible aunque
+// no esté en el mapa — MELI agrega medios de pago/financiamiento sin aviso.
+const paymentMethodLabel = (pm: string | null | undefined): string => {
+  if (!pm || pm === "unknown") return "—";
+  if (PAYMENT_METHOD_LABEL[pm]) return PAYMENT_METHOD_LABEL[pm];
+  const words = pm.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
+
 export default function PageMeli() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
@@ -90,7 +106,7 @@ export default function PageMeli() {
       // Page
       const { data } = await supabase
         .from("orders")
-        .select("id, order_id, order_date, gross_amount, net_amount, commission_percentage, commission_amount, settlement_amount, shipping_cost, discount_amount, installments, money_release_date, status, customer_name, customer_tax_id, currency_id, shipping_mode, payment_method, raw_data, order_tax_documents(id)")
+        .select("id, order_id, order_date, gross_amount, net_amount, commission_percentage, commission_amount, settlement_amount, shipping_cost, discount_amount, installments, money_release_date, has_exact_data, status, customer_name, customer_tax_id, currency_id, shipping_mode, payment_method, raw_data, order_tax_documents(id)")
         .gte("order_date", from_).lte("order_date", to_)
         .neq("status", "cancelled")
         .order("order_date", { ascending: false })
@@ -191,6 +207,8 @@ export default function PageMeli() {
                 <th className="text-left px-4 py-3 font-medium">Cliente</th>
                 <th className="text-left px-4 py-3 font-medium">RUT</th>
                 <th className="text-right px-4 py-3 font-medium">Monto</th>
+                <th className="text-left px-4 py-3 font-medium">Medio de pago</th>
+                <th className="text-left px-4 py-3 font-medium">Liquidación</th>
                 <th className="text-left px-4 py-3 font-medium">Estado</th>
                 <th className="text-left px-4 py-3 font-medium">Boleta</th>
                 <th className="w-8 px-4 py-3"></th>
@@ -199,13 +217,13 @@ export default function PageMeli() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400">
+                  <td colSpan={10} className="text-center py-12 text-slate-400">
                     <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...
                   </td>
                 </tr>
               ) : orders.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
+                  <td colSpan={10} className="text-center py-12 text-slate-400 text-sm">
                     Sin órdenes. Prueba Sync MercadoLibre.
                   </td>
                 </tr>
@@ -223,6 +241,31 @@ export default function PageMeli() {
                         : <span className="text-slate-300">—</span>}
                     </td>
                     <td className="px-4 py-2.5 text-right font-mono">{CLP(o.gross_amount)}</td>
+                    <td className="px-4 py-2.5">
+                      <span className="text-xs text-slate-600">{paymentMethodLabel(o.payment_method)}</span>
+                      {o.installments > 1 && (
+                        <span className="block text-[10px] text-slate-400">{o.installments} cuotas</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {!o.has_exact_data ? (
+                        <span className="text-xs text-slate-300">Estimado</span>
+                      ) : (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-xs tabular-nums text-slate-700">{CLP(o.net_amount)}</span>
+                          {o.money_release_date && (() => {
+                            const liberado = new Date(o.money_release_date) <= new Date();
+                            return (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${
+                                liberado ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                              }`}>
+                                {liberado ? "Liberado" : "Pendiente"} {format(new Date(o.money_release_date), "dd/MM", { locale: es })}
+                              </span>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </td>
                     <td className={`px-4 py-2.5 text-xs ${STATUS_COLOR[o.status] || "text-slate-500"}`}>
                       {STATUS_LABEL[o.status] || o.status}
                     </td>
