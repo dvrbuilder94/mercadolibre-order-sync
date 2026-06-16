@@ -127,6 +127,7 @@ export default function PageVentas() {
   const [docsTotal, setDocsTotal] = useState(0);
   const [docsMeliCount, setDocsMeliCount] = useState(0);
   const [docsSum, setDocsSum] = useState<number | null>(null);
+  const [docFilteredTotal, setDocFilteredTotal] = useState<number | null>(null);
   const [docPage, setDocPage] = useState(0);
   const [docsLoading, setDocsLoading] = useState(true);
   const [docSyncing, setDocSyncing] = useState(false);
@@ -135,23 +136,36 @@ export default function PageVentas() {
   const [selectedDocSales, setSelectedDocSales] = useState<any[] | null>(null);
 
   // Load the sales associated to the selected document (handles packs: 1 doc ↔ N ventas).
+  // Two-step fetch (links, then orders) instead of a nested embed — embeds across
+  // order_tax_documents → orders have proven unreliable here (RLS + FK edge cases).
   useEffect(() => {
     if (!selectedDoc) { setSelectedDocSales(null); return; }
     let cancelled = false;
     setSelectedDocSales(null);
     (async () => {
-      const { data } = await supabase
+      const { data: links, error: linksError } = await supabase
         .from("order_tax_documents")
-        .select("allocated_amount, match_source, orders(order_id, order_date, gross_amount, customer_name, product_title, channel, status)")
+        .select("order_id, allocated_amount, match_source")
         .eq("tax_document_id", selectedDoc.id);
       if (cancelled) return;
-      const sales = (data ?? [])
-        .map((l: any) => ({
-          ...(Array.isArray(l.orders) ? l.orders[0] : l.orders),
-          allocated_amount: l.allocated_amount,
-          match_source: l.match_source,
-        }))
-        .filter((s: any) => s && s.order_id);
+      if (linksError || !links || links.length === 0) {
+        setSelectedDocSales([]);
+        return;
+      }
+      const orderIds = links.map((l: any) => l.order_id);
+      const { data: ordersData } = await supabase
+        .from("orders")
+        .select("id, order_id, order_date, gross_amount, customer_name, product_title, channel, status")
+        .in("id", orderIds);
+      if (cancelled) return;
+      const byId = new Map((ordersData ?? []).map((o: any) => [o.id, o]));
+      const sales = links
+        .map((l: any) => {
+          const o = byId.get(l.order_id);
+          if (!o) return null;
+          return { ...o, allocated_amount: l.allocated_amount, match_source: l.match_source };
+        })
+        .filter((s: any) => s !== null);
       setSelectedDocSales(sales);
     })();
     return () => { cancelled = true; };
@@ -224,23 +238,54 @@ export default function PageVentas() {
       setDocsMeliCount(meliC || 0);
       setDocsSum((sumRows as any)?.[0]?.sum ?? null);
 
-      // raw_data contains reference_reason and references.items from Bsale — used
-      // client-side to infer channel when detected_channel is null in DB.
-      const { data } = await supabase
-        .from("tax_documents")
-        .select("id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)")
-        .gte("document_date", from).lte("document_date", to)
-        .order("document_date", { ascending: false })
-        .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
+      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)";
 
-      setDocs(data || []);
+      if (channelFilter === "todos") {
+        setDocFilteredTotal(null);
+        // raw_data contains reference_reason and references.items from Bsale — used
+        // client-side to infer channel when detected_channel is null in DB.
+        const { data } = await supabase
+          .from("tax_documents")
+          .select(FULL_COLS)
+          .gte("document_date", from).lte("document_date", to)
+          .order("document_date", { ascending: false })
+          .order("id", { ascending: false })
+          .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
+
+        setDocs(data || []);
+      } else {
+        // Channel filter must consider every doc in the period (not just the
+        // current page), so first scan a light projection to find matching ids,
+        // then fetch full rows only for the page being shown.
+        const { data: light } = await supabase
+          .from("tax_documents")
+          .select("id, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references")
+          .gte("document_date", from).lte("document_date", to)
+          .order("document_date", { ascending: false })
+          .order("id", { ascending: false });
+
+        const matchedIds = (light || [])
+          .filter((d: any) => inferChannel(d.detected_channel, { reference_reason: d.reference_reason, references: d.references }) === channelFilter)
+          .map((d: any) => d.id);
+
+        setDocFilteredTotal(matchedIds.length);
+
+        const pageIds = matchedIds.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE);
+        if (pageIds.length === 0) {
+          setDocs([]);
+        } else {
+          const { data: full } = await supabase.from("tax_documents").select(FULL_COLS).in("id", pageIds);
+          const byId = new Map((full || []).map((d: any) => [d.id, d]));
+          setDocs(pageIds.map((id: string) => byId.get(id)).filter((d: any) => d !== undefined));
+        }
+      }
     } finally {
       setDocsLoading(false);
     }
-  }, [period]);
+  }, [period, channelFilter]);
 
   useEffect(() => { setOrderPage(0); setDocPage(0); setSelectedOrder(null); setSelectedDoc(null); setChannelFilter("todos"); }, [period]);
-  useEffect(() => { setOrderPage(0); setSelectedOrder(null); }, [channelFilter]);
+  useEffect(() => { setOrderPage(0); setSelectedOrder(null); setDocPage(0); setSelectedDoc(null); }, [channelFilter]);
   useEffect(() => { fetchOrders(orderPage); }, [fetchOrders, orderPage]);
   useEffect(() => { fetchDocs(docPage); }, [fetchDocs, docPage]);
 
@@ -283,7 +328,8 @@ export default function PageVentas() {
   };
 
   const orderTotalPages = Math.ceil(ordersTotal / PAGE_SIZE);
-  const docTotalPages   = Math.ceil(docsTotal / PAGE_SIZE);
+  const docListTotal    = channelFilter !== "todos" ? (docFilteredTotal ?? 0) : docsTotal;
+  const docTotalPages   = Math.ceil(docListTotal / PAGE_SIZE);
 
   return (
     <div className="flex min-h-screen bg-slate-50">
@@ -550,12 +596,11 @@ export default function PageVentas() {
                     </td></tr>
                   ) : docs.length === 0 ? (
                     <tr><td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
-                      Sin documentos. Prueba Sync Bsale.
+                      {channelFilter === "todos"
+                        ? "Sin documentos. Prueba Sync Bsale."
+                        : `Sin documentos de ${CHANNEL_LABEL[channelFilter] ?? channelFilter} en este período.`}
                     </td></tr>
-                  ) : docs.filter(d => {
-                    if (channelFilter === "todos") return true;
-                    return inferChannel(d.detected_channel, d.raw_data) === channelFilter;
-                  }).map(d => {
+                  ) : docs.map(d => {
                     const linkCount = (d.order_tax_documents as any[])?.length ?? 0;
                     const isLinked = linkCount > 0;
                     const isPack = linkCount > 1;
@@ -610,7 +655,7 @@ export default function PageVentas() {
 
             {docTotalPages > 1 && (
               <div className="flex items-center justify-between mt-3">
-                <span className="text-xs text-slate-400">Página {docPage + 1} de {docTotalPages} · {docsTotal} documentos</span>
+                <span className="text-xs text-slate-400">Página {docPage + 1} de {docTotalPages} · {docListTotal} documentos</span>
                 <div className="flex gap-2">
                   <button onClick={() => setDocPage(p => Math.max(0, p - 1))} disabled={docPage === 0 || docsLoading}
                     className="flex items-center gap-1 px-3 py-1.5 bg-white border rounded text-sm disabled:opacity-40 hover:bg-slate-50">
