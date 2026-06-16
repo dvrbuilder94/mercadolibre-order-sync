@@ -68,11 +68,36 @@ const formatRut = (body: string | null) => {
   return body.replace(/[^0-9Kk]/g, "") || "—";
 };
 
-// Canal inference: prefer explicit detected_channel; fall back to external_order_id
-// presence (10+ digit = MeLi order ID extracted from Bsale references by sync-bsale-docs).
-function inferChannel(detected: string | null, externalOrderId: string | null): string | null {
+// Client-side channel detection from reference text — mirrors sync-bsale-docs logic.
+// Used when detected_channel is null (doc synced before detection was added to sync).
+function detectChannelFromText(text: string | null): string | null {
+  if (!text) return null;
+  const u = text.toUpperCase();
+  if (u.includes('MERCADO LIBRE') || u.includes('MERCADOLIBRE') ||
+      u.includes('MERCADO PAGO') || u.includes('MERCADOPAGO')) return 'meli';
+  if (u.includes('FALABELLA') || u.includes('CMR')) return 'falabella';
+  if (u.includes('PARIS') || u.includes('CENCOSUD')) return 'paris';
+  if (u.includes('RIPLEY')) return 'ripley';
+  if (u.includes('AMAZON')) return 'amazon';
+  if (u.includes('SHOPIFY')) return 'shopify';
+  if (u.includes('LINIO')) return 'linio';
+  if (u.includes('RAPPI')) return 'rappi';
+  if (u.includes('WALMART') || u.includes('LIDER') || u.includes('LÍDER')) return 'walmart';
+  return null;
+}
+
+function inferChannel(detected: string | null, rawData: any): string | null {
   if (detected) return detected;
-  if (externalOrderId && /^\d{10,}$/.test(externalOrderId)) return 'meli';
+  // Fall back to text detection from stored reference_reason
+  const hit = detectChannelFromText(rawData?.reference_reason)
+    ?? detectChannelFromText(rawData?.payment_method_name);
+  if (hit) return hit;
+  // Check all references items
+  const refs: any[] = rawData?.references?.items ?? [];
+  for (const ref of refs) {
+    const h = detectChannelFromText(ref.reason) ?? detectChannelFromText(String(ref.number ?? ''));
+    if (h) return h;
+  }
   return null;
 }
 
@@ -175,12 +200,11 @@ export default function PageVentas() {
       setDocsMeliCount(meliC || 0);
       setDocsSum((sumRows as any)?.[0]?.sum ?? null);
 
-      // external_order_id is populated by sync-bsale-docs for MeLi boletas
-      // (10+ digit ML order ID extracted from references). Used as channel fallback
-      // when detected_channel is null (e.g. docs synced before detection was added).
+      // raw_data contains reference_reason and references.items from Bsale — used
+      // client-side to infer channel when detected_channel is null in DB.
       const { data } = await supabase
         .from("tax_documents")
-        .select("id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, external_order_id, status, external_url, raw_data, order_tax_documents(id)")
+        .select("id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)")
         .gte("document_date", from).lte("document_date", to)
         .order("document_date", { ascending: false })
         .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
@@ -506,12 +530,12 @@ export default function PageVentas() {
                     </td></tr>
                   ) : docs.filter(d => {
                     if (channelFilter === "todos") return true;
-                    return inferChannel(d.detected_channel, d.external_order_id) === channelFilter;
+                    return inferChannel(d.detected_channel, d.raw_data) === channelFilter;
                   }).map(d => {
                     const isLinked = (d.order_tax_documents as any[])?.length > 0;
                     const isVoided = d.status === "voided";
                     const isSelected = selectedDoc?.id === d.id;
-                    const effectiveChannel = inferChannel(d.detected_channel, d.external_order_id);
+                    const effectiveChannel = inferChannel(d.detected_channel, d.raw_data);
                     return (
                       <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${isVoided ? "opacity-40" : ""} ${isSelected ? "bg-slate-100" : ""}`}>
                         <td className="px-4 py-2.5">
