@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2, Wallet } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
 import { SCORE_OK } from "@/lib/constants";
 
 const periodLabel = (p: string) => {
@@ -91,9 +91,6 @@ export default function PageConciliacion() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("attention");
   const [page, setPage] = useState(0);
-  const [syncingPayments, setSyncingPayments] = useState(false);
-  const [syncMsg, setSyncMsg] = useState<string | null>(null);
-
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) navigate("/auth");
@@ -145,40 +142,6 @@ export default function PageConciliacion() {
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
     setPeriod(format(new Date(y, m - 1 + delta, 1), "yyyy-MM"));
-  };
-
-  // Trae el neto real + fecha de liberación desde MercadoPago (sync-meli-payment-details).
-  // La función se auto-encadena en el backend, pero acá iteramos también para
-  // saber cuándo terminó y refrescar la tabla con los datos nuevos.
-  const syncPayments = async () => {
-    setSyncingPayments(true);
-    setSyncMsg(null);
-    let totalLinked = 0;
-    let round = 0;
-    try {
-      while (true) {
-        round++;
-        const { data, error } = await supabase.functions.invoke("sync-meli-payment-details", {
-          body: { limit: 50 },
-        });
-        if (error) throw error;
-        totalLinked += data?.paymentsLinked ?? 0;
-        const remaining = data?.remaining ?? 0;
-        if (remaining === 0 || (data?.updated ?? 0) === 0 || round >= 20) {
-          setSyncMsg(
-            remaining > 0
-              ? `✅ ${totalLinked} pagos vinculados · faltan ~${remaining}, volvé a tocar para continuar`
-              : `✅ ${totalLinked} pagos vinculados · backlog completo`
-          );
-          break;
-        }
-      }
-      await fetchRows();
-    } catch (e: any) {
-      setSyncMsg(`❌ ${e?.message || "error desconocido"}`);
-    } finally {
-      setSyncingPayments(false);
-    }
   };
 
   // Δ a nivel documento: suma de las ventas vinculadas a cada doc vs total del doc.
@@ -352,17 +315,7 @@ export default function PageConciliacion() {
 
         {/* Plata real de MercadoPago: cuánto me pagaron / cuándo me pagan */}
         <div className="bg-white border rounded-lg p-4 mb-6">
-          <div className="flex items-start justify-between gap-4 mb-3">
-            <p className="text-xs text-slate-400">Plata real de MercadoPago en este período</p>
-            <button
-              onClick={syncPayments}
-              disabled={syncingPayments}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors shrink-0"
-            >
-              {syncingPayments ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wallet className="h-3.5 w-3.5" />}
-              Sincronizar pagos
-            </button>
-          </div>
+          <p className="text-xs text-slate-400 mb-3">Plata real de MercadoPago en este período</p>
           <div className="flex flex-wrap gap-2 items-center">
             <span className="text-xs px-2 py-1 rounded-md font-medium bg-green-100 text-green-700">
               Liberado: {clp(paymentSummary.released)} ({paymentSummary.releasedCount})
@@ -374,7 +327,13 @@ export default function PageConciliacion() {
               Sin datos exactos: {paymentSummary.noData}
             </span>
           </div>
-          {syncMsg && <p className="text-xs text-slate-500 mt-3">{syncMsg}</p>}
+          {paymentSummary.noData > 0 && (
+            <p className="text-xs text-slate-400 mt-2">
+              Corre <b>Sync pagos</b> en{" "}
+              <a href="/pipeline" className="text-blue-500 underline">Sincronización</a>{" "}
+              para traer los datos exactos de {paymentSummary.noData} órdenes.
+            </p>
+          )}
         </div>
 
         {/* Filtros */}

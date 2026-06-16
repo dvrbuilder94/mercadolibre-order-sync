@@ -7,7 +7,7 @@ const links = [
   { to: "/resumen",      label: "Resumen",       icon: Home },
   { to: "/ventas",       label: "Ventas",         icon: ShoppingBag },
   { to: "/conciliacion", label: "Conciliación",  icon: GitMerge },
-  { to: "/pipeline",     label: "Pipeline",       icon: Activity },
+  { to: "/pipeline",     label: "Sincronización", icon: Activity },
   { to: "/config",       label: "Configuración", icon: Settings },
 ];
 
