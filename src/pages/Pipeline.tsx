@@ -176,7 +176,9 @@ export default function Pipeline() {
       const vigentes = orders.filter(o => o.status !== "cancelled");
       const matched = vigentes.filter(o => (o.order_tax_documents as any[])?.length > 0);
       const grossSales = vigentes.reduce((s, o) => s + num(o.gross_amount), 0);
-      const totalFees  = vigentes.reduce((s, o) => s + num(o.commission_amount) + num(o.financing_fee), 0);
+      // commission_amount = total fees set by sync-meli-payment-details (marketplace + financing + shipping).
+      // financing_fee is the same value stored twice in that function — do NOT add both or it doubles.
+      const totalFees  = vigentes.reduce((s, o) => s + num(o.commission_amount), 0);
       // vat_amount no se puebla en el sync (queda en 0). Si algún día se puebla
       // lo usamos; si no, estimamos el IVA débito como la parte afecta del bruto
       // (bruto = neto × 1,19 → IVA = bruto − bruto/1,19). El exacto saldrá de

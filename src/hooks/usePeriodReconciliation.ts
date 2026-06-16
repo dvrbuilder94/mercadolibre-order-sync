@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import type { PeriodReconciliation } from '@/types/reconciliation';
-import { classifyCharge, type ChargeCategory } from '@/lib/meliChargeMap';
 
 const SCORE_OK = 80;
 
@@ -14,29 +13,10 @@ const channelLabel = (id: string) => CHANNEL_LABEL[id] ?? id;
 const periodRange = (periodo: string) => {
   const [y, m] = periodo.split('-').map(Number);
   return {
-    from: `${y}-${String(m).padStart(2, '0')}-01`,
-    to:   new Date(y, m, 0).toISOString().slice(0, 10),
+    from: `${y}-${String(m).padStart(2, '0')}-01T00:00:00`,
+    to:   new Date(y, m, 0).toISOString().slice(0, 10) + 'T23:59:59',
   };
 };
-
-type CategorySums = Record<ChargeCategory, number>;
-const emptySums = (): CategorySums => ({
-  comision_marketplace: 0, costos_envio: 0,
-  comision_pago: 0, reembolso: 0, sin_categorizar: 0,
-});
-
-function feesFromDetail(d: any): CategorySums {
-  const acc = emptySums();
-  const fd = Array.isArray(d?.fee_details) ? d.fee_details : [];
-  if (fd.length > 0) {
-    for (const f of fd) acc[classifyCharge(f.type)] += Math.abs(Number(f.amount) || 0);
-  } else {
-    acc.comision_marketplace += Math.abs(Number(d?.marketplace_fee) || 0);
-    acc.comision_pago        += Math.abs(Number(d?.financing_fee)   || 0);
-    acc.costos_envio         += Math.abs(Number(d?.shipping_fee)     || 0);
-  }
-  return acc;
-}
 
 export function usePeriodReconciliation(canalId: string, periodo: string) {
   const [data, setData]       = useState<PeriodReconciliation | null>(null);
@@ -54,6 +34,10 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         const PAGE = 1000;
 
         // ── 1. Paginate all non-cancelled orders in period ────────────────────
+        // We read commission_amount (= total fees when has_exact_data=true),
+        // shipping_cost, has_exact_data, and the DTE link count.
+        // meli_payment_details is NOT embedded here — PostgREST FK not registered,
+        // so the embed silently returns []. Use has_exact_data flag instead.
         const rows: any[] = [];
         {
           let offset = 0;
@@ -61,10 +45,9 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
             let q = supabase
               .from('orders')
               .select(`
-                id, gross_amount, net_amount, commission_amount, shipping_cost, financing_fee,
+                id, gross_amount, net_amount, commission_amount, shipping_cost,
                 status, channel, money_release_date, has_exact_data, raw_data,
-                order_tax_documents(id),
-                meli_payment_details(net_received_amount, total_fees, marketplace_fee, financing_fee, shipping_fee, fee_details)
+                order_tax_documents(id)
               `)
               .gte('order_date', from)
               .lte('order_date', to)
@@ -79,7 +62,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         }
         if (cancelled) return;
 
-        // ── 2. All-channels breakdown for the canal selector ──────────────────
+        // ── 2. All-channels breakdown for canal selector ──────────────────────
         const allRows: any[] = [];
         {
           let offset = 0;
@@ -98,7 +81,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           }
         }
 
-        // ── 3. Canal selector data ────────────────────────────────────────────
+        // ── 3. Canal selector ─────────────────────────────────────────────────
         const channelMap = new Map<string, { ordenes: number; monto: number }>();
         for (const r of allRows) {
           const ch = (r.channel as string) ?? 'desconocido';
@@ -114,6 +97,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
 
         // ── 4. Ingresos ───────────────────────────────────────────────────────
         const ventasBrutas = rows.reduce((s, r) => s + (r.gross_amount ?? 0), 0);
+
         const porCanalMap = new Map<string, { ordenes: number; monto: number }>();
         for (const r of rows) {
           const ch = (r.channel as string) ?? 'desconocido';
@@ -130,34 +114,29 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           faltan: rows.length - conDteCount,
         };
 
-        // ── 5. Egresos ────────────────────────────────────────────────────────
-        const sums = emptySums();
-        let exactCount = 0;
+        // ── 5. Datos exactos de MercadoPago ──────────────────────────────────
+        // has_exact_data=true means sync-meli-payment-details ran for this order.
+        // When true: commission_amount = real total fees (marketplace+shipping+financing).
+        //            net_amount = real net received.
+        // When false: commission_amount = estimated (from sync-meli-orders).
+        const exactCount = rows.filter(r => r.has_exact_data).length;
+        const datosExactos = {
+          ordenes: exactCount,
+          total:   rows.length,
+          pct:     rows.length > 0 ? Math.round((exactCount / rows.length) * 100) : 0,
+        };
 
-        for (const r of rows) {
-          const details = (r.meli_payment_details as any[]) ?? [];
-          if (details.length > 0) {
-            // EXACT: real MercadoPago fee breakdown via meliChargeMap
-            exactCount++;
-            for (const d of details) {
-              const f = feesFromDetail(d);
-              sums.comision_marketplace += f.comision_marketplace;
-              sums.costos_envio         += f.costos_envio;
-              sums.comision_pago        += f.comision_pago;
-              sums.reembolso            += f.reembolso;
-              sums.sin_categorizar      += f.sin_categorizar;
-            }
-          } else {
-            // FALLBACK: approximate columns from sync-meli-orders.
-            // Only commission + shipping are reliable here.
-            // financing_fee is set to totalFees by sync-meli-payment-details
-            // which would double-count — skip it in fallback.
-            sums.comision_marketplace += Math.abs(r.commission_amount ?? 0);
-            sums.costos_envio         += Math.abs(r.shipping_cost ?? 0);
-          }
-        }
+        // ── 6. Egresos ────────────────────────────────────────────────────────
+        // commission_amount is the single reliable fee column (not financing_fee
+        // which Pipeline.tsx previously double-counted).
+        // shipping_cost = shipping charged to buyer (not always a seller deduction).
+        // comision_pago breakdown requires meli_payment_details embed (pending FK setup).
+        const comisionMonto = rows.reduce((s, r) => s + Math.abs(r.commission_amount ?? 0), 0);
+        const envioCosto    = rows.reduce((s, r) => s + Math.abs(r.shipping_cost ?? 0), 0);
+        // TODO: comision_pago per-order breakdown — needs meli_payment_details FK in schema
+        const comisionPagoMonto = 0;
 
-        // Devoluciones: cancelled/returned orders (excluded from main rows)
+        // Devoluciones
         let devQuery = supabase
           .from('orders')
           .select('gross_amount, order_tax_documents(id)')
@@ -166,35 +145,28 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           .in('status', ['cancelled', 'returned']);
         if (canalId !== 'todos') devQuery = devQuery.eq('channel', canalId);
         const { data: devRows } = await devQuery;
-        const devolucionMonto = (devRows ?? []).reduce((s, r) => s + (r.gross_amount ?? 0), 0) + sums.reembolso;
+        const devolucionMonto = (devRows ?? []).reduce((s, r) => s + (r.gross_amount ?? 0), 0);
         const devConNC = (devRows ?? []).filter(r => ((r.order_tax_documents as any[]) ?? []).length > 0).length;
         const devTotal = (devRows ?? []).length;
 
-        const datosExactos = {
-          ordenes: exactCount,
-          total:   rows.length,
-          pct:     rows.length > 0 ? Math.round((exactCount / rows.length) * 100) : 0,
-        };
-
-        // TODO: comisionMarketplace.conFactura — facturas de comisión de MeLi no disponibles aún
+        // TODO: facturas de comisión de MeLi no disponibles en tax_documents aún
         const comisionConFactura = { pct: 0, faltan: rows.length };
 
-        // ── 6. Líquido ────────────────────────────────────────────────────────
-        const liquidoRecibido =
-          ventasBrutas - sums.comision_marketplace - sums.costos_envio - sums.comision_pago - devolucionMonto;
+        // ── 7. Líquido ────────────────────────────────────────────────────────
+        const liquidoRecibido = ventasBrutas - comisionMonto - envioCosto - comisionPagoMonto - devolucionMonto;
 
-        // ── 7. Abonos banco (filtrado por canal) ──────────────────────────────
+        // ── 8. Abonos banco ───────────────────────────────────────────────────
         let bankQuery = supabase
           .from('bank_movements')
           .select('amount')
-          .gte('movement_date', from)
-          .lte('movement_date', to);
+          .gte('movement_date', from.slice(0, 10))
+          .lte('movement_date', to.slice(0, 10));
         if (canalId !== 'todos') bankQuery = (bankQuery as any).eq('source_channel', canalId);
         const { data: bankRows } = await bankQuery;
         const abonosBanco = (bankRows ?? []).reduce((s: number, r: any) => s + (r.amount ?? 0), 0);
         const diferencia  = liquidoRecibido - abonosBanco;
 
-        // ── 8. Excepciones ────────────────────────────────────────────────────
+        // ── 9. Excepciones ────────────────────────────────────────────────────
         const hoy = new Date();
         const pagosAtascados = rows.filter(r =>
           r.money_release_date && new Date(r.money_release_date) < hoy && !r.has_exact_data
@@ -211,7 +183,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           { tipo: 'score_bajo',        label: 'Coincidencias de baja confianza',    count: scoreBajo,         severidad: 'warning' },
         ];
 
-        // ── 9. Cierre ─────────────────────────────────────────────────────────
+        // ── 10. Cierre ────────────────────────────────────────────────────────
         const { data: closing } = await supabase
           .from('monthly_closings').select('status').eq('period', periodo).maybeSingle();
         const estadoCierre = closing?.status === 'closed' || closing?.status === 'closed_with_observations'
@@ -223,9 +195,9 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
             periodo, canalId, canales,
             ingresos: { ventasBrutas, porCanal, conDte },
             egresos: {
-              comisionMarketplace: { monto: sums.comision_marketplace, conFactura: comisionConFactura },
-              costosEnvio:         { monto: sums.costos_envio },
-              comisionPago:        { monto: sums.comision_pago },
+              comisionMarketplace: { monto: comisionMonto,      conFactura: comisionConFactura },
+              costosEnvio:         { monto: envioCosto },
+              comisionPago:        { monto: comisionPagoMonto },
               reembolsos:          { monto: devolucionMonto, conNotaCredito: { con: devConNC, total: devTotal } },
             },
             liquidoRecibido, abonosBanco, diferencia, datosExactos, excepciones,
