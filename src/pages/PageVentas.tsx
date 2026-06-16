@@ -114,7 +114,7 @@ export default function PageVentas() {
   // Orders tab
   const [orders, setOrders] = useState<any[]>([]);
   const [ordersTotal, setOrdersTotal] = useState(0);
-  const [ordersWithDoc, setOrdersWithDoc] = useState(0);
+  const [ordersWithoutDoc, setOrdersWithoutDoc] = useState(0);
   const [ordersSum, setOrdersSum] = useState<number | null>(null);
   const [ordersListTotal, setOrdersListTotal] = useState(0);
   const [orderPage, setOrderPage] = useState(0);
@@ -212,9 +212,13 @@ export default function PageVentas() {
           ? "*, order_tax_documents!left(id)"
           : "*";
 
-      const [{ count }, { count: withDocC }, { data: sumRows }, { count: listCount }] = await Promise.all([
+      // "Sin documento" must be counted via the !left + is-null anti-join, never
+      // via !inner(id) row counts: an order linked to 2+ docs (boleta + nota de
+      // crédito) gets counted twice by !inner, which silently deflates
+      // ordersTotal - ordersWithDoc below the real number of undocumented orders.
+      const [{ count }, { count: noDocC }, { data: sumRows }, { count: listCount }] = await Promise.all([
         applyBase(supabase.from("orders").select("*", { count: "exact", head: true })),
-        applyBase(supabase.from("orders").select("*, order_tax_documents!inner(id)", { count: "exact", head: true })),
+        applyBase(supabase.from("orders").select("*, order_tax_documents!left(id)", { count: "exact", head: true })).is("order_tax_documents.id", null),
         applyBase(supabase.from("orders").select("gross_amount.sum()")),
         (() => {
           let q = applyBase(supabase.from("orders").select(listCountJoin, { count: "exact", head: true }));
@@ -223,7 +227,7 @@ export default function PageVentas() {
         })(),
       ]);
       setOrdersTotal(count || 0);
-      setOrdersWithDoc(withDocC || 0);
+      setOrdersWithoutDoc(noDocC || 0);
       setOrdersListTotal(listCount || 0);
       const rawSum = (sumRows as any)?.[0];
       const parsedSum = rawSum != null ? Number(rawSum?.sum ?? rawSum?.gross_amount) : NaN;
@@ -327,7 +331,13 @@ export default function PageVentas() {
   const syncOrders = async () => {
     setOrderSyncing(true); setOrderSyncMsg("Sincronizando...");
     try {
-      const { data, error } = await supabase.functions.invoke("sync-meli-orders");
+      // Sync the period currently being viewed, not the function's "last 30
+      // days" default — otherwise clicking sync while looking at an older
+      // month silently fetches recent orders instead and nothing changes.
+      const { from, to } = periodRange(period);
+      const { data, error } = await supabase.functions.invoke("sync-meli-orders", {
+        body: { date_from: from + "T00:00:00", date_to: to + "T23:59:59", max_pages: 50 },
+      });
       if (error) throw error;
       setOrderSyncMsg(`✅ ${data?.synced || 0} órdenes`);
       fetchOrders(orderPage);
@@ -425,9 +435,9 @@ export default function PageVentas() {
                 {[
                   { label: "Órdenes",       value: ordersLoading ? "—" : ordersTotal,                                              sub: "no canceladas" },
                   { label: "Total ventas",  value: ordersLoading || ordersSum === null ? "—" : CLP(ordersSum),                    sub: "bruto mensual" },
-                  { label: "Con documento", value: ordersLoading ? "—" : ordersWithDoc,                                           sub: "con boleta/factura", color: "text-emerald-600" },
-                  { label: "Sin documento", value: ordersLoading ? "—" : Math.max(ordersTotal - ordersWithDoc, 0),                sub: "sin DTE",
-                    color: (ordersTotal - ordersWithDoc) > 0 ? "text-red-600" : "text-emerald-600" },
+                  { label: "Con documento", value: ordersLoading ? "—" : Math.max(ordersTotal - ordersWithoutDoc, 0),             sub: "con boleta/factura", color: "text-emerald-600" },
+                  { label: "Sin documento", value: ordersLoading ? "—" : ordersWithoutDoc,                                        sub: "sin DTE",
+                    color: ordersWithoutDoc > 0 ? "text-red-600" : "text-emerald-600" },
                 ].map(({ label, value, sub, color }) => (
                   <div key={label} className="bg-white border rounded-lg p-3">
                     <p className="text-xs text-slate-400 mb-0.5">{label}</p>
