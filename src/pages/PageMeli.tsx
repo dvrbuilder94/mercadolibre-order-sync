@@ -114,7 +114,7 @@ export default function PageMeli() {
       // Page
       const { data } = await supabase
         .from("orders")
-        .select("id, order_id, order_date, gross_amount, net_amount, commission_percentage, commission_amount, settlement_amount, shipping_cost, discount_amount, installments, money_release_date, has_exact_data, status, customer_name, customer_tax_id, customer_tax_id_dv, product_title, currency_id, shipping_mode, payment_method, raw_data, order_tax_documents(id)")
+        .select("id, order_id, order_date, gross_amount, net_amount, commission_percentage, commission_amount, settlement_amount, shipping_cost, discount_amount, installments, money_release_date, payment_approved_at, has_exact_data, status, customer_name, customer_tax_id, customer_tax_id_dv, product_title, currency_id, shipping_mode, payment_method, raw_data, order_tax_documents(id)")
         .gte("order_date", from_).lte("order_date", to_)
         .neq("status", "cancelled")
         .order("order_date", { ascending: false })
@@ -281,25 +281,34 @@ export default function PageMeli() {
                       )}
                     </td>
 
-                    {/* Liquidación: neto real + Liberado/Pendiente, o "Estimado" si no hay dato exacto */}
+                    {/* Liquidación: cuándo pagó el comprador + cuándo llega el dinero al seller.
+                        Muestra siempre las fechas — colores sólidos con dato exacto (post-backfill),
+                        muted + "est." cuando es la estimación de sync-meli-orders (+14d). */}
                     <td className="px-4 py-2.5">
-                      {!o.has_exact_data ? (
-                        <span className="text-xs text-slate-300">Estimado</span>
-                      ) : (
-                        <div className="flex flex-col gap-0.5">
-                          <span className="text-xs tabular-nums text-slate-700">{CLP(o.net_amount)}</span>
-                          {o.money_release_date && (() => {
-                            const liberado = new Date(o.money_release_date) <= new Date();
-                            return (
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${
-                                liberado ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-                              }`}>
-                                {liberado ? "Liberado" : "Pendiente"} {format(new Date(o.money_release_date), "dd/MM", { locale: es })}
-                              </span>
-                            );
-                          })()}
-                        </div>
-                      )}
+                      <div className="flex flex-col gap-0.5">
+                        {o.payment_approved_at && (
+                          <span className="text-[10px] text-slate-400">
+                            Cobrado {format(new Date(o.payment_approved_at), "dd/MM", { locale: es })}
+                          </span>
+                        )}
+                        {o.money_release_date && (() => {
+                          const liberado = new Date(o.money_release_date) <= new Date();
+                          const exact = !!o.has_exact_data;
+                          return (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${
+                              exact
+                                ? liberado ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                                : liberado ? "bg-slate-100 text-slate-500"  : "bg-slate-100 text-slate-400"
+                            }`}>
+                              {liberado ? "Liberado" : "Pendiente"} {format(new Date(o.money_release_date), "dd/MM", { locale: es })}
+                              {!exact && " est."}
+                            </span>
+                          );
+                        })()}
+                        {o.has_exact_data && o.net_amount && (
+                          <span className="text-xs tabular-nums text-slate-600">{CLP(o.net_amount)}</span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Boleta: "Falta" en rojo cuando no hay documento (antes era gris y pasaba desapercibido) */}
