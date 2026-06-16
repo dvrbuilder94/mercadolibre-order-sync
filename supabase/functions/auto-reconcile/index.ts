@@ -334,6 +334,14 @@ Deno.serve(async (req) => {
           || n === '66666666' || n === '1111111';
     };
 
+    // Helper: Hard channel gate. RUT-less ML orders get a free RUT score below
+    // (we can't verify identity), so amount+date alone can hit the auto-link
+    // threshold by coincidence with a doc from a totally different channel.
+    // When both sides have a known channel and they disagree, never treat it
+    // as a candidate — no score should be able to override known contradicting evidence.
+    const channelsConflict = (docChannel: string | null | undefined, orderChannel: string | null | undefined): boolean =>
+      !!docChannel && !!orderChannel && docChannel !== orderChannel;
+
     // Helper: Calculate name similarity (0-1)
     const calculateNameSimilarity = (name1: string, name2: string): number => {
       const n1 = normalizeString(name1);
@@ -566,6 +574,7 @@ Deno.serve(async (req) => {
         if (linkedOrderIds.has(order.id)) return false;
         if (order.status === 'cancelled') return false;
         if (order.currency_id && order.currency_id !== 'CLP') return false;
+        if (channelsConflict(doc.detected_channel, order.channel)) return false;
         const orderTime = order._dateMs || new Date(order.order_date).getTime();
         return Math.abs((docTime - orderTime) / (24 * 60 * 60 * 1000)) <= 3;
       });
@@ -976,6 +985,7 @@ Deno.serve(async (req) => {
         const order = candidatePool[i];
         if (order._dateMs > endTime) break;
         if (linkedOrderIds.has(order.id) || newlyLinkedOrderIds.has(order.id)) continue;
+        if (channelsConflict(doc.detected_channel, order.channel)) continue;
 
         const amountDiff = Math.abs(order._amount - docAmount);
         if (amountDiff > amountTolerance) continue;
