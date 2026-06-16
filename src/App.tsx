@@ -10,14 +10,12 @@ import Auth         from "./pages/Auth";
 import MeliCallback from "./pages/MeliCallback";
 import NotFound     from "./pages/NotFound";
 
-// New UX — 7 pages
+// New UX — 6 pages
 import Pipeline         from "./pages/Pipeline";
-import PageMeli         from "./pages/PageMeli";
-import PageBsale        from "./pages/PageBsale";
+import PageVentas       from "./pages/PageVentas";
 import PageConciliacion from "./pages/PageConciliacion";
 import ConfigNew        from "./pages/ConfigNew";
 import PageDashboard    from "./pages/PageDashboard";
-import PageFlujo        from "./pages/PageFlujo";
 
 const queryClient = new QueryClient();
 
@@ -32,20 +30,21 @@ const App = () => (
           <Route path="/"     element={<Landing />} />
           <Route path="/auth" element={<Auth />} />
 
-          {/* App — 7 pages */}
+          {/* App — 5 pages */}
           <Route path="/resumen"      element={<PageDashboard />} />
-          <Route path="/pipeline"     element={<Pipeline />} />
-          <Route path="/flujo"        element={<PageFlujo />} />
-          <Route path="/mercadolibre" element={<PageMeli />} />
-          <Route path="/bsale"        element={<PageBsale />} />
+          <Route path="/ventas"       element={<PageVentas />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
+          <Route path="/pipeline"     element={<Pipeline />} />
           <Route path="/config"       element={<ConfigNew />} />
 
           {/* OAuth callbacks — DO NOT TOUCH */}
           <Route path="/meli-callback" element={<MeliCallback />} />
 
           {/* Legacy redirects */}
-          <Route path="/dashboard"        element={<Navigate to="/pipeline" replace />} />
+          <Route path="/dashboard"        element={<Navigate to="/resumen" replace />} />
+          <Route path="/mercadolibre"     element={<Navigate to="/ventas" replace />} />
+          <Route path="/bsale"            element={<Navigate to="/ventas" replace />} />
+          <Route path="/flujo"            element={<Navigate to="/resumen" replace />} />
           <Route path="/sales"            element={<Navigate to="/mercadolibre" replace />} />
           <Route path="/payments"         element={<Navigate to="/pipeline" replace />} />
           <Route path="/payments/:id"     element={<Navigate to="/pipeline" replace />} />
