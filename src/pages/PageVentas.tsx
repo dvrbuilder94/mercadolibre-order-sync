@@ -116,11 +116,20 @@ export default function PageVentas() {
   const [ordersTotal, setOrdersTotal] = useState(0);
   const [ordersWithDoc, setOrdersWithDoc] = useState(0);
   const [ordersSum, setOrdersSum] = useState<number | null>(null);
+  const [ordersListTotal, setOrdersListTotal] = useState(0);
   const [orderPage, setOrderPage] = useState(0);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [orderSyncing, setOrderSyncing] = useState(false);
   const [orderSyncMsg, setOrderSyncMsg] = useState("");
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  const [docStatusFilter, setDocStatusFilter] = useState<"todos" | "con" | "sin">("todos");
+  const [orderSearchInput, setOrderSearchInput] = useState("");
+  const [orderSearch, setOrderSearch] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setOrderSearch(orderSearchInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [orderSearchInput]);
 
   // Docs tab
   const [docs, setDocs] = useState<any[]>([]);
@@ -184,41 +193,61 @@ export default function PageVentas() {
       const { from, to } = periodRange(period);
       const f = from + "T00:00:00", t = to + "T23:59:59";
       const applyChannel = (q: any) => channelFilter !== "todos" ? q.eq("channel", channelFilter) : q;
+      const applySearch = (q: any) => {
+        const term = orderSearch.replace(/[,()]/g, "");
+        if (!term) return q;
+        return q.or(`order_id.ilike.%${term}%,customer_name.ilike.%${term}%,product_title.ilike.%${term}%,customer_tax_id.ilike.%${term}%`);
+      };
+      const applyBase = (q: any) =>
+        applySearch(applyChannel(q.gte("order_date", f).lte("order_date", t).neq("status", "cancelled")));
 
-      const [{ count }, { count: withDocC }, { data: sumRows }] = await Promise.all([
-        applyChannel(supabase.from("orders").select("*", { count: "exact", head: true })
-          .gte("order_date", f).lte("order_date", t).neq("status", "cancelled")),
-        applyChannel(supabase.from("orders").select("*, order_tax_documents!inner(id)", { count: "exact", head: true })
-          .gte("order_date", f).lte("order_date", t).neq("status", "cancelled")),
-        applyChannel(supabase.from("orders").select("gross_amount.sum()")
-          .gte("order_date", f).lte("order_date", t).neq("status", "cancelled")),
+      const docJoin = docStatusFilter === "con"
+        ? "order_tax_documents!inner(id, tax_documents(document_number, document_type, external_url))"
+        : docStatusFilter === "sin"
+          ? "order_tax_documents!left(id, tax_documents(document_number, document_type, external_url))"
+          : "order_tax_documents(id, tax_documents(document_number, document_type, external_url))";
+      const listCountJoin = docStatusFilter === "con"
+        ? "*, order_tax_documents!inner(id)"
+        : docStatusFilter === "sin"
+          ? "*, order_tax_documents!left(id)"
+          : "*";
+
+      const [{ count }, { count: withDocC }, { data: sumRows }, { count: listCount }] = await Promise.all([
+        applyBase(supabase.from("orders").select("*", { count: "exact", head: true })),
+        applyBase(supabase.from("orders").select("*, order_tax_documents!inner(id)", { count: "exact", head: true })),
+        applyBase(supabase.from("orders").select("gross_amount.sum()")),
+        (() => {
+          let q = applyBase(supabase.from("orders").select(listCountJoin, { count: "exact", head: true }));
+          if (docStatusFilter === "sin") q = q.is("order_tax_documents.id", null);
+          return q;
+        })(),
       ]);
       setOrdersTotal(count || 0);
       setOrdersWithDoc(withDocC || 0);
+      setOrdersListTotal(listCount || 0);
       const rawSum = (sumRows as any)?.[0];
       const parsedSum = rawSum != null ? Number(rawSum?.sum ?? rawSum?.gross_amount) : NaN;
       setOrdersSum(Number.isFinite(parsedSum) ? parsedSum : null);
 
-      const { data } = await applyChannel(supabase
+      let query = applyBase(supabase
         .from("orders")
         .select(`
           id, order_id, order_date, status, channel, customer_name, customer_tax_id,
           customer_tax_id_dv, product_title, gross_amount, net_amount, payment_method,
           installments, money_release_date, payment_approved_at, has_exact_data, raw_data,
-          order_tax_documents(
-            tax_documents(document_number, document_type, external_url)
-          )
-        `)
-        .gte("order_date", f).lte("order_date", t)
-        .neq("status", "cancelled")
+          ${docJoin}
+        `));
+      if (docStatusFilter === "sin") query = query.is("order_tax_documents.id", null);
+
+      const { data } = await query
         .order("order_date", { ascending: false })
-        .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1));
+        .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
 
       setOrders(data || []);
     } finally {
       setOrdersLoading(false);
     }
-  }, [period, channelFilter]);
+  }, [period, channelFilter, docStatusFilter, orderSearch]);
 
   // ── Docs fetch ─────────────────────────────────────────────────────────────
   const fetchDocs = useCallback(async (p: number) => {
@@ -284,8 +313,9 @@ export default function PageVentas() {
     }
   }, [period, channelFilter]);
 
-  useEffect(() => { setOrderPage(0); setDocPage(0); setSelectedOrder(null); setSelectedDoc(null); setChannelFilter("todos"); }, [period]);
+  useEffect(() => { setOrderPage(0); setDocPage(0); setSelectedOrder(null); setSelectedDoc(null); setChannelFilter("todos"); setDocStatusFilter("todos"); setOrderSearchInput(""); }, [period]);
   useEffect(() => { setOrderPage(0); setSelectedOrder(null); setDocPage(0); setSelectedDoc(null); }, [channelFilter]);
+  useEffect(() => { setOrderPage(0); setSelectedOrder(null); }, [docStatusFilter, orderSearch]);
   useEffect(() => { fetchOrders(orderPage); }, [fetchOrders, orderPage]);
   useEffect(() => { fetchDocs(docPage); }, [fetchDocs, docPage]);
 
@@ -327,7 +357,7 @@ export default function PageVentas() {
     return Array.isArray(td) ? td[0] : td;
   };
 
-  const orderTotalPages = Math.ceil(ordersTotal / PAGE_SIZE);
+  const orderTotalPages = Math.ceil(ordersListTotal / PAGE_SIZE);
   const docListTotal    = channelFilter !== "todos" ? (docFilteredTotal ?? 0) : docsTotal;
   const docTotalPages   = Math.ceil(docListTotal / PAGE_SIZE);
 
@@ -416,6 +446,25 @@ export default function PageVentas() {
               </div>
             </div>
 
+            <div className="flex items-center gap-2 mb-3">
+              <input
+                type="text"
+                value={orderSearchInput}
+                onChange={(e) => setOrderSearchInput(e.target.value)}
+                placeholder="Buscar por orden, cliente, producto o RUT"
+                className="flex-1 max-w-sm px-3 py-1.5 text-sm border rounded-lg placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400"
+              />
+              <select
+                value={docStatusFilter}
+                onChange={(e) => setDocStatusFilter(e.target.value as "todos" | "con" | "sin")}
+                className="px-3 py-1.5 text-sm border rounded-lg text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-slate-400"
+              >
+                <option value="todos">Todos los estados</option>
+                <option value="con">Con documento</option>
+                <option value="sin">Sin documento</option>
+              </select>
+            </div>
+
             <div className="bg-white border rounded-lg overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
@@ -439,7 +488,9 @@ export default function PageVentas() {
                     </td></tr>
                   ) : orders.length === 0 ? (
                     <tr><td colSpan={10} className="text-center py-12 text-slate-400 text-sm">
-                      Sin órdenes. Prueba Sync MeLi.
+                      {channelFilter === "todos" && docStatusFilter === "todos" && !orderSearch
+                        ? "Sin órdenes. Prueba Sync MeLi."
+                        : "Sin órdenes que coincidan con el filtro."}
                     </td></tr>
                   ) : orders.map(o => {
                     const doc = getLinkedDoc(o);
@@ -531,7 +582,7 @@ export default function PageVentas() {
 
             {orderTotalPages > 1 && (
               <div className="flex items-center justify-between mt-3">
-                <span className="text-xs text-slate-400">Página {orderPage + 1} de {orderTotalPages} · {ordersTotal} órdenes</span>
+                <span className="text-xs text-slate-400">Página {orderPage + 1} de {orderTotalPages} · {ordersListTotal} órdenes</span>
                 <div className="flex gap-2">
                   <button onClick={() => setOrderPage(p => Math.max(0, p - 1))} disabled={orderPage === 0 || ordersLoading}
                     className="flex items-center gap-1 px-3 py-1.5 bg-white border rounded text-sm disabled:opacity-40 hover:bg-slate-50">
