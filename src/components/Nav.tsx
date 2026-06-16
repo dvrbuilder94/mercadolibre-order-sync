@@ -1,14 +1,16 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { LayoutDashboard, ShoppingCart, FileText, GitMerge, Settings, LogOut } from "lucide-react";
+import { Home, Activity, ShoppingCart, FileText, GitMerge, TrendingDown, Settings, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const links = [
-  { to: "/pipeline",      label: "Pipeline",       icon: LayoutDashboard },
+  { to: "/resumen",       label: "Resumen",        icon: Home },
+  { to: "/pipeline",      label: "Pipeline",        icon: Activity },
+  { to: "/flujo",         label: "Flujo",           icon: TrendingDown },
   { to: "/mercadolibre",  label: "MercadoLibre",   icon: ShoppingCart },
-  { to: "/bsale",         label: "Bsale",          icon: FileText },
+  { to: "/bsale",         label: "Bsale",           icon: FileText },
   { to: "/conciliacion",  label: "Conciliación",   icon: GitMerge },
-  { to: "/config",        label: "Conexiones",     icon: Settings },
+  { to: "/config",        label: "Conexiones",      icon: Settings },
 ];
 
 export function Nav() {

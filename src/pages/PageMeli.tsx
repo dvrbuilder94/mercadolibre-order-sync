@@ -5,7 +5,7 @@ import { Nav } from "@/components/Nav";
 import { DetailPanel } from "@/components/DetailPanel";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Info, CheckCircle2, Clock } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Info, CheckCircle2, AlertCircle } from "lucide-react";
 
 const PAGE_SIZE = 50;
 
@@ -34,7 +34,30 @@ const STATUS_LABEL: Record<string, string> = {
 };
 const STATUS_COLOR: Record<string, string> = {
   confirmed: "text-green-600", paid: "text-green-600", delivered: "text-green-600",
-  shipped: "text-blue-600", pending: "text-yellow-600", cancelled: "text-slate-400",
+  shipped: "text-blue-600", pending: "text-yellow-500", cancelled: "text-slate-400",
+};
+
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  account_money: "Mercado Pago", visa: "Visa", master: "Mastercard", amex: "Amex",
+  diners: "Diners Club", debvisa: "Débito Visa", debmaster: "Débito Mastercard",
+  debmagna: "Débito Magna", magna: "Magna", pagofacil: "Pago Fácil", rapipago: "Rapipago",
+};
+
+// Humaniza payment_method_id desconocidos (ej. "ventipay" → "Ventipay",
+// "consumer_credits" → "Consumer credits") para que se vea legible aunque
+// no esté en el mapa — MELI agrega medios de pago/financiamiento sin aviso.
+const paymentMethodLabel = (pm: string | null | undefined): string => {
+  if (!pm || pm === "unknown") return "—";
+  if (PAYMENT_METHOD_LABEL[pm]) return PAYMENT_METHOD_LABEL[pm];
+  const words = pm.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
+
+// Formato RUT chileno: "14066795" + "K" → "14.066.795-K"
+const formatRut = (body: string | null, dv: string | null): string => {
+  if (!body) return "—";
+  const dotted = body.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return dv ? `${dotted}-${dv}` : dotted;
 };
 
 export default function PageMeli() {
@@ -64,7 +87,9 @@ export default function PageMeli() {
       const to_   = to   + "T23:59:59";
 
       // Counts + monthly sum del PERÍODO completo (no de la página actual).
-      const [{ count }, { count: withDocC }, { data: sumData }] = await Promise.all([
+      // sum() sin .single() para evitar el PGRST116 que lanza cuando el
+      // resultado es una fila agregada (no un registro real).
+      const [{ count }, { count: withDocC }, { data: sumRows }] = await Promise.all([
         supabase
           .from("orders")
           .select("*", { count: "exact", head: true })
@@ -80,17 +105,16 @@ export default function PageMeli() {
           .from("orders")
           .select("gross_amount.sum()")
           .gte("order_date", from_).lte("order_date", to_)
-          .neq("status", "cancelled")
-          .single(),
+          .neq("status", "cancelled"),
       ]);
       setTotal(count || 0);
       setWithDocCount(withDocC || 0);
-      setMonthlyTotal((sumData as any)?.sum ?? null);
+      setMonthlyTotal((sumRows as any)?.[0]?.sum ?? null);
 
       // Page
       const { data } = await supabase
         .from("orders")
-        .select("id, order_id, order_date, gross_amount, net_amount, commission_percentage, commission_amount, settlement_amount, shipping_cost, discount_amount, installments, money_release_date, status, customer_name, customer_tax_id, currency_id, shipping_mode, payment_method, raw_data, order_tax_documents(id)")
+        .select("id, order_id, order_date, gross_amount, net_amount, commission_percentage, commission_amount, settlement_amount, shipping_cost, discount_amount, installments, money_release_date, payment_approved_at, has_exact_data, status, customer_name, customer_tax_id, customer_tax_id_dv, product_title, currency_id, shipping_mode, payment_method, raw_data, order_tax_documents(id)")
         .gte("order_date", from_).lte("order_date", to_)
         .neq("status", "cancelled")
         .order("order_date", { ascending: false })
@@ -132,7 +156,7 @@ export default function PageMeli() {
   return (
     <div className="flex min-h-screen bg-slate-50">
       <Nav />
-      <main className="flex-1 p-8 max-w-5xl">
+      <main className="flex-1 p-8 max-w-6xl">
 
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
@@ -186,12 +210,13 @@ export default function PageMeli() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-slate-50 text-xs text-slate-500">
-                <th className="text-left px-4 py-3 font-medium">Orden ML</th>
+                <th className="text-left px-4 py-3 font-medium">Orden</th>
                 <th className="text-left px-4 py-3 font-medium">Fecha</th>
-                <th className="text-left px-4 py-3 font-medium">Cliente</th>
+                <th className="text-left px-4 py-3 font-medium">Cliente / Producto</th>
                 <th className="text-left px-4 py-3 font-medium">RUT</th>
                 <th className="text-right px-4 py-3 font-medium">Monto</th>
-                <th className="text-left px-4 py-3 font-medium">Estado</th>
+                <th className="text-left px-4 py-3 font-medium">Medio de pago</th>
+                <th className="text-left px-4 py-3 font-medium">Liquidación</th>
                 <th className="text-left px-4 py-3 font-medium">Boleta</th>
                 <th className="w-8 px-4 py-3"></th>
               </tr>
@@ -199,13 +224,13 @@ export default function PageMeli() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400">
+                  <td colSpan={9} className="text-center py-12 text-slate-400">
                     <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...
                   </td>
                 </tr>
               ) : orders.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
+                  <td colSpan={9} className="text-center py-12 text-slate-400 text-sm">
                     Sin órdenes. Prueba Sync MercadoLibre.
                   </td>
                 </tr>
@@ -213,25 +238,87 @@ export default function PageMeli() {
                 const linked = (o.order_tax_documents as any[])?.length > 0;
                 const isSelected = selected?.id === o.id;
                 return (
-                  <tr key={o.id} className={`border-b last:border-0 hover:bg-slate-50 ${isSelected ? "bg-slate-100" : ""}`}>
-                    <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{o.order_id}</td>
-                    <td className="px-4 py-2.5 text-slate-500 text-xs">{o.order_date?.slice(0, 10)}</td>
-                    <td className="px-4 py-2.5 max-w-[140px] truncate">{o.customer_name}</td>
-                    <td className="px-4 py-2.5 font-mono text-xs">
-                      {o.customer_tax_id
-                        ? <span className="text-slate-700">{o.customer_tax_id}</span>
-                        : <span className="text-slate-300">—</span>}
+                  <tr key={o.id} className={`border-b last:border-0 hover:bg-slate-50 ${isSelected ? "bg-slate-100" : !linked ? "bg-red-50/40" : ""}`}>
+
+                    {/* Orden: últimos 8 dígitos · click copia el ID completo */}
+                    <td
+                      className="px-4 py-2.5 font-mono text-xs text-slate-400 cursor-pointer hover:text-slate-700 select-none"
+                      title={`ID completo: ${o.order_id}`}
+                      onClick={() => navigator.clipboard?.writeText(o.order_id)}
+                    >
+                      ···{o.order_id?.slice(-8)}
                     </td>
-                    <td className="px-4 py-2.5 text-right font-mono">{CLP(o.gross_amount)}</td>
-                    <td className={`px-4 py-2.5 text-xs ${STATUS_COLOR[o.status] || "text-slate-500"}`}>
-                      {STATUS_LABEL[o.status] || o.status}
+
+                    <td className="px-4 py-2.5 text-slate-500 text-xs whitespace-nowrap">
+                      {o.order_date?.slice(0, 10)}
                     </td>
+
+                    {/* Cliente + producto en una celda, estado como badge inline */}
+                    <td className="px-4 py-2.5 max-w-[200px]">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-slate-800">{o.customer_name}</span>
+                        <span className={`text-[10px] font-medium shrink-0 ${STATUS_COLOR[o.status] || "text-slate-400"}`}>
+                          {STATUS_LABEL[o.status] || o.status}
+                        </span>
+                      </div>
+                      {o.product_title && (
+                        <div className="text-[10px] text-slate-400 truncate mt-0.5">{o.product_title}</div>
+                      )}
+                    </td>
+
+                    {/* RUT con DV y puntos chilenos */}
+                    <td className="px-4 py-2.5 font-mono text-xs text-slate-500 whitespace-nowrap">
+                      {formatRut(o.customer_tax_id, o.customer_tax_id_dv)}
+                    </td>
+
+                    <td className="px-4 py-2.5 text-right font-mono whitespace-nowrap">{CLP(o.gross_amount)}</td>
+
+                    {/* Medio de pago + cuotas */}
+                    <td className="px-4 py-2.5">
+                      <span className="text-xs text-slate-600">{paymentMethodLabel(o.payment_method)}</span>
+                      {o.installments > 1 && (
+                        <span className="block text-[10px] text-slate-400">{o.installments} cuotas</span>
+                      )}
+                    </td>
+
+                    {/* Liquidación: cuándo pagó el comprador + cuándo llega el dinero al seller.
+                        Muestra siempre las fechas — colores sólidos con dato exacto (post-backfill),
+                        muted + "est." cuando es la estimación de sync-meli-orders (+14d). */}
+                    <td className="px-4 py-2.5">
+                      <div className="flex flex-col gap-0.5">
+                        {o.payment_approved_at && (
+                          <span className="text-[10px] text-slate-400">
+                            Cobrado {format(new Date(o.payment_approved_at), "dd/MM", { locale: es })}
+                          </span>
+                        )}
+                        {o.money_release_date && (() => {
+                          const liberado = new Date(o.money_release_date) <= new Date();
+                          const exact = !!o.has_exact_data;
+                          return (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${
+                              exact
+                                ? liberado ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                                : liberado ? "bg-slate-100 text-slate-500"  : "bg-slate-100 text-slate-400"
+                            }`}>
+                              {liberado ? "Liberado" : "Pendiente"} {format(new Date(o.money_release_date), "dd/MM", { locale: es })}
+                              {!exact && " est."}
+                            </span>
+                          );
+                        })()}
+                        {o.has_exact_data && o.net_amount && (
+                          <span className="text-xs tabular-nums text-slate-600">{CLP(o.net_amount)}</span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Boleta: "Falta" en rojo cuando no hay documento (antes era gris y pasaba desapercibido) */}
                     <td className="px-4 py-2.5">
                       {linked
                         ? <span className="flex items-center gap-1 text-green-600 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />Sí</span>
-                        : <span className="flex items-center gap-1 text-slate-300 text-xs"><Clock className="h-3.5 w-3.5" />Pendiente</span>
+                        : <span className="flex items-center gap-1 text-red-500 text-xs font-medium"><AlertCircle className="h-3.5 w-3.5" />Falta</span>
                       }
                     </td>
+
                     <td className="px-4 py-2.5">
                       <button
                         onClick={() => setSelected(isSelected ? null : o)}
