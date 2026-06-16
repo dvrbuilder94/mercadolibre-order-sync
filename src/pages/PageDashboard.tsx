@@ -163,7 +163,7 @@ export default function PageDashboard() {
           </div>
 
           {/* Canal pills */}
-          {data && data.canales.length > 2 && (
+          {data && data.canales.length > 1 && (
             <div className="flex gap-2 flex-wrap">
               {data.canales.map(c => (
                 <button key={c.id} onClick={() => setCanalId(c.id)}

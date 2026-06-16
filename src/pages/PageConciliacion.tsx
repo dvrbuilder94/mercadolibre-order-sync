@@ -5,6 +5,7 @@ import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2, Wallet } from "lucide-react";
+import { SCORE_OK } from "@/lib/constants";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -30,7 +31,6 @@ const HARD_SOURCES = new Set([
   "AUTO_HARD_ORDER_ID", "AUTO_HARD_PACK_ID", "AUTO_CONSOLIDATED",
   "webhook_external_order_id", "webhook_fallback_boleta",
 ]);
-const SCORE_OK = 80; // umbral de confianza para los matches por score
 
 // match_source → etiqueta + estilo. Es la clave del diagnóstico:
 // si "Pack" aparece en 0, el match por pack_id no está corriendo en producción.

@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import type { PeriodReconciliation } from '@/types/reconciliation';
-
-const SCORE_OK = 80;
+import { SCORE_OK } from '@/lib/constants';
 
 const CHANNEL_LABEL: Record<string, string> = {
   meli: 'MercadoLibre', falabella: 'Falabella', paris: 'Paris',
