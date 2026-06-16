@@ -1,83 +1,38 @@
 ## Objetivo
 
-Dos botones en `/pipeline` (junto a "Conciliar") que extraen la data cruda del mes seleccionado desde la API de Mercado Libre y Bsale, sin timeout, y entregan **un JSON por sistema** descargable para auditar con Claude.
+Correr backfill de los últimos 30 días sobre las 2 Edge Functions ya desplegadas, para que `has_exact_data` pase a `true` en órdenes recientes (desbloquea KPIs de cash y columna "Pago") y se refresquen documentos Bsale en paralelo.
 
-## Arquitectura
+## Contexto técnico
 
-```text
-[UI /pipeline] ──click──► raw-extract-start (crea job, dispara background)
-      │                          │
-      │                          └──► EdgeRuntime.waitUntil(run)
-      │                                   │ pagina API, escribe progreso
-      └──poll 2s──► raw-extract-status ◄──┘ sube JSON a Storage al final
-                          │
-                          └─ devuelve URL firmada de descarga
-```
+- Ambas funciones validan JWT del usuario en código (`supabase.auth.getUser()`), por lo tanto **deben invocarse desde la sesión autenticada en el preview** — no se pueden disparar desde el sandbox sin token.
+- `meli_accounts` tiene `UNIQUE(user_id)` → cada usuario tiene 1 sola cuenta ML. "Todas las cuentas conectadas" = la cuenta del usuario logueado.
+- `sync-meli-payment-details` se auto-encadena hasta agotar órdenes pendientes (limit 50 por invocación, cursor por `order_date desc`). Acepta `{ days_back, limit }`.
+- `sync-bsale-docs` ya tiene el fix del loop (commit dd89091) y paginación por `code_sii` ascendente, presupuesto de tiempo 85s, max 20 páginas por invocación, también se auto-encadena.
 
-### 1. Backend
+## Pasos
 
-**Nueva tabla `raw_extraction_jobs`** (con RLS por `user_id`):
-- `id, user_id, source ('meli'|'bsale'), period (YYYY-MM)`
-- `status ('pending'|'running'|'done'|'error')`
-- `progress, total, current_step` (texto: "Orders 450/1200")
-- `file_path` (en bucket), `error_message`
-- `created_at, updated_at`
+1. **Agregar botón temporal "Backfill 30 días" en `/mercadolibre`** (junto a los controles de sync existentes) que invoque en paralelo:
+   - `supabase.functions.invoke('sync-meli-payment-details', { body: { days_back: 30, limit: 50 } })`
+   - `supabase.functions.invoke('sync-bsale-docs', { body: { days_back: 30 } })`
+   
+   Con feedback visual (loading + toast con resultado por función).
 
-**Bucket de Storage `raw-extractions`** (privado, RLS por carpeta `user_id/`).
+2. **Mostrar progreso en vivo**: como ambas se auto-encadenan, el botón solo dispara la primera invocación; el resto corre en background. Usar toast informativo: "Backfill iniciado. Las órdenes se actualizarán progresivamente — refresca en ~2 min."
 
-**Edge function `raw-extract-meli`**:
-- Endpoints en orden serial con `EdgeRuntime.waitUntil`:
-  1. `/orders/search` paginado (limit 50, offset hasta total) filtrando por `order.date_created.from/to`.
-  2. Para cada orden → `/orders/{id}` (detalle), `/payments/{id}` (cada payment_id) y `/shipments/{id}`.
-  3. `/users/{seller_id}/mediations/search` (reclamos del mes).
-  4. Settlement report: `/billing/integration/group/ML/marketplace/...` (liquidaciones del mes).
-- Throttling: 100ms entre llamadas, concurrencia 3 para detalles.
-- Cada ~25 órdenes hace `UPDATE` de `progress` para que la UI lo vea.
-- Al terminar: arma `{ period, generated_at, orders:[...], shipments:[...], payments:[...], settlements:[...] }` y lo sube como `raw-extractions/{user_id}/meli-{period}-{job_id}.json`.
+3. **Validar resultado** (manual, en preview): después de ~2 min refrescar `/mercadolibre` y verificar:
+   - Columna "Liquidación" muestra valores exactos (no "Estimado") en órdenes recientes.
+   - KPIs de cash dejan de estar en $0.
+   - Columna "Pago" populada con medio de pago + cuotas.
 
-**Edge function `raw-extract-bsale`**:
-- Pagina `/documents.json` (boletas y facturas) con `emissiondaterange[start/end]` para el mes, `limit=50, offset` hasta agotar.
-- Para cada documento incluye `expand=[details,client,document_type,references]` (1 sola llamada por página).
-- Sube `bsale-{period}-{job_id}.json` con `{ period, generated_at, documents:[...] }`.
-- Respeta el límite Bsale (150ms entre páginas).
+4. **Cleanup** (siguiente turno, una vez validado): remover el botón temporal o moverlo a Config si querés conservarlo como utilidad de mantenimiento.
 
-**Edge function `raw-extract-status`**:
-- `GET ?job_id=...` → devuelve fila del job + URL firmada (24h) si `file_path` existe.
+## Alternativa más simple (si no querés UI nueva)
 
-### 2. Frontend (`/pipeline`)
+Te paso un snippet para pegar en la consola del navegador (preview abierto, sesión activa) que invoca ambas funciones sin tocar código. Ventaja: 0 cambios. Desventaja: tenés que abrir devtools.
 
-- En la barra de acciones del periodo, agregar 2 botones nuevos:
-  - **Raw API – Mercado Libre**
-  - **Raw API – Bsale**
-- Al hacer click: llama a `raw-extract-meli` o `raw-extract-bsale`, recibe `job_id`, abre tarjeta inline (no modal) con:
-  - Barra de progreso + `current_step`
-  - Polling cada 2s a `raw-extract-status`
-  - Cuando `status='done'`: botón **Descargar JSON** (URL firmada)
-  - Cuando `status='error'`: mensaje y botón **Reintentar**
-- Estado persistente: si el usuario recarga, la tarjeta busca el último job del periodo y reanuda el polling.
+## Archivos afectados (opción 1)
 
-### 3. Anti-timeout (clave)
+- `src/pages/MercadoLibre.tsx` (o el componente de header/toolbar que ya tenga los controles de sync) — agregar el botón.
+- Sin cambios de schema, sin migraciones, sin tocar Edge Functions.
 
-- `EdgeRuntime.waitUntil(promise)` permite responder 202 al cliente y seguir corriendo en background hasta ~400s por instancia.
-- Si Meli excede esa ventana, el job hace **checkpoint**: guarda `progress` + `offset` actual en la tabla. Un cron (`*/2 * * * *`) detecta jobs `running` con `updated_at` > 60s sin avance y los **reanuda** desde el checkpoint. (Si lo prefieres se puede dejar manual con botón "Reanudar".)
-
-### 4. Seguridad
-
-- RLS estricta: solo el dueño ve su job/archivo.
-- URLs firmadas con expiración 24h.
-- No se exponen tokens de Meli/Bsale al cliente; viven solo en la edge function.
-
-## Entregables
-
-1. Migración: tabla `raw_extraction_jobs` + bucket `raw-extractions` + policies.
-2. Edge functions: `raw-extract-meli`, `raw-extract-bsale`, `raw-extract-status`.
-3. Componente `RawApiExtractor.tsx` con los 2 botones y la tarjeta de progreso.
-4. Integración en `Pipeline.tsx`.
-
-## Fuera de alcance
-
-- No modifica la lógica de `auto-reconcile` ni la sincronización existente.
-- No persiste la data extraída en tablas operativas (es solo dump de auditoría).
-- Sin transformación: el JSON refleja literal lo que devuelve cada API.
-
-¿Apruebas para implementar, o ajustamos algo (ej: cron de reanudación automática sí/no, agregar shipments/mediations al alcance de Meli)?
+¿Vamos con la opción 1 (botón en UI) o la opción 2 (snippet en consola)?
