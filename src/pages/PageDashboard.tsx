@@ -204,12 +204,19 @@ export default function PageDashboard() {
                 </div>
                 <div className="bg-white rounded-xl border shadow-sm p-4">
                   <p className="text-xs text-slate-400 mb-1">Diferencia vs banco</p>
-                  <p className={`text-2xl font-bold tabular-nums ${Math.abs(data.diferencia) < 100 ? "text-emerald-600" : "text-amber-600"}`}>
-                    {data.diferencia >= 0 ? "+" : ""}{CLP(data.diferencia)}
-                  </p>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {data.abonosBanco === 0 ? "sin abonos banco" : `vs ${CLP(data.abonosBanco)} banco`}
-                  </p>
+                  {data.abonosBanco === 0 ? (
+                    <>
+                      <p className="text-2xl font-bold tabular-nums text-slate-300">—</p>
+                      <p className="text-xs text-slate-400 mt-1">banco no conectado</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className={`text-2xl font-bold tabular-nums ${Math.abs(data.diferencia) < 100 ? "text-emerald-600" : "text-amber-600"}`}>
+                        {data.diferencia >= 0 ? "+" : ""}{CLP(data.diferencia)}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-1">vs {CLP(data.abonosBanco)} banco</p>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -268,17 +275,22 @@ export default function PageDashboard() {
 
                       <div className="border-t border-dashed border-slate-100 my-2" />
                       <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Banco</p>
-                      <WaterfallRow label="Abonos recibidos" amount={data.abonosBanco} total={ventasBrutas}
-                        variant={data.abonosBanco > 0 ? "income" : "neutral"}
-                        annotation={data.abonosBanco === 0 ? "sin movimientos registrados" : undefined} />
-
-                      <div className="border-t border-dashed border-slate-100 my-2" />
-                      <div className="flex items-center justify-between py-1">
-                        <span className="text-sm font-semibold text-slate-700">Diferencia (objetivo: $0)</span>
-                        <span className={`text-sm font-bold tabular-nums ${Math.abs(data.diferencia) < 100 ? "text-emerald-600" : "text-amber-600"}`}>
-                          {data.diferencia >= 0 ? "+" : ""}{CLP(data.diferencia)}
-                        </span>
-                      </div>
+                      {data.abonosBanco === 0 ? (
+                        <p className="text-xs text-slate-300 italic py-1.5">
+                          Sin movimientos de banco — conéctalo en Configuración para ver la diferencia real.
+                        </p>
+                      ) : (
+                        <>
+                          <WaterfallRow label="Abonos recibidos" amount={data.abonosBanco} total={ventasBrutas} variant="income" />
+                          <div className="border-t border-dashed border-slate-100 my-2" />
+                          <div className="flex items-center justify-between py-1">
+                            <span className="text-sm font-semibold text-slate-700">Diferencia (objetivo: $0)</span>
+                            <span className={`text-sm font-bold tabular-nums ${Math.abs(data.diferencia) < 100 ? "text-emerald-600" : "text-amber-600"}`}>
+                              {data.diferencia >= 0 ? "+" : ""}{CLP(data.diferencia)}
+                            </span>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
 
