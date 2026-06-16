@@ -23,6 +23,10 @@ export interface PeriodReconciliation {
   abonosBanco: number;       // suma de bank_movements del período
   diferencia: number;        // liquidoRecibido − abonosBanco (objetivo: 0)
 
+  // Cobertura de datos EXACTOS (traídos del payment provider, no aproximados).
+  // pct alto = la mayoría de los montos arriba son reales, no estimaciones.
+  datosExactos: { ordenes: number; total: number; pct: number };
+
   excepciones: {
     tipo: 'venta_sin_dte' | 'pago_atascado' | 'devolucion_sin_nc' | 'score_bajo';
     label: string;

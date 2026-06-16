@@ -144,6 +144,23 @@ export default function PageFlujo() {
               </div>
             )}
 
+            {/* Data accuracy banner: real (MercadoPago) vs approximate */}
+            {data.datosExactos.total > 0 && data.datosExactos.pct < 100 && (
+              <div className="mx-4 mt-4 flex items-start gap-2 text-xs bg-amber-50 text-amber-700 rounded-lg px-3 py-2">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <span>
+                  {data.datosExactos.ordenes}/{data.datosExactos.total} órdenes con montos exactos de MercadoPago ({data.datosExactos.pct}%).
+                  Las {data.datosExactos.total - data.datosExactos.ordenes} restantes usan comisión aproximada hasta sincronizar pagos.
+                </span>
+              </div>
+            )}
+            {data.datosExactos.total > 0 && data.datosExactos.pct === 100 && (
+              <div className="mx-4 mt-4 flex items-center gap-2 text-xs bg-emerald-50 text-emerald-700 rounded-lg px-3 py-2">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                <span>Todos los montos provienen de datos reales de MercadoPago.</span>
+              </div>
+            )}
+
             <div className="py-3 space-y-0.5">
               {/* INGRESOS */}
               <div className="px-4 pt-1 pb-2">
@@ -192,7 +209,6 @@ export default function PageFlujo() {
                 total={data.ingresos.ventasBrutas}
                 variant="expense"
                 indent
-                annotation={data.egresos.comisionPago.monto === 0 ? "pendiente de datos" : undefined}
               />
 
               <WaterfallRow

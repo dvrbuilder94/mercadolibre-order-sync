@@ -261,8 +261,27 @@ export default function PageDashboard() {
 
                 {/* Waterfall mini */}
                 <div className="bg-white rounded-xl border shadow-sm p-5">
-                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Desglose de ingresos</p>
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Desglose de ingresos</p>
+                    {data.datosExactos.total > 0 && (
+                      <span
+                        title="Órdenes con montos reales traídos de MercadoPago. El resto usa valores aproximados hasta sincronizar los pagos."
+                        className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${
+                          data.datosExactos.pct >= 90 ? "bg-emerald-50 text-emerald-600"
+                          : data.datosExactos.pct >= 50 ? "bg-amber-50 text-amber-600"
+                          : "bg-slate-100 text-slate-500"
+                        }`}
+                      >
+                        {data.datosExactos.pct}% datos reales
+                      </span>
+                    )}
+                  </div>
                   <WaterfallMini data={data} />
+                  {data.datosExactos.pct < 100 && data.datosExactos.total > 0 && (
+                    <p className="text-[11px] text-slate-400 mt-3">
+                      {data.datosExactos.total - data.datosExactos.ordenes} órdenes aún sin datos exactos de pago. Sincroniza los pagos en Conciliación para montos 100% reales.
+                    </p>
+                  )}
                 </div>
 
                 {/* DTE coverage */}
