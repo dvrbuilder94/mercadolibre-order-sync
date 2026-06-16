@@ -62,12 +62,19 @@ const DOC_COLOR: Record<string, string> = {
   nota_credito: "bg-red-100 text-red-700",
 };
 
-const formatRut = (body: string | null, dv?: string | null) => {
+// Just digits — DV lives in DB but adds visual noise in dense tables.
+const formatRut = (body: string | null) => {
   if (!body) return "—";
-  const digits = body.replace(/[^0-9Kk]/g, "");
-  const dvPart = dv ?? null;
-  return dvPart ? `${digits}-${dvPart}` : digits;
+  return body.replace(/[^0-9Kk]/g, "") || "—";
 };
+
+// Canal inference: prefer explicit detected_channel; fall back to external_order_id
+// presence (10+ digit = MeLi order ID extracted from Bsale references by sync-bsale-docs).
+function inferChannel(detected: string | null, externalOrderId: string | null): string | null {
+  if (detected) return detected;
+  if (externalOrderId && /^\d{10,}$/.test(externalOrderId)) return 'meli';
+  return null;
+}
 
 type Tab = "ordenes" | "docs";
 
@@ -168,10 +175,12 @@ export default function PageVentas() {
       setDocsMeliCount(meliC || 0);
       setDocsSum((sumRows as any)?.[0]?.sum ?? null);
 
-      // Include linked order channel so we can display it even when detected_channel is null.
+      // external_order_id is populated by sync-bsale-docs for MeLi boletas
+      // (10+ digit ML order ID extracted from references). Used as channel fallback
+      // when detected_channel is null (e.g. docs synced before detection was added).
       const { data } = await supabase
         .from("tax_documents")
-        .select("id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, client_tax_id_dv, detected_channel, status, external_url, raw_data, order_tax_documents(id, orders(channel))")
+        .select("id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, external_order_id, status, external_url, raw_data, order_tax_documents(id)")
         .gte("document_date", from).lte("document_date", to)
         .order("document_date", { ascending: false })
         .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
@@ -363,7 +372,7 @@ export default function PageVentas() {
                           {o.product_title && <div className="text-[10px] text-slate-400 truncate mt-0.5">{o.product_title}</div>}
                         </td>
                         <td className="px-3 py-2.5 font-mono text-xs text-slate-500 whitespace-nowrap">
-                          {formatRut(o.customer_tax_id, o.customer_tax_id_dv)}
+                          {formatRut(o.customer_tax_id)}
                         </td>
                         <td className="px-3 py-2.5 text-right font-mono text-xs whitespace-nowrap">{CLP(o.gross_amount)}</td>
                         <td className="px-3 py-2.5">
@@ -495,13 +504,14 @@ export default function PageVentas() {
                     <tr><td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
                       Sin documentos. Prueba Sync Bsale.
                     </td></tr>
-                  ) : docs.map(d => {
+                  ) : docs.filter(d => {
+                    if (channelFilter === "todos") return true;
+                    return inferChannel(d.detected_channel, d.external_order_id) === channelFilter;
+                  }).map(d => {
                     const isLinked = (d.order_tax_documents as any[])?.length > 0;
                     const isVoided = d.status === "voided";
                     const isSelected = selectedDoc?.id === d.id;
-                    // Canal: prefer detected_channel, fall back to linked order's channel
-                    const linkedOrderChannel = (d.order_tax_documents as any[])?.[0]?.orders?.channel ?? null;
-                    const effectiveChannel = d.detected_channel ?? linkedOrderChannel;
+                    const effectiveChannel = inferChannel(d.detected_channel, d.external_order_id);
                     return (
                       <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${isVoided ? "opacity-40" : ""} ${isSelected ? "bg-slate-100" : ""}`}>
                         <td className="px-4 py-2.5">
@@ -521,7 +531,7 @@ export default function PageVentas() {
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono text-xs">{CLP(d.total_amount)}</td>
                         <td className="px-4 py-2.5 font-mono text-xs text-slate-500">
-                          {formatRut(d.client_tax_id, d.client_tax_id_dv)}
+                          {formatRut(d.client_tax_id)}
                         </td>
                         <td className="px-4 py-2.5">
                           {isVoided
