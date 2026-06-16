@@ -46,7 +46,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               .select(`
                 id, gross_amount, net_amount, commission_amount, shipping_cost,
                 status, channel, money_release_date, has_exact_data, raw_data,
-                order_tax_documents(id)
+                order_tax_documents(id, tax_documents(status))
               `)
               .gte('order_date', from)
               .lte('order_date', to)
@@ -107,7 +107,13 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           canalId: ch, nombre: channelLabel(ch), ordenes: v.ordenes, monto: v.monto,
         }));
 
-        const conDteCount = rows.filter(r => ((r.order_tax_documents as any[]) ?? []).length > 0).length;
+        const conDteCount = rows.filter(r => {
+          const links = (r.order_tax_documents as any[]) ?? [];
+          return links.some(l => {
+            const td = Array.isArray(l.tax_documents) ? l.tax_documents[0] : l.tax_documents;
+            return td != null && td.status !== 'voided';
+          });
+        }).length;
         const conDte = {
           pct:    rows.length > 0 ? Math.round((conDteCount / rows.length) * 100) : 0,
           faltan: rows.length - conDteCount,
@@ -138,14 +144,20 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         // Devoluciones
         let devQuery = supabase
           .from('orders')
-          .select('gross_amount, order_tax_documents(id)')
+          .select('gross_amount, order_tax_documents(id, tax_documents(status))')
           .gte('order_date', from)
           .lte('order_date', to)
           .in('status', ['cancelled', 'returned']);
         if (canalId !== 'todos') devQuery = devQuery.eq('channel', canalId);
         const { data: devRows } = await devQuery;
         const devolucionMonto = (devRows ?? []).reduce((s, r) => s + (r.gross_amount ?? 0), 0);
-        const devConNC = (devRows ?? []).filter(r => ((r.order_tax_documents as any[]) ?? []).length > 0).length;
+        const devConNC = (devRows ?? []).filter(r => {
+          const links = (r.order_tax_documents as any[]) ?? [];
+          return links.some(l => {
+            const td = Array.isArray(l.tax_documents) ? l.tax_documents[0] : l.tax_documents;
+            return td != null && td.status !== 'voided';
+          });
+        }).length;
         const devTotal = (devRows ?? []).length;
 
         // TODO: facturas de comisión de MeLi no disponibles en tax_documents aún
