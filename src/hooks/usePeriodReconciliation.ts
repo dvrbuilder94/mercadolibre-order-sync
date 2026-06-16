@@ -150,7 +150,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         const devTotal = (devRows ?? []).length;
 
         // TODO: facturas de comisión de MeLi no disponibles en tax_documents aún
-        const comisionConFactura = { pct: 0, faltan: rows.length };
+        const comisionConFactura = { pct: 0, faltan: 0 };
 
         // ── 7. Líquido ────────────────────────────────────────────────────────
         const liquidoRecibido = ventasBrutas - comisionMonto - envioCosto - comisionPagoMonto - devolucionMonto;

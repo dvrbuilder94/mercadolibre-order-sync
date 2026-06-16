@@ -102,9 +102,12 @@ export default function PageDashboard() {
     if (!data?.cierre.puedeCerrar) return;
     setClosing(true);
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Sin sesión activa');
       const { error: closeErr } = await supabase
         .from('monthly_closings')
         .upsert({
+          user_id:               user.id,
           period:                periodo,
           status:                'closed',
           closed_at:             new Date().toISOString(),
@@ -263,7 +266,8 @@ export default function PageDashboard() {
                       <WaterfallRow label="Comisión marketplace" amount={data.egresos.comisionMarketplace.monto} total={ventasBrutas} variant="expense" indent
                         annotation={data.egresos.comisionMarketplace.conFactura.faltan > 0 ? `${data.egresos.comisionMarketplace.conFactura.faltan} sin factura` : undefined} />
                       <WaterfallRow label="Costos de envío" amount={data.egresos.costosEnvio.monto} total={ventasBrutas} variant="expense" indent />
-                      <WaterfallRow label="Comisión de pago" amount={data.egresos.comisionPago.monto} total={ventasBrutas} variant="expense" indent />
+                      <WaterfallRow label="Comisión de pago" amount={data.egresos.comisionPago.monto} total={ventasBrutas} variant="expense" indent
+                        annotation={data.egresos.comisionPago.monto === 0 ? "pendiente sincronización" : undefined} />
                       <WaterfallRow label="Devoluciones"
                         amount={data.egresos.reembolsos.monto} total={ventasBrutas} variant="expense" indent
                         annotation={data.egresos.reembolsos.conNotaCredito.total > 0
