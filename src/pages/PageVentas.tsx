@@ -120,7 +120,9 @@ export default function PageVentas() {
       ]);
       setOrdersTotal(count || 0);
       setOrdersWithDoc(withDocC || 0);
-      setOrdersSum((sumRows as any)?.[0]?.sum ?? null);
+      const rawSum = (sumRows as any)?.[0];
+      const parsedSum = rawSum != null ? Number(rawSum?.sum ?? rawSum?.gross_amount) : NaN;
+      setOrdersSum(Number.isFinite(parsedSum) ? parsedSum : null);
 
       const { data } = await supabase
         .from("orders")
