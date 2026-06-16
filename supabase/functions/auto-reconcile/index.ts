@@ -657,12 +657,16 @@ Deno.serve(async (req) => {
         .select(`*, order_tax_documents(id)`)
         .neq('status', 'cancelled')
         .order('order_date', { ascending: false })
+        .order('id', { ascending: true })
         .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
       if (bufferedFromISO && bufferedToISO) {
         oq = oq.gte('order_date', bufferedFromISO).lte('order_date', bufferedToISO);
       }
       const { data: pageData, error: pageErr } = await oq;
-      if (pageErr) { console.error('orders page error:', pageErr.message); break; }
+      // Abort instead of silently continuing on partial data: a failed page here
+      // would make ordersNeedingDocs incomplete, letting orders that already have
+      // a document slip back into the matching pool as "needs doc".
+      if (pageErr) throw new Error(`orders page fetch failed: ${pageErr.message}`);
       if (!pageData || pageData.length === 0) break;
       ordersWithPayment.push(...pageData);
       if (pageData.length < PAGE_SIZE) break;
@@ -678,13 +682,21 @@ Deno.serve(async (req) => {
 
     // Fetch linked orders for consolidated matching check (using admin for consistency),
     // paginado por la misma razón que la query de orders arriba.
+    // This set decides whether a doc/order is still "available" to match. If a
+    // page here fails or gets cut off short, already-linked docs/orders look
+    // unlinked again and can receive a second, conflicting link (the exact bug
+    // that double-linked boleta #291068 to two unrelated order pairs). So: a
+    // deterministic .order() (range pagination is undefined without one) and a
+    // hard throw on error instead of silently proceeding with a partial set.
+    // Cap raised 10 → 50 (50k rows) for headroom as the table grows over time.
     const linkedOrderTaxDocs: any[] = [];
-    for (let page = 0; page < 10; page++) {
+    for (let page = 0; page < 50; page++) {
       const { data: pageData, error: pageErr } = await supabaseAdmin
         .from('order_tax_documents')
         .select('order_id, tax_document_id')
+        .order('id', { ascending: true })
         .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
-      if (pageErr) { console.error('order_tax_documents page error:', pageErr.message); break; }
+      if (pageErr) throw new Error(`order_tax_documents page fetch failed: ${pageErr.message}`);
       if (!pageData || pageData.length === 0) break;
       linkedOrderTaxDocs.push(...pageData);
       if (pageData.length < PAGE_SIZE) break;
@@ -708,12 +720,13 @@ Deno.serve(async (req) => {
         .eq('status', 'issued')
         .in('document_type', ['boleta', 'factura', 'factura_exenta'])
         .order('document_date', { ascending: false })
+        .order('id', { ascending: true })
         .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
       if (bufferedFromDate && bufferedToDate) {
         q = q.gte('document_date', bufferedFromDate).lte('document_date', bufferedToDate);
       }
       const { data: pageData, error: pageErr } = await q;
-      if (pageErr) { console.error('docs page error:', pageErr.message); break; }
+      if (pageErr) throw new Error(`tax_documents page fetch failed: ${pageErr.message}`);
       if (!pageData || pageData.length === 0) break;
       allDocs.push(...pageData);
       if (pageData.length < PAGE_SIZE) break;
