@@ -10,12 +10,14 @@ import Auth         from "./pages/Auth";
 import MeliCallback from "./pages/MeliCallback";
 import NotFound     from "./pages/NotFound";
 
-// New UX — 5 pages
-import Pipeline      from "./pages/Pipeline";
-import PageMeli      from "./pages/PageMeli";
-import PageBsale     from "./pages/PageBsale";
+// New UX — 7 pages
+import Pipeline         from "./pages/Pipeline";
+import PageMeli         from "./pages/PageMeli";
+import PageBsale        from "./pages/PageBsale";
 import PageConciliacion from "./pages/PageConciliacion";
-import ConfigNew     from "./pages/ConfigNew";
+import ConfigNew        from "./pages/ConfigNew";
+import PageDashboard    from "./pages/PageDashboard";
+import PageFlujo        from "./pages/PageFlujo";
 
 const queryClient = new QueryClient();
 
@@ -30,8 +32,10 @@ const App = () => (
           <Route path="/"     element={<Landing />} />
           <Route path="/auth" element={<Auth />} />
 
-          {/* App — 4 pages */}
+          {/* App — 7 pages */}
+          <Route path="/resumen"      element={<PageDashboard />} />
           <Route path="/pipeline"     element={<Pipeline />} />
+          <Route path="/flujo"        element={<PageFlujo />} />
           <Route path="/mercadolibre" element={<PageMeli />} />
           <Route path="/bsale"        element={<PageBsale />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
