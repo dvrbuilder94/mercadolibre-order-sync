@@ -7,7 +7,7 @@ import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import {
   ChevronLeft, ChevronRight, RefreshCw, Loader2, Info,
-  CheckCircle2, AlertCircle, FileText, ShoppingBag, ExternalLink,
+  CheckCircle2, AlertCircle, FileText, ShoppingBag, ExternalLink, Package,
 } from "lucide-react";
 
 const PAGE_SIZE = 50;
@@ -132,6 +132,30 @@ export default function PageVentas() {
   const [docSyncing, setDocSyncing] = useState(false);
   const [docSyncMsg, setDocSyncMsg] = useState("");
   const [selectedDoc, setSelectedDoc] = useState<any | null>(null);
+  const [selectedDocSales, setSelectedDocSales] = useState<any[] | null>(null);
+
+  // Load the sales associated to the selected document (handles packs: 1 doc ↔ N ventas).
+  useEffect(() => {
+    if (!selectedDoc) { setSelectedDocSales(null); return; }
+    let cancelled = false;
+    setSelectedDocSales(null);
+    (async () => {
+      const { data } = await supabase
+        .from("order_tax_documents")
+        .select("allocated_amount, match_source, orders(order_id, order_date, gross_amount, customer_name, product_title, channel, status)")
+        .eq("tax_document_id", selectedDoc.id);
+      if (cancelled) return;
+      const sales = (data ?? [])
+        .map((l: any) => ({
+          ...(Array.isArray(l.orders) ? l.orders[0] : l.orders),
+          allocated_amount: l.allocated_amount,
+          match_source: l.match_source,
+        }))
+        .filter((s: any) => s && s.order_id);
+      setSelectedDocSales(sales);
+    })();
+    return () => { cancelled = true; };
+  }, [selectedDoc]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -532,7 +556,9 @@ export default function PageVentas() {
                     if (channelFilter === "todos") return true;
                     return inferChannel(d.detected_channel, d.raw_data) === channelFilter;
                   }).map(d => {
-                    const isLinked = (d.order_tax_documents as any[])?.length > 0;
+                    const linkCount = (d.order_tax_documents as any[])?.length ?? 0;
+                    const isLinked = linkCount > 0;
+                    const isPack = linkCount > 1;
                     const isVoided = d.status === "voided";
                     const isSelected = selectedDoc?.id === d.id;
                     const effectiveChannel = inferChannel(d.detected_channel, d.raw_data);
@@ -560,9 +586,13 @@ export default function PageVentas() {
                         <td className="px-4 py-2.5">
                           {isVoided
                             ? <span className="text-xs text-slate-300">Anulado</span>
-                            : isLinked
-                              ? <span className="flex items-center gap-1 text-emerald-600 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />Sí</span>
-                              : <span className="flex items-center gap-1 text-slate-300 text-xs">No</span>
+                            : isPack
+                              ? <span className="inline-flex items-center gap-1 text-violet-700 bg-violet-50 border border-violet-200 px-1.5 py-0.5 rounded text-[11px] font-medium">
+                                  <Package className="h-3.5 w-3.5" />Pack · {linkCount} ventas
+                                </span>
+                              : isLinked
+                                ? <span className="flex items-center gap-1 text-emerald-600 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />Vinculada</span>
+                                : <span className="flex items-center gap-1 text-slate-300 text-xs">Sin vincular</span>
                           }
                         </td>
                         <td className="px-4 py-2.5">
@@ -601,7 +631,12 @@ export default function PageVentas() {
         <DetailPanel title={`Orden · ${selectedOrder.order_id}`} data={selectedOrder} onClose={() => setSelectedOrder(null)} />
       )}
       {selectedDoc && (
-        <DetailPanel title={`Bsale · ${DOC_LABEL[selectedDoc.document_type] || selectedDoc.document_type} #${selectedDoc.document_number}`} data={selectedDoc} onClose={() => setSelectedDoc(null)} />
+        <DetailPanel
+          title={`Bsale · ${DOC_LABEL[selectedDoc.document_type] || selectedDoc.document_type} #${selectedDoc.document_number}`}
+          data={selectedDoc}
+          linkedSales={selectedDocSales}
+          onClose={() => setSelectedDoc(null)}
+        />
       )}
     </div>
   );

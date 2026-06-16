@@ -1,11 +1,32 @@
+interface LinkedSale {
+  order_id: string;
+  order_date?: string | null;
+  gross_amount?: number | null;
+  allocated_amount?: number | null;
+  customer_name?: string | null;
+  product_title?: string | null;
+  channel?: string | null;
+  status?: string | null;
+  match_source?: string | null;
+}
+
 interface Props {
   title: string;
   data: Record<string, any> | null;
   onClose: () => void;
+  /** Sales linked to a Bsale document. undefined = not loaded, [] = none, [..] = loaded. */
+  linkedSales?: LinkedSale[] | null;
 }
 
 const CLP = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
+
+const CHANNEL_LABEL: Record<string, string> = {
+  meli: "MercadoLibre", falabella: "Falabella", paris: "Paris",
+  ripley: "Ripley", amazon: "Amazon", shopify: "Shopify",
+  linio: "Linio", rappi: "Rappi", walmart: "Walmart",
+};
+const channelName = (c: string | null | undefined) => (c ? CHANNEL_LABEL[c] ?? c : "—");
 
 const PCT = (n: number | null | undefined) =>
   n == null ? "—" : `${n}%`;
@@ -43,7 +64,80 @@ function RowLink({ label, href }: { label: string; href: string }) {
   );
 }
 
-export function DetailPanel({ title, data, onClose }: Props) {
+function LinkedSalesSection({ sales, docTotal }: { sales?: LinkedSale[] | null; docTotal?: number | null }) {
+  // undefined = caller doesn't supply linked sales → render nothing.
+  if (sales === undefined) return null;
+
+  // null = fetch in flight
+  if (sales === null) {
+    return (
+      <Section title="Ventas asociadas">
+        <p className="text-xs text-slate-300 italic">Cargando…</p>
+      </Section>
+    );
+  }
+
+  // No linked sales
+  if (sales.length === 0) {
+    return (
+      <Section title="Ventas asociadas">
+        <p className="text-xs text-slate-300 italic">Sin ventas vinculadas</p>
+      </Section>
+    );
+  }
+
+  const isPack = sales.length > 1;
+  // Pack reconciliation: each sale carries its gross_amount; sum should match doc total.
+  const sumGross = sales.reduce((s, v) => s + (Number(v.gross_amount) || 0), 0);
+  const total = Number(docTotal) || 0;
+  const delta = sumGross - total;
+  const cuadra = Math.abs(delta) <= 5;
+
+  return (
+    <Section title={`Ventas asociadas (${sales.length})`}>
+      {isPack && (
+        <div className="flex items-center gap-1.5 mb-2 text-violet-700 bg-violet-50 border border-violet-200 rounded px-2 py-1 w-fit">
+          <span className="text-[10px] font-semibold uppercase tracking-wider">Pack · {sales.length} ventas en un documento</span>
+        </div>
+      )}
+
+      {sales.map((s, i) => (
+        <div key={s.order_id ?? i} className="pl-2 border-l-2 border-violet-100 mb-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-slate-800 font-medium break-all">{s.order_id}</span>
+            <span className="text-xs text-slate-700 tabular-nums shrink-0">{CLP(s.gross_amount)}</span>
+          </div>
+          {s.product_title && <p className="text-[10px] text-slate-400 truncate">{s.product_title}</p>}
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-[10px] text-slate-400">{channelName(s.channel)}</span>
+            {s.order_date && <span className="text-[10px] text-slate-300">· {String(s.order_date).slice(0, 10)}</span>}
+            {s.customer_name && <span className="text-[10px] text-slate-300 truncate">· {s.customer_name}</span>}
+          </div>
+        </div>
+      ))}
+
+      {/* Cuadratura: suma de ventas vs total del documento */}
+      <div className="mt-1.5 pt-1.5 border-t border-slate-100 space-y-0.5">
+        <div className="flex justify-between text-xs">
+          <span className="text-slate-400">suma ventas</span>
+          <span className="text-slate-700 tabular-nums">{CLP(sumGross)}</span>
+        </div>
+        <div className="flex justify-between text-xs">
+          <span className="text-slate-400">total documento</span>
+          <span className="text-slate-700 tabular-nums">{CLP(total)}</span>
+        </div>
+        <div className="flex justify-between text-xs">
+          <span className="text-slate-400">diferencia</span>
+          <span className={`tabular-nums font-medium ${cuadra ? "text-emerald-600" : "text-red-600"}`}>
+            {cuadra ? "$0 ✓" : `${delta > 0 ? "+" : ""}${CLP(delta)}`}
+          </span>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
   if (!data) return null;
 
   const raw = data.raw_data as any;
@@ -179,11 +273,8 @@ export function DetailPanel({ title, data, onClose }: Props) {
                 </Section>
               )}
 
-              {raw?.external_order_id && (
-                <Section title="Vinculación">
-                  <Row label="order ML"      value={raw.external_order_id}           highlight />
-                </Section>
-              )}
+              {/* Ventas asociadas — soporta packs (1 documento ↔ N ventas) */}
+              <LinkedSalesSection sales={linkedSales} docTotal={data.total_amount} />
             </>
           )}
 
