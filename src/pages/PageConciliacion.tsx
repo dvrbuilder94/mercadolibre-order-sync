@@ -186,7 +186,7 @@ export default function PageConciliacion() {
       const score = l?.match_score ?? null;
       let reason: Reason = null;
       if (links.length === 0) reason = "nodoc";
-      else if (dd !== null && Math.abs(dd) > 1) reason = "delta";
+      else if (dd !== null && Math.abs(dd) > 5) reason = "delta";
       else if (l && !HARD_SOURCES.has(l.match_source || "") && score !== null && score < SCORE_OK) reason = "lowscore";
       return { o, l, d, dd, score, reason };
     });
@@ -409,12 +409,12 @@ export default function PageConciliacion() {
                     </td>
                     <td className={`px-4 py-2 text-right tabular-nums ${
                       dd === null ? "text-slate-300"
-                        : Math.abs(dd) > 1 ? "text-red-600 font-medium"
+                        : Math.abs(dd) > 5 ? "text-red-600 font-medium"
                         : "text-green-600"
                     }`}>
                       {dd === null
                         ? "—"
-                        : Math.abs(dd) <= 1
+                        : Math.abs(dd) <= 5
                           ? "$0 ✓"
                           : `${dd > 0 ? "+" : ""}${clp(dd)}`}
                     </td>

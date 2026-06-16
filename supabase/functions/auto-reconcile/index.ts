@@ -787,12 +787,30 @@ Deno.serve(async (req) => {
       const order = ordersByOrderId.get(String(eoi));
       if (!order || linkedOrderIds.has(order.id) || newlyLinkedDocIds.has(doc.id)) continue;
       hardLinks.push({
-        order_id: order.id, tax_document_id: doc.id, allocated_amount: doc.total_amount,
+        order_id: order.id, tax_document_id: doc.id,
+        allocated_amount: order.gross_amount || order.amount,
         created_by: user.id, match_source: 'AUTO_HARD_ORDER_ID', match_score: 100
       });
       newlyLinkedDocIds.add(doc.id);
       newlyLinkedOrderIds.add(order.id);
       hardLinkedCount++;
+      // Link pack siblings: orders in the same MeLi pack get the same boleta,
+      // each with their own gross_amount (not the full doc total).
+      const primaryPackId = order.raw_data?.pack_id;
+      if (primaryPackId) {
+        for (const sibling of ordersNeedingDocs) {
+          if (sibling.id === order.id) continue;
+          if (linkedOrderIds.has(sibling.id) || newlyLinkedOrderIds.has(sibling.id)) continue;
+          if (sibling.raw_data?.pack_id == null || String(sibling.raw_data.pack_id) !== String(primaryPackId)) continue;
+          hardLinks.push({
+            order_id: sibling.id, tax_document_id: doc.id,
+            allocated_amount: sibling.gross_amount || sibling.amount,
+            created_by: user.id, match_source: 'AUTO_HARD_PACK_SIBLING', match_score: 100
+          });
+          newlyLinkedOrderIds.add(sibling.id);
+          hardLinkedCount++;
+        }
+      }
     }
     if (hardLinks.length > 0) {
       await supabaseAdmin.from('order_tax_documents').insert(hardLinks);
