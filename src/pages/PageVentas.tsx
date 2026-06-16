@@ -64,16 +64,20 @@ const DOC_COLOR: Record<string, string> = {
 
 const formatRut = (body: string | null, dv?: string | null) => {
   if (!body) return "—";
-  const dotted = body.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return dv ? `${dotted}-${dv}` : dotted;
+  const digits = body.replace(/[^0-9Kk]/g, "");
+  const dvPart = dv ?? null;
+  return dvPart ? `${digits}-${dvPart}` : digits;
 };
 
 type Tab = "ordenes" | "docs";
+
+const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
 export default function PageVentas() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [tab, setTab] = useState<Tab>("ordenes");
+  const [channelFilter, setChannelFilter] = useState<string>("todos");
 
   // Orders tab
   const [orders, setOrders] = useState<any[]>([]);
@@ -109,14 +113,15 @@ export default function PageVentas() {
     try {
       const { from, to } = periodRange(period);
       const f = from + "T00:00:00", t = to + "T23:59:59";
+      const applyChannel = (q: any) => channelFilter !== "todos" ? q.eq("channel", channelFilter) : q;
 
       const [{ count }, { count: withDocC }, { data: sumRows }] = await Promise.all([
-        supabase.from("orders").select("*", { count: "exact", head: true })
-          .gte("order_date", f).lte("order_date", t).neq("status", "cancelled"),
-        supabase.from("orders").select("*, order_tax_documents!inner(id)", { count: "exact", head: true })
-          .gte("order_date", f).lte("order_date", t).neq("status", "cancelled"),
-        supabase.from("orders").select("gross_amount.sum()")
-          .gte("order_date", f).lte("order_date", t).neq("status", "cancelled"),
+        applyChannel(supabase.from("orders").select("*", { count: "exact", head: true })
+          .gte("order_date", f).lte("order_date", t).neq("status", "cancelled")),
+        applyChannel(supabase.from("orders").select("*, order_tax_documents!inner(id)", { count: "exact", head: true })
+          .gte("order_date", f).lte("order_date", t).neq("status", "cancelled")),
+        applyChannel(supabase.from("orders").select("gross_amount.sum()")
+          .gte("order_date", f).lte("order_date", t).neq("status", "cancelled")),
       ]);
       setOrdersTotal(count || 0);
       setOrdersWithDoc(withDocC || 0);
@@ -124,7 +129,7 @@ export default function PageVentas() {
       const parsedSum = rawSum != null ? Number(rawSum?.sum ?? rawSum?.gross_amount) : NaN;
       setOrdersSum(Number.isFinite(parsedSum) ? parsedSum : null);
 
-      const { data } = await supabase
+      const { data } = await applyChannel(supabase
         .from("orders")
         .select(`
           id, order_id, order_date, status, channel, customer_name, customer_tax_id,
@@ -137,13 +142,13 @@ export default function PageVentas() {
         .gte("order_date", f).lte("order_date", t)
         .neq("status", "cancelled")
         .order("order_date", { ascending: false })
-        .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
+        .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1));
 
       setOrders(data || []);
     } finally {
       setOrdersLoading(false);
     }
-  }, [period]);
+  }, [period, channelFilter]);
 
   // ── Docs fetch ─────────────────────────────────────────────────────────────
   const fetchDocs = useCallback(async (p: number) => {
@@ -163,9 +168,10 @@ export default function PageVentas() {
       setDocsMeliCount(meliC || 0);
       setDocsSum((sumRows as any)?.[0]?.sum ?? null);
 
+      // Include linked order channel so we can display it even when detected_channel is null.
       const { data } = await supabase
         .from("tax_documents")
-        .select("id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)")
+        .select("id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, client_tax_id_dv, detected_channel, status, external_url, raw_data, order_tax_documents(id, orders(channel))")
         .gte("document_date", from).lte("document_date", to)
         .order("document_date", { ascending: false })
         .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
@@ -176,7 +182,8 @@ export default function PageVentas() {
     }
   }, [period]);
 
-  useEffect(() => { setOrderPage(0); setDocPage(0); setSelectedOrder(null); setSelectedDoc(null); }, [period]);
+  useEffect(() => { setOrderPage(0); setDocPage(0); setSelectedOrder(null); setSelectedDoc(null); setChannelFilter("todos"); }, [period]);
+  useEffect(() => { setOrderPage(0); setSelectedOrder(null); }, [channelFilter]);
   useEffect(() => { fetchOrders(orderPage); }, [fetchOrders, orderPage]);
   useEffect(() => { fetchDocs(docPage); }, [fetchDocs, docPage]);
 
@@ -243,20 +250,38 @@ export default function PageVentas() {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex items-center gap-1 bg-white border rounded-lg p-1 mb-6 w-fit">
-          <button
-            onClick={() => setTab("ordenes")}
-            className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${tab === "ordenes" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800"}`}
-          >
-            Órdenes
-          </button>
-          <button
-            onClick={() => setTab("docs")}
-            className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${tab === "docs" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800"}`}
-          >
-            Documentos Bsale
-          </button>
+        {/* Tabs + canal filter */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-1 bg-white border rounded-lg p-1 w-fit">
+            <button
+              onClick={() => setTab("ordenes")}
+              className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${tab === "ordenes" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800"}`}
+            >
+              Órdenes
+            </button>
+            <button
+              onClick={() => setTab("docs")}
+              className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${tab === "docs" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800"}`}
+            >
+              Documentos Bsale
+            </button>
+          </div>
+          {/* Canal filter */}
+          <div className="flex items-center gap-1 flex-wrap">
+            {["todos", ...ALL_CHANNELS].map(ch => (
+              <button
+                key={ch}
+                onClick={() => setChannelFilter(ch)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                  channelFilter === ch
+                    ? "bg-slate-800 text-white border-slate-800"
+                    : "bg-white text-slate-500 border-slate-200 hover:border-slate-400"
+                }`}
+              >
+                {ch === "todos" ? "Todos" : (CHANNEL_LABEL[ch] ?? ch)}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* ── ÓRDENES TAB ────────────────────────────────────────────────── */}
@@ -474,6 +499,9 @@ export default function PageVentas() {
                     const isLinked = (d.order_tax_documents as any[])?.length > 0;
                     const isVoided = d.status === "voided";
                     const isSelected = selectedDoc?.id === d.id;
+                    // Canal: prefer detected_channel, fall back to linked order's channel
+                    const linkedOrderChannel = (d.order_tax_documents as any[])?.[0]?.orders?.channel ?? null;
+                    const effectiveChannel = d.detected_channel ?? linkedOrderChannel;
                     return (
                       <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${isVoided ? "opacity-40" : ""} ${isSelected ? "bg-slate-100" : ""}`}>
                         <td className="px-4 py-2.5">
@@ -484,16 +512,16 @@ export default function PageVentas() {
                         <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{d.document_number}</td>
                         <td className="px-4 py-2.5 text-xs text-slate-500">{d.document_date}</td>
                         <td className="px-4 py-2.5">
-                          {d.detected_channel
-                            ? <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[d.detected_channel] || "bg-slate-100 text-slate-600"}`}>
-                                {CHANNEL_LABEL[d.detected_channel] || d.detected_channel}
+                          {effectiveChannel
+                            ? <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[effectiveChannel] || "bg-slate-100 text-slate-600"}`}>
+                                {CHANNEL_LABEL[effectiveChannel] || effectiveChannel}
                               </span>
                             : <span className="text-xs text-slate-300">—</span>
                           }
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono text-xs">{CLP(d.total_amount)}</td>
                         <td className="px-4 py-2.5 font-mono text-xs text-slate-500">
-                          {d.client_tax_id?.replace(/[^0-9]/g, "") || "—"}
+                          {formatRut(d.client_tax_id, d.client_tax_id_dv)}
                         </td>
                         <td className="px-4 py-2.5">
                           {isVoided
