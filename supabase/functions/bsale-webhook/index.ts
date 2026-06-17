@@ -172,8 +172,8 @@ Deno.serve(async (req) => {
 
     if (!bsaleAccount || !bsaleResponse) {
       console.error('Bsale account not found for cpnId:', cpnId, 'resourceId:', resourceId, 'resolvedBy:', resolvedBy)
-      return new Response(JSON.stringify({ error: 'Account not found' }), {
-        status: 404,
+      return new Response(JSON.stringify({ message: 'Acknowledged' }), {
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
