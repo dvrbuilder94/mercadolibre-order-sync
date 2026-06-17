@@ -201,53 +201,62 @@ export default function PageVentas() {
       const applyBase = (q: any) =>
         applySearch(applyChannel(q.gte("order_date", f).lte("order_date", t).neq("status", "cancelled")));
 
-      const docJoin = docStatusFilter === "con"
-        ? "order_tax_documents!inner(id, tax_documents(document_number, document_type, external_url))"
-        : docStatusFilter === "sin"
-          ? "order_tax_documents!left(id, tax_documents(document_number, document_type, external_url))"
-          : "order_tax_documents(id, tax_documents(document_number, document_type, external_url))";
-      const listCountJoin = docStatusFilter === "con"
-        ? "*, order_tax_documents!inner(id)"
-        : docStatusFilter === "sin"
-          ? "*, order_tax_documents!left(id)"
-          : "*";
+      // Don't use !left(id) + is-null as an anti-join here: in PostgREST that
+      // filter only restricts which NESTED rows show up, not which top-level
+      // orders are returned — so it silently matched every order regardless
+      // of doc-link status (confirmed: "Sin documento" showed the full total).
+      // Instead, fetch ids in scope and the full linked-order-id set as two
+      // plain queries, then compute con/sin client-side — slower but correct.
+      const scopeRows: { id: string; order_date: string }[] = [];
+      for (let page = 0; page < 20; page++) {
+        const { data } = await applyBase(supabase.from("orders").select("id, order_date"))
+          .order("order_date", { ascending: false })
+          .order("id", { ascending: true })
+          .range(page * 1000, page * 1000 + 999);
+        if (!data || data.length === 0) break;
+        scopeRows.push(...(data as any));
+        if (data.length < 1000) break;
+      }
 
-      // "Sin documento" must be counted via the !left + is-null anti-join, never
-      // via !inner(id) row counts: an order linked to 2+ docs (boleta + nota de
-      // crédito) gets counted twice by !inner, which silently deflates
-      // ordersTotal - ordersWithDoc below the real number of undocumented orders.
-      const [{ count }, { count: noDocC }, { data: sumRows }, { count: listCount }] = await Promise.all([
-        applyBase(supabase.from("orders").select("*", { count: "exact", head: true })),
-        applyBase(supabase.from("orders").select("*, order_tax_documents!left(id)", { count: "exact", head: true })).is("order_tax_documents.id", null),
-        applyBase(supabase.from("orders").select("gross_amount.sum()")),
-        (() => {
-          let q = applyBase(supabase.from("orders").select(listCountJoin, { count: "exact", head: true }));
-          if (docStatusFilter === "sin") q = q.is("order_tax_documents.id", null);
-          return q;
-        })(),
-      ]);
-      setOrdersTotal(count || 0);
-      setOrdersWithoutDoc(noDocC || 0);
-      setOrdersListTotal(listCount || 0);
+      const linkedIds = new Set<string>();
+      for (let page = 0; page < 50; page++) {
+        const { data } = await supabase.from("order_tax_documents").select("order_id")
+          .order("id", { ascending: true })
+          .range(page * 1000, page * 1000 + 999);
+        if (!data || data.length === 0) break;
+        for (const r of data as any[]) linkedIds.add(r.order_id);
+        if (data.length < 1000) break;
+      }
+
+      setOrdersTotal(scopeRows.length);
+      setOrdersWithoutDoc(scopeRows.filter(o => !linkedIds.has(o.id)).length);
+
+      const { data: sumRows } = await applyBase(supabase.from("orders").select("gross_amount.sum()"));
       const rawSum = (sumRows as any)?.[0];
       const parsedSum = rawSum != null ? Number(rawSum?.sum ?? rawSum?.gross_amount) : NaN;
       setOrdersSum(Number.isFinite(parsedSum) ? parsedSum : null);
 
-      let query = applyBase(supabase
-        .from("orders")
-        .select(`
-          id, order_id, order_date, status, channel, customer_name, customer_tax_id,
-          customer_tax_id_dv, product_title, gross_amount, net_amount, payment_method,
-          installments, money_release_date, payment_approved_at, has_exact_data, raw_data,
-          ${docJoin}
-        `));
-      if (docStatusFilter === "sin") query = query.is("order_tax_documents.id", null);
+      const filteredIds = scopeRows
+        .filter(o => docStatusFilter === "con" ? linkedIds.has(o.id) : docStatusFilter === "sin" ? !linkedIds.has(o.id) : true)
+        .map(o => o.id);
+      setOrdersListTotal(filteredIds.length);
 
-      const { data } = await query
-        .order("order_date", { ascending: false })
-        .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
-
-      setOrders(data || []);
+      const pageIds = filteredIds.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE);
+      if (pageIds.length === 0) {
+        setOrders([]);
+      } else {
+        const { data: full } = await supabase
+          .from("orders")
+          .select(`
+            id, order_id, order_date, status, channel, customer_name, customer_tax_id,
+            customer_tax_id_dv, product_title, gross_amount, net_amount, payment_method,
+            installments, money_release_date, payment_approved_at, has_exact_data, raw_data,
+            order_tax_documents(id, tax_documents(document_number, document_type, external_url))
+          `)
+          .in("id", pageIds);
+        const byId = new Map((full || []).map((o: any) => [o.id, o]));
+        setOrders(pageIds.map((id) => byId.get(id)).filter((o: any) => o !== undefined));
+      }
     } finally {
       setOrdersLoading(false);
     }
