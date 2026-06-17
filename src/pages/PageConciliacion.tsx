@@ -5,7 +5,7 @@ import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
-import { SCORE_OK } from "@/lib/constants";
+import { SCORE_OK, CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -66,6 +66,7 @@ interface OrderRow {
   order_id: string;
   order_date: string;
   status: string;
+  channel: string | null;
   product_title: string | null;
   gross_amount: number | null;
   amount: number;
@@ -84,7 +85,7 @@ interface DocLinkRow {
   match_source: string | null;
   match_score: number | null;
   orders: {
-    id: string; order_id: string; order_date: string;
+    id: string; order_id: string; order_date: string; channel: string | null;
     product_title: string | null; gross_amount: number | null; amount: number;
   } | null;
   tax_documents: Doc | null;
@@ -101,6 +102,7 @@ interface DocOrderRef {
   id: string;
   order_id: string;
   order_date: string;
+  channel: string | null;
   product_title: string | null;
   amount: number;      // venta usada para el Δ (allocated_amount si viene, si no gross)
   inPeriod: boolean;
@@ -113,6 +115,7 @@ type DocUnit = {
   key: string;
   doc: Doc;
   orders: DocOrderRef[];
+  channels: string[];                     // canal(es) de las órdenes que cubre el doc
   ordersSum: number;
   delta: number;                          // ordersSum − doc.total_amount
   matchSource: string | null;
@@ -169,7 +172,7 @@ export default function PageConciliacion() {
         const { data, error } = await supabase
           .from("orders")
           .select(`
-            id, order_id, order_date, status, product_title, gross_amount, amount,
+            id, order_id, order_date, status, channel, product_title, gross_amount, amount,
             net_amount, money_release_date, has_exact_data,
             order_tax_documents (
               match_source, match_score, allocated_amount,
@@ -209,7 +212,7 @@ export default function PageConciliacion() {
             .from("order_tax_documents")
             .select(`
               tax_document_id, allocated_amount, match_source, match_score,
-              orders ( id, order_id, order_date, product_title, gross_amount, amount ),
+              orders ( id, order_id, order_date, channel, product_title, gross_amount, amount ),
               tax_documents ( id, document_number, document_type, total_amount, external_url )
             `)
             .in("tax_document_id", chunk)
@@ -278,7 +281,7 @@ export default function PageConciliacion() {
         : (ord.gross_amount ?? ord.amount ?? 0);
       const cur = m.get(doc.id) || { doc, orders: [], sum: 0, source: l.match_source, minScore: l.match_score };
       cur.orders.push({
-        id: ord.id, order_id: ord.order_id, order_date: ord.order_date,
+        id: ord.id, order_id: ord.order_id, order_date: ord.order_date, channel: ord.channel,
         product_title: ord.product_title, amount: venta,
         inPeriod: periodOrderIds.has(ord.id),
       });
@@ -296,6 +299,7 @@ export default function PageConciliacion() {
       out.push({
         kind: "doc", key: "doc:" + id, doc: v.doc,
         orders: v.orders.sort((a, b) => b.amount - a.amount),
+        channels: Array.from(new Set(v.orders.map((o) => o.channel).filter(Boolean) as string[])),
         ordersSum: v.sum, delta,
         matchSource: v.source, matchScore: v.minScore, reason,
         outOfPeriodCount: v.orders.filter((o) => !o.inPeriod).length,
@@ -486,6 +490,7 @@ export default function PageConciliacion() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-slate-400 border-b">
+                <th className="px-4 py-2 font-medium">Canal</th>
                 <th className="px-4 py-2 font-medium">Venta(s)</th>
                 <th className="px-4 py-2 font-medium text-right">Monto ventas</th>
                 <th className="px-4 py-2 font-medium">Documento</th>
@@ -497,11 +502,11 @@ export default function PageConciliacion() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin inline" />
                 </td></tr>
               ) : visible.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                   {filter === "attention"
                     ? "✓ Nada requiere atención en este período"
                     : "Sin resultados"}
@@ -512,6 +517,11 @@ export default function PageConciliacion() {
                   const venta = o.gross_amount ?? o.amount;
                   return (
                     <tr key={u.key} className="border-b last:border-0 hover:bg-slate-50">
+                      <td className="px-4 py-2">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[o.channel || ""] || "bg-slate-100 text-slate-600"}`}>
+                          {CHANNEL_LABEL[o.channel || ""] ?? o.channel ?? "—"}
+                        </span>
+                      </td>
                       <td className="px-4 py-2">
                         <div className="font-mono text-xs text-slate-500">{o.order_id}</div>
                         <div className="text-slate-700 truncate max-w-[220px]">{o.product_title || "—"}</div>
@@ -568,6 +578,15 @@ export default function PageConciliacion() {
                 const multi = u.orders.length > 1;
                 return (
                   <tr key={u.key} className="border-b last:border-0 hover:bg-slate-50 align-top">
+                    <td className="px-4 py-2">
+                      <div className="flex flex-col gap-1">
+                        {u.channels.length > 0 ? u.channels.map((ch) => (
+                          <span key={ch} className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${CHANNEL_COLOR[ch] || "bg-slate-100 text-slate-600"}`}>
+                            {CHANNEL_LABEL[ch] ?? ch}
+                          </span>
+                        )) : <span className="text-slate-300">—</span>}
+                      </div>
+                    </td>
                     <td className="px-4 py-2">
                       <div className="space-y-1">
                         {u.orders.map((o) => (
