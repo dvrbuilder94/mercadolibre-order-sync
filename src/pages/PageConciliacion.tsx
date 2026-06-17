@@ -601,9 +601,31 @@ export default function PageConciliacion() {
                     <td className={`px-4 py-2 text-right tabular-nums ${
                       Math.abs(u.delta) > 5 ? "text-red-600 font-medium" : "text-green-600"
                     }`}>
-                      {Math.abs(u.delta) <= 5
-                        ? "$0 ✓"
-                        : `${u.delta > 0 ? "+" : ""}${clp(u.delta)}`}
+                      {Math.abs(u.delta) <= 5 ? (
+                        "$0 ✓"
+                      ) : (
+                        <div className="flex flex-col items-end gap-1">
+                          <span>{`${u.delta > 0 ? "+" : ""}${clp(u.delta)}`}</span>
+                          {u.delta < 0 ? (
+                            <>
+                              <span className="text-[10px] text-slate-400 font-normal">
+                                Falta vincular una orden hermana
+                              </span>
+                              <button
+                                onClick={retryReconcile}
+                                disabled={retrying}
+                                className="text-[10px] text-blue-500 underline w-fit disabled:opacity-40 font-normal"
+                              >
+                                {retrying ? "Reintentando..." : "Reintentar"}
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 font-normal">
+                              Vinculado a más de lo que cubre el doc · revisar
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-2 text-slate-300">—</td>
                   </tr>
