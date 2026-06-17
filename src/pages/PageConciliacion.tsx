@@ -32,17 +32,18 @@ const HARD_SOURCES = new Set([
   "webhook_external_order_id", "webhook_fallback_boleta",
 ]);
 
-// match_source → etiqueta + estilo. Es la clave del diagnóstico:
-// si "Pack" aparece en 0, el match por pack_id no está corriendo en producción.
+// match_source → etiqueta + estilo, en lenguaje de negocio (no nombres
+// internos del motor de matching). Se usa tanto en el badge de cada fila
+// como en el resumen agregado de "cómo conciliaron" más abajo.
 const MATCH_META: Record<string, { label: string; cls: string }> = {
-  AUTO_HARD_ORDER_ID:      { label: "Exacta",      cls: "bg-green-100 text-green-700" },
-  AUTO_HARD_PACK_ID:       { label: "Pack",        cls: "bg-blue-100 text-blue-700" },
-  AUTO_CONSOLIDATED:       { label: "Consolidada", cls: "bg-indigo-100 text-indigo-700" },
-  AUTO:                    { label: "Score",       cls: "bg-amber-100 text-amber-700" },
-  AUTO_SOFT:               { label: "Score bajo",  cls: "bg-amber-100 text-amber-700" },
-  AUTO_TIE_BREAK:          { label: "Desempate",   cls: "bg-amber-100 text-amber-700" },
-  webhook_external_order_id: { label: "Webhook",   cls: "bg-slate-100 text-slate-600" },
-  webhook_fallback_boleta:   { label: "Webhook",   cls: "bg-slate-100 text-slate-600" },
+  AUTO_HARD_ORDER_ID:      { label: "Exacta",         cls: "bg-green-100 text-green-700" },
+  AUTO_HARD_PACK_ID:       { label: "Multiventa",     cls: "bg-blue-100 text-blue-700" },
+  AUTO_CONSOLIDATED:       { label: "Consolidada",    cls: "bg-indigo-100 text-indigo-700" },
+  AUTO:                    { label: "Automático",     cls: "bg-amber-100 text-amber-700" },
+  AUTO_SOFT:               { label: "Confianza baja", cls: "bg-amber-100 text-amber-700" },
+  AUTO_TIE_BREAK:          { label: "Desempate",      cls: "bg-amber-100 text-amber-700" },
+  webhook_external_order_id: { label: "Exacta",       cls: "bg-green-100 text-green-700" },
+  webhook_fallback_boleta:   { label: "Exacta",       cls: "bg-green-100 text-green-700" },
 };
 const matchMeta = (src: string | null) =>
   (src && MATCH_META[src]) || { label: src || "Manual", cls: "bg-slate-100 text-slate-600" };
@@ -307,8 +308,9 @@ export default function PageConciliacion() {
           </div>
           {!loading && (counts.bySource["AUTO_HARD_PACK_ID"] || 0) === 0 && (
             <p className="text-xs text-amber-600 mt-3">
-              ⚠️ No hay matches por <b>Pack</b>. Si tienes ventas multiventa, el match por <code>pack_id</code> no
-              está corriendo en producción (función desplegada desactualizada o falta data).
+              ⚠️ No se conciliaron ventas multiventa (packs) este período. Si vendiste paquetes con varios
+              productos en un mismo despacho, revisa que estén llegando — puede faltar sincronizar o haber un
+              problema con la conciliación automática.
             </p>
           )}
         </div>

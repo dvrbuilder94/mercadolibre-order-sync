@@ -9,6 +9,7 @@ import {
   ChevronLeft, ChevronRight, RefreshCw, Loader2, Info,
   CheckCircle2, AlertCircle, FileText, ShoppingBag, ExternalLink, Package,
 } from "lucide-react";
+import { chileMonthUnixRange } from "@/lib/chileDate";
 
 const PAGE_SIZE = 50;
 
@@ -268,17 +269,32 @@ export default function PageVentas() {
     try {
       const { from, to } = periodRange(period);
 
-      const [{ count }, { count: meliC }, { data: sumRows }] = await Promise.all([
+      const [{ count }, { data: sumRows }] = await Promise.all([
         supabase.from("tax_documents").select("*", { count: "exact", head: true })
-          .gte("document_date", from).lte("document_date", to),
-        supabase.from("tax_documents").select("*, order_tax_documents!inner(id)", { count: "exact", head: true })
           .gte("document_date", from).lte("document_date", to),
         supabase.from("tax_documents").select("total_amount.sum()")
           .gte("document_date", from).lte("document_date", to).eq("status", "issued"),
       ]);
       setDocsTotal(count || 0);
-      setDocsMeliCount(meliC || 0);
       setDocsSum((sumRows as any)?.[0]?.sum ?? null);
+
+      // order_tax_documents!inner(id) counts JOINED ROWS, not distinct docs — a
+      // pack doc linked to 3 orders inflated the count by 3. Fetch the docs in
+      // scope with their link arrays instead and count those with >=1 link.
+      const docLinkRows: { order_tax_documents: { id: string }[] }[] = [];
+      for (let page = 0; page < 20; page++) {
+        const { data } = await supabase
+          .from("tax_documents")
+          .select("order_tax_documents(id)")
+          .gte("document_date", from).lte("document_date", to)
+          .order("document_date", { ascending: false })
+          .order("id", { ascending: true })
+          .range(page * 1000, page * 1000 + 999);
+        if (!data || data.length === 0) break;
+        docLinkRows.push(...(data as any));
+        if (data.length < 1000) break;
+      }
+      setDocsMeliCount(docLinkRows.filter(d => (d.order_tax_documents?.length ?? 0) > 0).length);
 
       const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)";
 
@@ -358,7 +374,12 @@ export default function PageVentas() {
   const syncDocs = async () => {
     setDocSyncing(true); setDocSyncMsg("Sincronizando...");
     try {
-      const { data, error } = await supabase.functions.invoke("sync-bsale-docs", { body: { days_back: 90 } });
+      // Sync the period currently being viewed — days_back:90 ignored the
+      // period selector and always pulled the last 90 days from today.
+      const { from: dateFrom, to: dateTo } = chileMonthUnixRange(period);
+      const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
+        body: { date_from: dateFrom, date_to: dateTo, max_pages: 20 },
+      });
       if (error) throw error;
       const tot = data?.summary?.total_upserted ?? 0;
       setDocSyncMsg(`✅ ${tot} documentos`);
