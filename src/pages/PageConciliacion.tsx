@@ -80,9 +80,10 @@ const firstDoc = (l: Link): Doc | null =>
 
 type Filter = "attention" | "nodoc" | "delta" | "lowscore" | "clean" | "all";
 type Reason = "nodoc" | "delta" | "lowscore" | null;
+type NodocReason = "pending_sync" | "no_candidate" | null;
 interface Classified {
   o: OrderRow; l: Link | null; d: Doc | null;
-  dd: number | null; score: number | null; reason: Reason;
+  dd: number | null; score: number | null; reason: Reason; nodocReason: NodocReason;
 }
 
 export default function PageConciliacion() {
@@ -92,10 +93,23 @@ export default function PageConciliacion() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("attention");
   const [page, setPage] = useState(0);
+  const [maxDocDate, setMaxDocDate] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) navigate("/auth");
     });
+  }, []);
+
+  // Cuánto avanzó la sincronización de Bsale en general — para distinguir,
+  // en las filas "Sin doc", entre "boleta todavía no emitida/sincronizada"
+  // (la venta es más nueva que el último documento que tenemos) y "ya
+  // tenemos boletas de fechas posteriores y aun así no hay una vinculada"
+  // (no es un tema de espera, hay que revisar manualmente).
+  useEffect(() => {
+    supabase.from("tax_documents").select("document_date")
+      .order("document_date", { ascending: false }).limit(1).maybeSingle()
+      .then(({ data }) => setMaxDocDate(data?.document_date ?? null));
   }, []);
 
   const fetchRows = useCallback(async () => {
@@ -139,6 +153,25 @@ export default function PageConciliacion() {
   }, [period]);
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
+
+  // Acción para filas "Sin doc · no_candidate": ya hay boletas más nuevas
+  // sincronizadas y aun así no hubo match — reintenta el mismo matcher
+  // automático que usa Pipeline, acotado al período visible.
+  const retryReconcile = async () => {
+    setRetrying(true);
+    try {
+      const { from, to } = periodRange(period);
+      const { error } = await supabase.functions.invoke("auto-reconcile", {
+        body: { date_from: from + "T00:00:00", date_to: to + "T23:59:59" },
+      });
+      if (error) throw error;
+      await fetchRows();
+    } catch (e) {
+      console.error("Error reintentando conciliación:", e);
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
@@ -186,12 +219,16 @@ export default function PageConciliacion() {
       const dd = docDelta(d);
       const score = l?.match_score ?? null;
       let reason: Reason = null;
-      if (links.length === 0) reason = "nodoc";
+      let nodocReason: NodocReason = null;
+      if (links.length === 0) {
+        reason = "nodoc";
+        nodocReason = (maxDocDate && o.order_date.slice(0, 10) > maxDocDate) ? "pending_sync" : "no_candidate";
+      }
       else if (dd !== null && Math.abs(dd) > 5) reason = "delta";
       else if (l && !HARD_SOURCES.has(l.match_source || "") && score !== null && score < SCORE_OK) reason = "lowscore";
-      return { o, l, d, dd, score, reason };
+      return { o, l, d, dd, score, reason, nodocReason };
     });
-  }, [rows, docAlloc]);
+  }, [rows, docAlloc, maxDocDate]);
 
   const counts = useMemo(() => {
     const c = { total: classified.length, attention: 0, clean: 0, nodoc: 0, delta: 0, lowscore: 0, bySource: {} as Record<string, number> };
@@ -377,7 +414,7 @@ export default function PageConciliacion() {
                     ? "✓ Nada requiere atención en este período"
                     : "Sin resultados"}
                 </td></tr>
-              ) : pageRows.map(({ o, l, d, dd, score }) => {
+              ) : pageRows.map(({ o, l, d, dd, score, nodocReason }) => {
                 const venta = o.gross_amount ?? o.amount;
                 return (
                   <tr key={o.id} className="border-b last:border-0 hover:bg-slate-50">
@@ -404,9 +441,24 @@ export default function PageConciliacion() {
                           {matchMeta(l.match_source).label}{score !== null ? ` · ${Math.round(score)}%` : ""}
                         </span>
                       ) : (
-                        <span className="text-xs px-2 py-0.5 rounded font-medium bg-red-100 text-red-700">
-                          Sin doc
-                        </span>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-xs px-2 py-0.5 rounded font-medium bg-red-100 text-red-700 w-fit">
+                            Sin doc
+                          </span>
+                          {nodocReason === "pending_sync" ? (
+                            <a href="/pipeline" className="text-[10px] text-blue-500 underline w-fit">
+                              Pendiente de sync Bsale
+                            </a>
+                          ) : (
+                            <button
+                              onClick={retryReconcile}
+                              disabled={retrying}
+                              className="text-[10px] text-blue-500 underline w-fit disabled:opacity-40"
+                            >
+                              {retrying ? "Reintentando..." : "Sin candidato · reintentar"}
+                            </button>
+                          )}
+                        </div>
                       )}
                     </td>
                     <td className={`px-4 py-2 text-right tabular-nums ${
