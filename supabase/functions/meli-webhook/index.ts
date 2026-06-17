@@ -51,8 +51,8 @@ Deno.serve(async (req) => {
     if (accountError || !meliAccount) {
       console.error('No account found for seller:', sellerId);
       return new Response(
-        JSON.stringify({ error: 'Account not found' }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ message: 'Acknowledged' }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
