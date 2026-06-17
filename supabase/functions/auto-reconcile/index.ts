@@ -693,7 +693,7 @@ Deno.serve(async (req) => {
     for (let page = 0; page < 50; page++) {
       const { data: pageData, error: pageErr } = await supabaseAdmin
         .from('order_tax_documents')
-        .select('order_id, tax_document_id')
+        .select('order_id, tax_document_id, allocated_amount, orders(gross_amount, amount)')
         .order('id', { ascending: true })
         .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
       if (pageErr) throw new Error(`order_tax_documents page fetch failed: ${pageErr.message}`);
@@ -704,6 +704,17 @@ Deno.serve(async (req) => {
 
     const linkedOrderIds = new Set(linkedOrderTaxDocs.map(d => d.order_id));
     const linkedDocIds = new Set(linkedOrderTaxDocs.map(d => d.tax_document_id));
+
+    // Suma ya vinculada por documento. Un pack al que solo se le linkeó 1 de 4
+    // órdenes queda con sum << total — eso es lo que distingue "resuelto" de
+    // "parcial" más abajo, para no excluirlo del matching para siempre.
+    const docLinkedSum = new Map<string, number>();
+    for (const link of linkedOrderTaxDocs) {
+      const amt = (link.allocated_amount != null && link.allocated_amount > 0)
+        ? link.allocated_amount
+        : (link.orders?.gross_amount ?? link.orders?.amount ?? 0);
+      docLinkedSum.set(link.tax_document_id, (docLinkedSum.get(link.tax_document_id) || 0) + amt);
+    }
 
     // Paginar explícitamente con .range() porque PostgREST impone un max-rows
     // de ~1000 en el servidor que .limit() no supera. Sin paginar, Stage 3
@@ -740,9 +751,23 @@ Deno.serve(async (req) => {
     // Incluir todos los docs no vinculados — la clasificación B2B puede ser incorrecta
     // si sync-bsale-docs corrió antes que sync-meli-orders (sin órdenes para comparar RUT).
     // Si un doc B2B genuino no tiene orden, simplemente queda sin vincular. Sin daño.
-    const allUnlinked = tributaryDocs.filter(doc => !linkedDocIds.has(doc.id));
+    //
+    // Un doc con AL MENOS un link no se excluye automáticamente: si la suma de
+    // lo ya vinculado no cuadra con su total (±$5), sigue "necesitando match" —
+    // por ejemplo un pack al que una corrida anterior solo le linkeó 1 de 4
+    // órdenes. Antes, apenas un doc tenía cualquier link quedaba afuera del
+    // matcher para siempre y las hermanas restantes quedaban huérfanas sin que
+    // nada volviera a buscarlas (ni Fase 0B, ni reintentar desde la UI).
+    const SETTLED_TOLERANCE = 5;
+    const isSettled = (doc: any) => {
+      if (!linkedDocIds.has(doc.id)) return false;
+      const sum = docLinkedSum.get(doc.id) || 0;
+      return Math.abs(sum - (doc.total_amount || 0)) <= SETTLED_TOLERANCE;
+    };
+    const allUnlinked = tributaryDocs.filter(doc => !isSettled(doc));
+    const partiallyLinkedCount = allUnlinked.filter(doc => linkedDocIds.has(doc.id)).length;
     const excludedB2BCount = allUnlinked.filter(doc => doc.sales_channel === 'B2B').length;
-    const unlinkedDocs = allUnlinked; 
+    const unlinkedDocs = allUnlinked;
     
     // --- OPTIMIZATION: PRE-CALCULATE AND INDEX ---
     const ordersWithMeta = ordersNeedingDocs.map(o => ({
@@ -780,7 +805,7 @@ Deno.serve(async (req) => {
     }
     const hasOrdersWithoutRut = ordersNoRutByDateAsc.length > 0;
 
-    console.log(`Found ${ordersNeedingDocs.length} orders needing docs, ${allUnlinked.length} unlinked docs`);
+    console.log(`Found ${ordersNeedingDocs.length} orders needing docs, ${allUnlinked.length} unlinked docs (${partiallyLinkedCount} of those have a partial link, e.g. incomplete pack)`);
 
     let autoLinkedCount = 0;
     let autoSoftCount = 0;
@@ -1212,6 +1237,7 @@ Deno.serve(async (req) => {
           ambiguous: ambiguousCount,
           ignored: ignoredCount,
           excluded_b2b: excludedB2BCount,
+          reopened_partial_docs: partiallyLinkedCount,
           candidates_saved: candidatesSavedCount,
           ambiguous_cases: ambiguousCases.slice(0, 10) // Return first 10 for debugging
         },
