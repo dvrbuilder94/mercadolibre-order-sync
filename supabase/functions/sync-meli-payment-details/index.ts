@@ -45,10 +45,10 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { days_back, limit = 50 } = await req.json().catch(() => ({}));
+    const { date_from, date_to, days_back, limit = 50 } = await req.json().catch(() => ({}));
     const effectiveLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
 
-    console.log(`🚀 Fetching exact payment details (limit: ${effectiveLimit}, days_back: ${days_back ?? 'sin límite — backfill completo'})`);
+    console.log(`🚀 Fetching exact payment details (limit: ${effectiveLimit}, date_from: ${date_from ?? '-'}, date_to: ${date_to ?? '-'}, days_back: ${days_back ?? 'sin límite — backfill completo'})`);
 
     // 1. Get MELI account
     const { data: meliAccount, error: accountError } = await supabase
@@ -116,7 +116,12 @@ Deno.serve(async (req) => {
       .order('order_date', { ascending: false })
       .limit(effectiveLimit);
 
-    if (days_back) {
+    // An explicit date_from/date_to (e.g. the period the user has open in the
+    // UI) takes priority over days_back, which can only express "from N days
+    // ago until now" and can't target an arbitrary past month.
+    if (date_from && date_to) {
+      ordersQuery = ordersQuery.gte('order_date', date_from).lte('order_date', date_to);
+    } else if (days_back) {
       const cutoffDate = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
       ordersQuery = ordersQuery.gte('order_date', cutoffDate);
     }
@@ -385,7 +390,9 @@ Deno.serve(async (req) => {
       .eq('channel_account_id', meliAccount.id)
       .eq('has_exact_data', false);
 
-    if (days_back) {
+    if (date_from && date_to) {
+      remainingQuery = remainingQuery.gte('order_date', date_from).lte('order_date', date_to);
+    } else if (days_back) {
       const cutoffDate = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
       remainingQuery = remainingQuery.gte('order_date', cutoffDate);
     }
@@ -406,7 +413,7 @@ Deno.serve(async (req) => {
     if ((remainingCount || 0) > 0 && updated > 0) {
       console.log(`Chaining: ${remainingCount} orders remain, invoking sync-meli-payment-details again`);
       try {
-        supabase.functions.invoke('sync-meli-payment-details', { body: { days_back, limit } }).catch((e) =>
+        supabase.functions.invoke('sync-meli-payment-details', { body: { date_from, date_to, days_back, limit } }).catch((e) =>
           console.error('Chain invoke failed:', e)
         );
       } catch (e) {

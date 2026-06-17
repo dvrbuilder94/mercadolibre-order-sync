@@ -52,7 +52,13 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               .lte('order_date', to)
               .neq('status', 'cancelled');
             if (canalId !== 'todos') q = q.eq('channel', canalId);
-            const { data: batch, error: e } = await q.range(offset, offset + PAGE - 1);
+            // .range() pagination needs a deterministic sort, otherwise Postgres
+            // doesn't guarantee stable ordering across pages and rows can be
+            // skipped or duplicated at page boundaries.
+            const { data: batch, error: e } = await q
+              .order('order_date', { ascending: false })
+              .order('id', { ascending: true })
+              .range(offset, offset + PAGE - 1);
             if (e) throw e;
             rows.push(...(batch ?? []));
             if ((batch ?? []).length < PAGE) break;
@@ -72,6 +78,8 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               .gte('order_date', from)
               .lte('order_date', to)
               .neq('status', 'cancelled')
+              .order('order_date', { ascending: false })
+              .order('id', { ascending: true })
               .range(offset, offset + PAGE - 1);
             if (e) throw e;
             allRows.push(...(batch ?? []));

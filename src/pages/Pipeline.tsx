@@ -206,13 +206,17 @@ export default function Pipeline() {
   const syncPayments = async () => {
     setSyncingPayments(true);
     addLog("› Sincronizando pagos MercadoPago...");
+    // Scope to the period currently open in the UI — without date_from/date_to
+    // the edge function defaults to "most recent 50 orders without exact data",
+    // which silently processes the wrong month when viewing past periods.
+    const { from, to } = periodRange(period);
     let totalLinked = 0;
     let round = 0;
     try {
       while (true) {
         round++;
         const { data, error } = await supabase.functions.invoke("sync-meli-payment-details", {
-          body: { limit: 50 },
+          body: { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59`, limit: 50 },
         });
         if (error) throw error;
         totalLinked += data?.paymentsLinked ?? 0;
@@ -391,11 +395,16 @@ export default function Pipeline() {
   const enrichRuts = async () => {
     setEnriching(true);
     addLog("› Enriqueciendo RUTs desde API de ML...");
+    // Same date-scope issue as syncPayments: without bounds this defaults to
+    // the 150 most recent orders, ignoring the period shown in the UI.
+    const { from, to } = periodRange(period);
     let totalEnriched = 0; let round = 0;
     try {
       while (true) {
         round++;
-        const { data, error } = await supabase.functions.invoke("enrich-meli-billing");
+        const { data, error } = await supabase.functions.invoke("enrich-meli-billing", {
+          body: { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59` },
+        });
         if (error) throw error;
         const enriched  = data?.enriched ?? 0;
         const remaining = data?.remaining ?? 0;

@@ -115,13 +115,24 @@ Deno.serve(async (req) => {
       }
     }
 
+    const { date_from, date_to } = await req.json().catch(() => ({}));
+
     // Get orders without customer_tax_id that need enrichment
-    const { data: orders, error: ordersError } = await supabaseClient
+    let ordersQuery = supabaseClient
       .from('orders')
       .select('id, order_id, customer_name')
       .eq('channel', 'meli')
       .eq('channel_account_id', meliAccount.id)
-      .is('customer_tax_id', null)
+      .is('customer_tax_id', null);
+
+    // Without an explicit date_from/date_to, this defaults to the 150 most
+    // recent orders regardless of what period the UI has open — scope it to
+    // the requested period when given.
+    if (date_from && date_to) {
+      ordersQuery = ordersQuery.gte('order_date', date_from).lte('order_date', date_to);
+    }
+
+    const { data: orders, error: ordersError } = await ordersQuery
       .order('order_date', { ascending: false })
       .limit(150); // Larger batch; ~100ms each → ~15s
 
@@ -266,12 +277,18 @@ Deno.serve(async (req) => {
     }
 
     // Count remaining orders that still need enrichment
-    const { count: remainingCount } = await supabaseClient
+    let remainingQuery = supabaseClient
       .from('orders')
       .select('*', { count: 'exact', head: true })
       .eq('channel', 'meli')
       .eq('channel_account_id', meliAccount.id)
       .is('customer_tax_id', null);
+
+    if (date_from && date_to) {
+      remainingQuery = remainingQuery.gte('order_date', date_from).lte('order_date', date_to);
+    }
+
+    const { count: remainingCount } = await remainingQuery;
 
     console.log(`\n=== ENRICHMENT SUMMARY ===`);
     console.log(`Enriched: ${enrichedCount}`);
@@ -282,7 +299,7 @@ Deno.serve(async (req) => {
     if ((remainingCount || 0) > 0 && enrichedCount > 0) {
       console.log(`Chaining: ${remainingCount} orders remain, invoking enrich-meli-billing again`);
       try {
-        supabaseClient.functions.invoke('enrich-meli-billing').catch((e) =>
+        supabaseClient.functions.invoke('enrich-meli-billing', { body: { date_from, date_to } }).catch((e) =>
           console.error('Chain invoke failed:', e)
         );
       } catch (e) {

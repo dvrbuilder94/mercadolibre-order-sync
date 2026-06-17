@@ -72,6 +72,10 @@ Deno.serve(async (req) => {
 
     if (updateError) {
       console.error('Error updating order:', updateError);
+      return new Response(JSON.stringify({ error: updateError.message }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     console.log(`Manual reconciliation created successfully`);
