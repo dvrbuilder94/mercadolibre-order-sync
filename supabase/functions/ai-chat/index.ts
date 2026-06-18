@@ -76,7 +76,7 @@ ${(recentClosings || []).map(c => `  * Período: ${c.period} - Estado: ${c.statu
     }
 
     const gateway = createLovableAiGatewayProvider(lovableApiKey);
-    const model = gateway('google/gemini-3-flash-preview');
+    const model = (gateway as any).chat('google/gemini-3-flash-preview');
 
     const systemPrompt = `Eres "Quadra AI", el copiloto de contabilidad e inteligencia financiera para conciliaciones de comercio electrónico.
 Tu rol es ayudar a administradores, dueños de tiendas y contadores a entender sus estados de resultados, conciliaciones de MercadoLibre (MercadoPago) contra documentos tributarios de Bsale, y resolver discrepancias para el cierre mensual.
