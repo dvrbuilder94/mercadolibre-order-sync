@@ -5,7 +5,8 @@ import {
   PieChart,
   Settings,
   Package,
-  ChevronRight
+  ChevronRight,
+  Sparkles
 } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
@@ -138,6 +139,27 @@ export function AppSidebar() {
                   >
                     <PieChart className="h-4 w-4" />
                     <span>Centro de Reportes</span>
+                  </NavLink>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        {/* Asistente AI */}
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild>
+                  <NavLink 
+                    to="/asistente" 
+                    className={({ isActive }) => 
+                      isActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : ""
+                    }
+                  >
+                    <Sparkles className="h-4 w-4 text-emerald-500 animate-pulse" />
+                    <span className="font-medium text-emerald-700 dark:text-emerald-400">Asistente AI</span>
                   </NavLink>
                 </SidebarMenuButton>
               </SidebarMenuItem>
