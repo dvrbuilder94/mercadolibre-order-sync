@@ -51,7 +51,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               .gte('order_date', from)
               .lte('order_date', to)
               .neq('status', 'cancelled');
-            if (canalId !== 'todos') q = q.eq('channel', canalId);
+            if (canalId !== 'todos') q = q.eq('channel', canalId as any);
             // .range() pagination needs a deterministic sort, otherwise Postgres
             // doesn't guarantee stable ordering across pages and rows can be
             // skipped or duplicated at page boundaries.
@@ -156,7 +156,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           .gte('order_date', from)
           .lte('order_date', to)
           .in('status', ['cancelled', 'returned']);
-        if (canalId !== 'todos') devQuery = devQuery.eq('channel', canalId);
+        if (canalId !== 'todos') devQuery = devQuery.eq('channel', canalId as any);
         const { data: devRows } = await devQuery;
         const devolucionMonto = (devRows ?? []).reduce((s, r) => s + (r.gross_amount ?? 0), 0);
         const devConNC = (devRows ?? []).filter(r => {

@@ -306,8 +306,8 @@ export default function PageVentas() {
         // Channel filter must consider every doc in the period (not just the
         // current page), so first scan a light projection to find matching ids,
         // then fetch full rows only for the page being shown.
-        const { data: light } = await supabase
-          .from("tax_documents")
+        const { data: light } = await (supabase
+          .from("tax_documents") as any)
           .select("id, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references")
           .gte("document_date", from).lte("document_date", to)
           .order("document_date", { ascending: false })
