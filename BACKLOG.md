@@ -1,6 +1,6 @@
 # Backlog — LedgerSync
 
-Priorizado y curado. Actualizado: 2026-06-14.
+Priorizado y curado. Actualizado: 2026-06-18.
 
 > **🎯 Foco actual: MercadoLibre.** Una sola fuente de ventas (MELI) + sus
 > documentos (Bsale) + sus pagos (MercadoPago). NO meter todavía: datos
@@ -49,9 +49,13 @@ Priorizado y curado. Actualizado: 2026-06-14.
   desde offset 0 cada vez. (a) Traer solo lo nuevo con `order.last_updated.from =
   último sync` (de ~1.176 a unas pocas por corrida); (b) guardar el offset como
   checkpoint (igual que Bsale) para no re-fetchear desde 0 si queda parcial.
-- [ ] **IVA exacto desde los documentos.** Hoy la card muestra IVA *estimado* (19%
-  del bruto) porque `vat_amount` queda en 0. El exacto = sumar `tax_amount` de las
-  boletas/facturas Bsale menos el de las notas de crédito. Quitar el "(est.)".
+- [ ] **IVA exacto desde los documentos.** *(Revisado jun-2026: hoy NINGUNA página
+  con ruta muestra una card de IVA — ese KPI solo existe en `SellerDashboard`/
+  `DashboardKPIs` y el Excel de `DashboardExport`, que son código huérfano sin ruta
+  (ver ⚪ Park, "rescatar antes de borrar"). `vat_amount` además solo lo toca
+  `calculate-settlements`, ya marcado como zombie. Este ítem queda en pausa real
+  hasta que se rescate `SellerDashboard`; ahí sí aplica sumar `tax_amount` de
+  boletas/facturas Bsale menos notas de crédito en vez de estimar 19% del bruto.)*
 
 ## 🟡 Vale la pena — más esfuerzo / después de cerrar lo tributario
 
@@ -185,6 +189,17 @@ mismo deploy.
 
 ## ✅ Resuelto
 
+- **Reset de conciliación consolidado en Sincronización + race condition de
+  overlink (jun-2026):** trigger `prevent_document_overlink` (con fix para
+  saltar solo la fila ofensiva, no todo el batch) evita que dos órdenes queden
+  linkeadas al mismo documento por una carrera entre `auto-reconcile` y un
+  reset manual. El botón "Limpiar y reprocesar" de `/conciliacion` se unificó
+  con el de `/pipeline` (Sincronización): queda una sola implementación, con
+  respaldo a `order_tax_documents_reset_log` antes de borrar los vínculos
+  (nunca borra documentos) y alcance por pack completo del período. La página
+  Conciliación ahora solo linkea a Sincronización para esa acción. Se agregaron
+  tooltips nativos a los 5 botones del pipeline explicando qué trae/hace cada
+  paso.
 - **P0/P1 + rediseño de Conciliación (jun-2026, PRs #2-#4):** fix columna
   Δ (venta − doc) real, filtro de mes (header UTC → local), contadores por
   período (no por página) en `/mercadolibre` y `/bsale`, Bsale reencuadrado
