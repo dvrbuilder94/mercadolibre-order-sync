@@ -10,12 +10,13 @@ import Auth         from "./pages/Auth";
 import MeliCallback from "./pages/MeliCallback";
 import NotFound     from "./pages/NotFound";
 
-// New UX — 6 pages
+// New UX — 7 pages
 import Pipeline         from "./pages/Pipeline";
 import PageVentas       from "./pages/PageVentas";
 import PageConciliacion from "./pages/PageConciliacion";
 import ConfigNew        from "./pages/ConfigNew";
 import PageDashboard    from "./pages/PageDashboard";
+import PageAsistente    from "./pages/PageAsistente";
 
 const queryClient = new QueryClient();
 
@@ -30,11 +31,12 @@ const App = () => (
           <Route path="/"     element={<Landing />} />
           <Route path="/auth" element={<Auth />} />
 
-          {/* App — 5 pages */}
+          {/* App — 6 pages */}
           <Route path="/resumen"      element={<PageDashboard />} />
           <Route path="/ventas"       element={<PageVentas />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
           <Route path="/pipeline"     element={<Pipeline />} />
+          <Route path="/asistente"    element={<PageAsistente />} />
           <Route path="/config"       element={<ConfigNew />} />
 
           {/* OAuth callbacks — DO NOT TOUCH */}
