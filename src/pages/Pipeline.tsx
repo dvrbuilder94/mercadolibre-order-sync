@@ -325,15 +325,30 @@ export default function Pipeline() {
     }
   };
 
+  // Borra (con respaldo en order_tax_documents_reset_log) todos los vínculos
+  // orden↔documento que tocan el período y vuelve a correr auto-reconcile de
+  // cero. Escopea por documento/pack completo (no solo por order_id) para no
+  // dejar a mitad un pack con órdenes hermanas de otro mes. Útil mientras no
+  // hay cierres declarados al SII — una vez declarado un período, no usar
+  // esto sobre él (reordena qué documento quedó pegado a qué venta).
   const reconcileFromScratch = async () => {
     if (!window.confirm(
-      `¿Re-conciliar ${periodLabel(period)} desde cero?\n\n` +
-      `Borra las VINCULACIONES del período y rehace el match. NO borra órdenes ni documentos.`
+      `¿Limpiar y reprocesar ${periodLabel(period)} desde cero?\n\n` +
+      `Borra las VINCULACIONES del período (se respaldan antes, no se pierden) y rehace el match. ` +
+      `NO borra órdenes ni documentos. Usalo solo en períodos que todavía no se declararon al SII.`
     )) return;
     setReconciling(true);
+    addLog(`↺ Limpiando vínculos de ${periodLabel(period)}...`);
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Sesión expirada");
       const { from, to } = periodRange(period);
-      const PAGE = 1000; let offset = 0; const ids: string[] = [];
+      const CHUNK = 200;
+      const PAGE = 1000;
+
+      // 1) Órdenes del período
+      const orderIds: string[] = [];
+      let offset = 0;
       while (true) {
         const { data, error } = await supabase
           .from("orders").select("id")
@@ -341,19 +356,64 @@ export default function Pipeline() {
           .order("id", { ascending: true }).range(offset, offset + PAGE - 1);
         if (error) throw error;
         const batch = (data || []) as any[];
-        ids.push(...batch.map(o => o.id));
+        orderIds.push(...batch.map(o => o.id));
         if (batch.length < PAGE) break;
         offset += PAGE;
       }
-      let deleted = 0;
-      for (let i = 0; i < ids.length; i += 200) {
-        const { error, count } = await supabase
-          .from("order_tax_documents").delete({ count: "exact" })
-          .in("order_id", ids.slice(i, i + 200));
-        if (error) throw error;
-        deleted += count || 0;
+      if (orderIds.length === 0) {
+        addLog("↺ No hay órdenes en este período.");
+        return;
       }
-      addLog(`↺ ${periodLabel(period)}: ${deleted} vínculos borrados — re-conciliando limpio...`);
+
+      // 2) Documentos que tocan esas órdenes (el pack completo, aunque tenga
+      //    órdenes hermanas de otro mes — mismo criterio que la conciliación).
+      const docIdSet = new Set<string>();
+      for (let i = 0; i < orderIds.length; i += CHUNK) {
+        const { data, error } = await supabase
+          .from("order_tax_documents").select("tax_document_id")
+          .in("order_id", orderIds.slice(i, i + CHUNK));
+        if (error) throw error;
+        (data || []).forEach((r: { tax_document_id: string }) => docIdSet.add(r.tax_document_id));
+      }
+      const docIds = Array.from(docIdSet);
+      if (docIds.length === 0) {
+        addLog("↺ No hay vínculos que limpiar en este período.");
+        await reconcile();
+        return;
+      }
+
+      // 3) Respaldo de los vínculos actuales antes de borrarlos
+      const toBackup: { id: string; order_id: string; tax_document_id: string; allocated_amount: number | null; match_source: string | null; match_score: number | null; created_at: string; created_by: string }[] = [];
+      for (let i = 0; i < docIds.length; i += CHUNK) {
+        const { data, error } = await supabase
+          .from("order_tax_documents")
+          .select("id, order_id, tax_document_id, allocated_amount, match_source, match_score, created_at, created_by")
+          .in("tax_document_id", docIds.slice(i, i + CHUNK));
+        if (error) throw error;
+        toBackup.push(...((data || []) as typeof toBackup));
+      }
+
+      const resetBatchId = crypto.randomUUID();
+      if (toBackup.length > 0) {
+        const backupRows = toBackup.map((r) => ({
+          reset_batch_id: resetBatchId, reset_by: user.id, period_from: from, period_to: to,
+          original_id: r.id, order_id: r.order_id, tax_document_id: r.tax_document_id,
+          allocated_amount: r.allocated_amount, match_source: r.match_source, match_score: r.match_score,
+          original_created_at: r.created_at, original_created_by: r.created_by,
+        }));
+        const { error: backupErr } = await supabase.from("order_tax_documents_reset_log").insert(backupRows);
+        if (backupErr) throw backupErr;
+      }
+
+      // 4) Borrar vínculos y candidatos pendientes de esos documentos
+      for (let i = 0; i < docIds.length; i += CHUNK) {
+        const chunk = docIds.slice(i, i + CHUNK);
+        const { error: delErr } = await supabase.from("order_tax_documents").delete().in("tax_document_id", chunk);
+        if (delErr) throw delErr;
+        await supabase.from("order_tax_match_candidates").delete().in("tax_document_id", chunk).eq("status", "pending");
+      }
+
+      addLog(`↺ ${toBackup.length} vínculos borrados de ${docIds.length} documentos (respaldo ${resetBatchId.slice(0, 8)}) — re-conciliando limpio...`);
     } catch (e: any) {
       addLog(`❌ Reset conciliación: ${await errorDetail(e)}`);
       setReconciling(false);
@@ -483,6 +543,7 @@ export default function Pipeline() {
         <p className="text-xs text-slate-400 mb-2">Ejecutar en orden:</p>
         <div className="flex items-center gap-2 mb-4 flex-wrap">
           <button onClick={syncML} disabled={busy}
+            title="Trae las órdenes de MercadoLibre del período (ventas, estado, datos del comprador)."
             className="flex items-center gap-2 px-4 py-2 bg-yellow-400 hover:bg-yellow-500 disabled:opacity-40 text-yellow-900 font-medium rounded-lg text-sm transition-colors">
             {syncingML ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             1. Sync MeLi
@@ -491,6 +552,7 @@ export default function Pipeline() {
           <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button onClick={syncPayments} disabled={busy}
+            title="Trae el detalle exacto de pago/comisión de MercadoPago para cada orden ya sincronizada (necesario para conciliar montos)."
             className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors">
             {syncingPayments ? <Loader2 className="h-4 w-4 animate-spin" /> : <Banknote className="h-4 w-4" />}
             2. Sync pagos
@@ -504,6 +566,7 @@ export default function Pipeline() {
           <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button onClick={syncBsale} disabled={busy}
+            title="Trae los documentos tributarios (boletas, facturas, notas de crédito) emitidos en Bsale para el período."
             className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors">
             {syncingBsale ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             3. Sync Bsale
@@ -512,6 +575,7 @@ export default function Pipeline() {
           <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button onClick={enrichRuts} disabled={busy}
+            title="Completa el RUT del comprador consultando la API de facturación de MercadoLibre, para las órdenes que lo necesitan."
             className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-700 font-medium rounded-lg text-sm transition-colors">
             {enriching ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />}
             4. RUTs
@@ -520,6 +584,7 @@ export default function Pipeline() {
           <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button onClick={reconcile} disabled={busy}
+            title="Vincula cada orden con su documento tributario correspondiente, usando los datos sincronizados arriba."
             className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors">
             {reconciling ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
             5. Conciliar
@@ -535,8 +600,8 @@ export default function Pipeline() {
           </button>
           <button onClick={reconcileFromScratch} disabled={busy}
             className="text-xs text-slate-400 hover:text-blue-600 disabled:opacity-40 underline underline-offset-2 text-left w-fit">
-            ↺ Re-conciliar {periodLabel(period)} desde cero
-            <span className="text-slate-300 no-underline ml-2">(borra los vínculos y rehace el match — no borra documentos)</span>
+            ↺ Limpiar y reprocesar {periodLabel(period)} desde cero
+            <span className="text-slate-300 no-underline ml-2">(borra los vínculos con respaldo y rehace el match — no borra documentos)</span>
           </button>
         </div>
 

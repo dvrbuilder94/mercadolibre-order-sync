@@ -6,11 +6,6 @@ import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
 import { SCORE_OK, CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -183,9 +178,6 @@ export default function PageConciliacion() {
   const [candidates, setCandidates] = useState<CandidateRow[]>([]);
   const [candLoading, setCandLoading] = useState(true);
   const [actingKey, setActingKey] = useState<string | null>(null);
-  const [resetting, setResetting] = useState(false);
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
-  const [resetSummary, setResetSummary] = useState<string | null>(null);
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) navigate("/auth");
@@ -418,107 +410,6 @@ export default function PageConciliacion() {
     }
   };
 
-  // QA: borra (con respaldo) todos los vínculos orden↔documento que tocan el
-  // período visible y vuelve a correr auto-reconcile de cero, para validar
-  // que el motor (y el trigger anti-overlink) producen el resultado correcto
-  // sin arrastrar vínculos viejos. Útil mientras no hay cierres declarados al
-  // SII — una vez que un período se declara, este botón no debería usarse
-  // sobre él (reordena qué documento quedó pegado a qué venta).
-  const limpiarYReprocesar = async () => {
-    setResetting(true);
-    setShowResetConfirm(false);
-    setResetSummary(null);
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { from, to } = periodRange(period);
-      const CHUNK = 200;
-      const PAGE = 1000;
-
-      // 1) Órdenes del período
-      const orderIds: string[] = [];
-      let offset = 0;
-      while (true) {
-        const { data, error } = await supabase
-          .from("orders")
-          .select("id")
-          .gte("order_date", from + "T00:00:00")
-          .lte("order_date", to + "T23:59:59")
-          .range(offset, offset + PAGE - 1);
-        if (error) throw error;
-        orderIds.push(...(data || []).map((o: { id: string }) => o.id));
-        if (!data || data.length < PAGE) break;
-        offset += PAGE;
-      }
-      if (orderIds.length === 0) {
-        setResetSummary("No hay órdenes en este período.");
-        return;
-      }
-
-      // 2) Documentos que tocan esas órdenes (el pack completo, aunque tenga
-      //    órdenes hermanas de otro mes — igual criterio que fetchRows).
-      const docIdSet = new Set<string>();
-      for (let i = 0; i < orderIds.length; i += CHUNK) {
-        const { data, error } = await supabase
-          .from("order_tax_documents")
-          .select("tax_document_id")
-          .in("order_id", orderIds.slice(i, i + CHUNK));
-        if (error) throw error;
-        (data || []).forEach((r: { tax_document_id: string }) => docIdSet.add(r.tax_document_id));
-      }
-      const docIds = Array.from(docIdSet);
-      if (docIds.length === 0) {
-        setResetSummary("No hay vínculos que limpiar en este período.");
-        return;
-      }
-
-      // 3) Respaldo de los vínculos actuales antes de borrarlos
-      const toBackup: { id: string; order_id: string; tax_document_id: string; allocated_amount: number | null; match_source: string | null; match_score: number | null; created_at: string; created_by: string }[] = [];
-      for (let i = 0; i < docIds.length; i += CHUNK) {
-        const { data, error } = await supabase
-          .from("order_tax_documents")
-          .select("id, order_id, tax_document_id, allocated_amount, match_source, match_score, created_at, created_by")
-          .in("tax_document_id", docIds.slice(i, i + CHUNK));
-        if (error) throw error;
-        toBackup.push(...((data || []) as typeof toBackup));
-      }
-
-      const resetBatchId = crypto.randomUUID();
-      if (toBackup.length > 0) {
-        const backupRows = toBackup.map((r) => ({
-          reset_batch_id: resetBatchId, reset_by: user.id, period_from: from, period_to: to,
-          original_id: r.id, order_id: r.order_id, tax_document_id: r.tax_document_id,
-          allocated_amount: r.allocated_amount, match_source: r.match_source, match_score: r.match_score,
-          original_created_at: r.created_at, original_created_by: r.created_by,
-        }));
-        const { error: backupErr } = await supabase.from("order_tax_documents_reset_log").insert(backupRows);
-        if (backupErr) throw backupErr;
-      }
-
-      // 4) Borrar vínculos y candidatos pendientes de esos documentos
-      for (let i = 0; i < docIds.length; i += CHUNK) {
-        const chunk = docIds.slice(i, i + CHUNK);
-        const { error: delErr } = await supabase.from("order_tax_documents").delete().in("tax_document_id", chunk);
-        if (delErr) throw delErr;
-        await supabase.from("order_tax_match_candidates").delete().in("tax_document_id", chunk).eq("status", "pending");
-      }
-
-      // 5) Reprocesar el período de cero
-      const { error: reconErr } = await supabase.functions.invoke("auto-reconcile", {
-        body: { date_from: from + "T00:00:00", date_to: to + "T23:59:59" },
-      });
-      if (reconErr) throw reconErr;
-
-      setResetSummary(`Se limpiaron ${toBackup.length} vínculos de ${docIds.length} documentos (respaldo: ${resetBatchId.slice(0, 8)}) y se reprocesó el período.`);
-      await Promise.all([fetchCandidates(), fetchRows()]);
-    } catch (e) {
-      console.error("Error en limpiar y reprocesar:", e);
-      setResetSummary("Error al limpiar y reprocesar. Revisá la consola.");
-    } finally {
-      setResetting(false);
-    }
-  };
-
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
     setPeriod(format(new Date(y, m - 1 + delta, 1), "yyyy-MM"));
@@ -680,36 +571,13 @@ export default function PageConciliacion() {
             className="ml-2 p-1 hover:bg-slate-200 rounded text-slate-400 disabled:opacity-40">
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <AlertDialog open={showResetConfirm} onOpenChange={setShowResetConfirm}>
-            <AlertDialogTrigger asChild>
-              <button
-                disabled={resetting}
-                className="ml-auto text-xs text-red-600 border border-red-200 rounded px-3 py-1.5 hover:bg-red-50 disabled:opacity-40"
-              >
-                {resetting ? "Limpiando..." : "Limpiar y reprocesar"}
-              </button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>¿Limpiar y reprocesar {periodLabel(period)}?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Esto borra todos los vínculos orden↔documento de este período (se respaldan antes en
-                  order_tax_documents_reset_log) y vuelve a correr la conciliación automática de cero.
-                  Usalo solo en períodos que todavía no se declararon al SII.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                <AlertDialogAction onClick={limpiarYReprocesar} className="bg-red-600 hover:bg-red-700">
-                  Limpiar y reprocesar
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          <button
+            onClick={() => navigate("/pipeline")}
+            className="ml-auto text-xs text-slate-500 border border-slate-200 rounded px-3 py-1.5 hover:bg-slate-50"
+          >
+            Limpiar y reprocesar → Sincronización
+          </button>
         </div>
-        {resetSummary && (
-          <p className="text-xs text-slate-500 mb-4 -mt-4">{resetSummary}</p>
-        )}
 
         {/* Resumen / diagnóstico de cómo conciliaron */}
         <div className="bg-white border rounded-lg p-4 mb-6">
