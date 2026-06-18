@@ -23,7 +23,7 @@ export function createLovableAiGatewayProvider(lovableApiKey: string, initialRun
   if (runId) publishRunId(runId);
 
   const provider = createOpenAI({
-    apiKey: lovableApiKey,
+    apiKey: "empty",
     baseURL: "https://ai.gateway.lovable.dev/v1",
     headers: {
       "Lovable-API-Key": lovableApiKey,
@@ -31,6 +31,7 @@ export function createLovableAiGatewayProvider(lovableApiKey: string, initialRun
     },
     fetch: async (input, init) => {
       const headers = new Headers(init?.headers);
+      headers.delete("Authorization");
       if (runId && !headers.has(LOVABLE_AIG_RUN_ID_HEADER)) {
         headers.set(LOVABLE_AIG_RUN_ID_HEADER, runId);
       }
