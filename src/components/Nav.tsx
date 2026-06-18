@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { Home, ShoppingBag, GitMerge, Activity, Settings, LogOut } from "lucide-react";
+import { Home, ShoppingBag, GitMerge, Activity, Settings, LogOut, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const links = [
@@ -8,6 +8,7 @@ const links = [
   { to: "/ventas",       label: "Ventas",         icon: ShoppingBag },
   { to: "/conciliacion", label: "Conciliación",  icon: GitMerge },
   { to: "/pipeline",     label: "Sincronización", icon: Activity },
+  { to: "/asistente",    label: "Asistente AI",   icon: Sparkles },
   { to: "/config",       label: "Configuración", icon: Settings },
 ];
 
