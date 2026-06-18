@@ -17,6 +17,21 @@ Priorizado y curado. Actualizado: 2026-06-14.
 
 ## 🔴 Crítico — desbloquea todo
 
+- [ ] **🥇 PRIORIDAD 1 — Rehacer la UX de carga/progreso de Sincronización
+  (`/pipeline`).** Hoy el estado real está enterrado en el log de texto: si el
+  usuario vuelve un día después no sabe (a) si ya se cargaron datos del período,
+  (b) desde qué checkpoint retomaría un sync parcial, ni (c) si tocar un botón
+  "Sync" arranca de cero o continúa. La info existe pero no es visible
+  (checkpoint Bsale en `localStorage` `bsale_ckpt_${period}`; `partial`/`remaining`
+  de cada edge function; `has_exact_data`/`pendingPayments`). Hacerlo profesional:
+  por cada paso (MeLi / pagos / Bsale / RUTs / Conciliar) mostrar estado visual
+  **completo / parcial / pendiente / sin correr**, "última sync" (timestamp), y si
+  hay checkpoint, "retoma en X de N" (no "empieza de 0"). Reemplazar la confianza
+  en el log por estado persistente por período. Decisiones de diseño a confirmar
+  antes de construir: ¿timestamp por paso (requiere persistir "last sync" — tabla
+  `sync_progress` vs. `localStorage`)? ¿estado por card en vez del log de texto?
+  Relacionado/absorbe el ítem "Nivel 2 — progreso X de N en vivo" de más abajo.
+
 - [ ] **Que Lovable despliegue `sync-bsale-docs`.** El fix del loop ya está en el
   código (`dd89091`); corre la versión vieja hasta que Lovable la despliegue.
   Sirve además de **prueba del flujo de deploy**: si después de esto Bsale anda,
