@@ -100,40 +100,62 @@ export default function PageAsistente() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let assistantText = "";
+      let buffer = "";
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         
-        const chunk = decoder.decode(value);
-        // Process text chunking (SSE protocol formats lines as "data: {text}")
-        // Standard AI SDK stream message is directly the raw text in modern stream format, 
-        // or standard stream response formats. Let's try parsing or fall back to raw text.
-        
-        // Split by lines and parse data chunks
-        const lines = chunk.split("\n");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || ""; // Save the last incomplete line to buffer
+
         for (const line of lines) {
-          if (line.startsWith("0:")) { // Text chunk identifier in AI SDK stream protocols
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          
+          if (trimmed.startsWith("0:")) {
+            const rawContent = trimmed.slice(2);
             try {
-              const cleaned = JSON.parse(line.slice(2));
-              assistantText += cleaned;
+              const parsed = JSON.parse(rawContent);
+              if (typeof parsed === "string") {
+                assistantText += parsed;
+              } else if (parsed && typeof parsed === "object") {
+                if (typeof (parsed as any).text === "string") {
+                  assistantText += (parsed as any).text;
+                } else if (typeof (parsed as any).value === "string") {
+                  assistantText += (parsed as any).value;
+                }
+              }
             } catch {
-              // fallback
-              assistantText += line.slice(2);
+              if (rawContent.startsWith('"') && rawContent.endsWith('"')) {
+                // handle escaped quotes
+                try {
+                  assistantText += JSON.parse(rawContent);
+                } catch {
+                  assistantText += rawContent.slice(1, -1);
+                }
+              } else {
+                assistantText += rawContent;
+              }
             }
-          } else if (line.startsWith("data:")) {
-            // Standard SSE chunk
-            const dataStr = line.slice(5).trim();
+          } else if (trimmed.startsWith("data:")) {
+            const dataStr = trimmed.slice(5).trim();
             if (dataStr === "[DONE]") continue;
             try {
               const parsed = JSON.parse(dataStr);
-              assistantText += parsed;
+              if (typeof parsed === "string") {
+                assistantText += parsed;
+              } else if (parsed && typeof parsed === "object") {
+                if (typeof (parsed as any).text === "string") {
+                  assistantText += (parsed as any).text;
+                } else if (typeof (parsed as any).value === "string") {
+                  assistantText += (parsed as any).value;
+                }
+              }
             } catch {
               assistantText += dataStr;
             }
-          } else if (line.trim() && !line.includes(":") && !line.startsWith("{")) {
-            // Raw text chunk
-            assistantText += line;
           }
         }
 
