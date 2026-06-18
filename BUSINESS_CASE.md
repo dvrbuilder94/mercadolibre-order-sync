@@ -296,7 +296,88 @@ pidiéndolo, no especulativo.
 
 ---
 
-## 12. En una frase
+## 12. Ingresos, egresos y flujo de caja
+
+> ⚠️ Esta sección tiene partes calculables (ingresos, a partir del pricing real
+> de §6) y partes que **necesitan datos que hoy no tengo** (costos fijos reales).
+> Marco cada número como "calculado" o "asumido — confirmar" para no repetir el
+> error del doc original (proyectar sin base real). Las 3 preguntas al final son
+> las que más cambian el resultado.
+
+### 12.1 Egresos (costos) — qué se sabe y qué falta confirmar
+
+| Costo | Tipo | Estado |
+|---|---|---|
+| **Lovable Cloud** (hosting + Edge Functions + entorno de desarrollo) | Fijo mensual | ❓ **No tengo el monto real — lo necesito de ti.** |
+| Supabase (si corre dentro del mismo plan de Lovable Cloud) | Fijo mensual | Probablemente incluido en lo anterior; confirmar si hay un proyecto Supabase separado y pago aparte. |
+| API MercadoLibre | Variable | $0 — gratuita, limitada por rate limit, no por costo. |
+| API Bsale | Variable | $0 para LedgerSync — la cuenta Bsale la paga el **cliente final** (es su sistema de facturación), no es un costo del negocio. *(a confirmar contigo, pero es lo lógico)* |
+| API MercadoPago | Variable | $0 — lectura de pagos no tiene costo. |
+| Fintoc (pata 4, banco — diferida) | Variable, futuro | Fintoc cobra por conexión bancaria activa (modelo SaaS por cuenta conectada). Recién aplica cuando se retome esa pata — no es costo hoy. |
+| Dominio / email / analytics / otras herramientas | Fijo menor | ❓ Sumar si tienes algo además de Lovable. |
+| **Tu tiempo (founder)** | Costo de oportunidad, no efectivo | No entra al flujo de caja en plata, pero sí en la decisión de "¿vale la pena seguir?" — cuantificarlo aparte si quieres comparar contra un sueldo alternativo. |
+| **Tiempo de José** (pricing, ventas, contactos) | ❓ Depende del acuerdo | ¿Es socio (equity, sin pago mensual) o se le paga por hora/honorario? Cambia si hay egreso de caja real o no. |
+| Soporte/onboarding por cliente nuevo | Variable, hoy 100% manual | Hoy lo haces tú a mano (sin costo de caja, pero sí de tiempo). No escala sin construir self-serve (gap ya anotado en §9) — al pasar de ~5 clientes esto empieza a doler. |
+| Costo marginal por cliente (compute, storage de `raw_data`) | Variable, muy bajo | No medido, pero en la escala actual (1 cliente, ~1.000 órdenes/mes) es despreciable. Relevante recién con 10+ clientes simultáneos. |
+
+**Lo más importante de esta tabla: probablemente hoy el único costo de caja real y
+significativo sea la suscripción de Lovable Cloud.** Todo lo demás (APIs) es $0 o
+lo paga el cliente, y el resto es costo de tiempo, no de plata. Eso es una
+estructura de costos muy liviana — favorable para sobrevivir mientras se valida.
+
+### 12.2 Ingresos — por escenario, usando el pricing real de §6
+
+Ticket promedio (calculado, no asumido — sale directo de §6.2):
+- **Vendedor directo**: ~1 UF/mes ≈ $39.000 CLP (~US$41).
+- **Contador** (cuenta con ~3-5 clientes finales bajo su paraguas): ~2-3 UF/mes
+  ≈ $78.000-117.000 CLP (~US$82-123) **por cuenta de contador**, no por cliente
+  final — ahí está el apalancamiento del canal.
+
+| Escenario | Supuesto de adopción (12 meses) | Ingreso mes 12 (calculado sobre el supuesto) |
+|---|---|---|
+| **Conservador** — canal contador no valida, crecimiento orgánico vendedor a vendedor | 1 cliente hoy → ~4-5 clientes directos mes 12 | ~5 × 1 UF ≈ **$195.000 CLP/mes (~US$205)** |
+| **Base** — Fase 1 valida en mes 3-4, 1 contador nuevo cada ~2 meses desde ahí | 1 directo + 4 cuentas-contador activas a mes 12 (~12-15 clientes finales reales) | ~4 × 2,5 UF ≈ **$390.000 CLP/mes (~US$410)** |
+| **Optimista** — valida rápido y el contador trae referidos | 1 directo + 7-8 cuentas-contador a mes 12 | ~8 × 2,5 UF ≈ **$780.000 CLP/mes (~US$820)** |
+
+Para contexto: esto está a años luz del "US$300k/año" del doc original — y es
+intencional. Es la proyección de un negocio de bootstrapping real en año 1, no de
+un pitch a inversionista.
+
+### 12.3 Flujo de caja proyectado (escenario Base, ilustrativo)
+
+Uso un costo fijo mensual **asumido de $50.000 CLP** (placeholder hasta que me
+confirmes el real de Lovable Cloud + cualquier otra herramienta) solo para mostrar
+la forma de la curva — **reemplazar en cuanto tengas el número real**.
+
+| Mes | Ingreso (calculado, esc. Base) | Egreso fijo (asumido) | Flujo neto mensual | Acumulado |
+|---|---|---|---|---|
+| 1-3 | $39.000 | $50.000 | -$11.000 | -$33.000 |
+| 4 (1er contador valida) | $117.000 | $50.000 | +$67.000 | +$34.000 |
+| 6 | $195.000 | $50.000 | +$145.000 | +$324.000 |
+| 9 | $292.500 | $50.000 | +$242.500 | ~+$1.050.000 |
+| 12 | $390.000 | $50.000 | +$340.000 | ~+$2.000.000 |
+
+Con esa estructura de costos liviana, el **break-even de caja llega entre el mes
+3 y 4** (apenas valide el primer contador) — coherente con el "~2 clientes" que
+ya habíamos estimado a ojo antes. El riesgo no es de caja, es de **tiempo y
+validación**: si el contador no valida en la Fase 1, el escenario Conservador
+sigue siendo positivo pero mucho más lento.
+
+### 12.4 Lo que necesito de ti para que esto deje de ser una plantilla
+
+1. **¿Cuánto pagas hoy por Lovable Cloud al mes?** (o el plan que tengas — es
+   prácticamente el único costo fijo real del negocio).
+2. **¿José cobra honorario/sueldo, o es socio sin pago mensual?** Define si hay un
+   2º egreso de caja además de Lovable.
+3. **¿Hay algún otro gasto recurrente** (dominio, email transaccional, alguna
+   herramienta de analytics/soporte) que no esté en la tabla de §12.1?
+
+Con esos 3 datos reemplazo el "$50.000 asumido" por el costo real y el flujo de
+caja deja de ser ilustrativo.
+
+---
+
+## 13. En una frase
 
 **LedgerSync convierte el cruce manual de planillas entre ventas, documentos
 tributarios y pagos en una conciliación automática y auditable ante el SII — hoy
