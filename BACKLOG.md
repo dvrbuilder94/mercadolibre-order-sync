@@ -17,6 +17,21 @@ Priorizado y curado. Actualizado: 2026-06-14.
 
 ## 🔴 Crítico — desbloquea todo
 
+- [ ] **🥇 PRIORIDAD 1 — Rehacer la UX de carga/progreso de Sincronización
+  (`/pipeline`).** Hoy el estado real está enterrado en el log de texto: si el
+  usuario vuelve un día después no sabe (a) si ya se cargaron datos del período,
+  (b) desde qué checkpoint retomaría un sync parcial, ni (c) si tocar un botón
+  "Sync" arranca de cero o continúa. La info existe pero no es visible
+  (checkpoint Bsale en `localStorage` `bsale_ckpt_${period}`; `partial`/`remaining`
+  de cada edge function; `has_exact_data`/`pendingPayments`). Hacerlo profesional:
+  por cada paso (MeLi / pagos / Bsale / RUTs / Conciliar) mostrar estado visual
+  **completo / parcial / pendiente / sin correr**, "última sync" (timestamp), y si
+  hay checkpoint, "retoma en X de N" (no "empieza de 0"). Reemplazar la confianza
+  en el log por estado persistente por período. Decisiones de diseño a confirmar
+  antes de construir: ¿timestamp por paso (requiere persistir "last sync" — tabla
+  `sync_progress` vs. `localStorage`)? ¿estado por card en vez del log de texto?
+  Relacionado/absorbe el ítem "Nivel 2 — progreso X de N en vivo" de más abajo.
+
 - [ ] **Que Lovable despliegue `sync-bsale-docs`.** El fix del loop ya está en el
   código (`dd89091`); corre la versión vieja hasta que Lovable la despliegue.
   Sirve además de **prueba del flujo de deploy**: si después de esto Bsale anda,
@@ -138,7 +153,7 @@ página Conciliación (no pantalla aparte). 4ª pata (después): banco con
 con RLS/índices + edge function que parsea CSV y extrae referencia MELI/MP
 — migración oct-2025. No es desde cero, falta ruta/UI que la use.)*
 
-### Paso 1 (HECHO en código, falta deploy + backfill)
+### Paso 1 (HECHO en código + bug de multi-pago corregido, falta deploy + backfill)
 
 `sync-meli-payment-details` ya no tiene el cap de 50/ventana de 30 días: ahora
 recorre **todas** las órdenes `has_exact_data=false` (más recientes primero) y
@@ -147,6 +162,15 @@ Por cada pago real de MP procesado, además de actualizar `orders`, hace upsert 
 `payments` (`external_payment_id = payment_id` de MP, `status: 'ALLOCATED'`) y
 crea el link en `payment_sales` (`allocated_amount = net_received_amount`) — esta
 es la data real que hoy solo fabricaba `sync-meli-settlements`.
+
+**Bug encontrado y corregido (jun-2026, migración `20260618140000`):**
+`meli_payment_details.order_id` era `UNIQUE` desde la creación de la tabla, pero
+el código itera **todos** los pagos de una orden (cuotas, pago parcial +
+reembolso). El 2º pago de cualquier orden con más de uno chocaba con esa
+restricción y se perdía en silencio (el insert fallaba, solo subía un contador
+de errores) — la orden quedaba `has_exact_data=true` con `net_amount` calculado
+solo del primer pago. Ya está en la rama, falta que llegue a producción con el
+mismo deploy.
 
 ### Paso 2 (después del backfill)
 
