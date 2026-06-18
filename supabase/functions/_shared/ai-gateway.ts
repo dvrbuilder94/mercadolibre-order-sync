@@ -30,14 +30,30 @@ export function createLovableAiGatewayProvider(lovableApiKey: string, initialRun
       "X-Lovable-AIG-SDK": "vercel-ai-sdk",
     },
     fetch: async (input, init) => {
-      const headers = new Headers(init?.headers);
+      // Extract headers from request or init
+      const headers = new Headers(
+        input instanceof Request ? input.headers : init?.headers
+      );
+      
+      // Ensure Lovable-API-Key is present and Authorization is removed
+      headers.set("Lovable-API-Key", lovableApiKey);
       headers.delete("Authorization");
+      
       if (runId && !headers.has(LOVABLE_AIG_RUN_ID_HEADER)) {
         headers.set(LOVABLE_AIG_RUN_ID_HEADER, runId);
       }
 
+      // Re-create the request if input is a Request object, overriding headers
+      const fetchInput = input instanceof Request 
+        ? new Request(input, { headers }) 
+        : input;
+        
+      const fetchInit = input instanceof Request 
+        ? undefined 
+        : { ...init, headers };
+
       try {
-        const response = await fetch(input, { ...init, headers });
+        const response = await fetch(fetchInput, fetchInit);
         publishRunId(response.headers.get(LOVABLE_AIG_RUN_ID_HEADER) ?? undefined);
         return response;
       } catch (error) {
