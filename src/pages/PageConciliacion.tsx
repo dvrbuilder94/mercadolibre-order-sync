@@ -94,8 +94,42 @@ interface DocLinkRow {
 const firstDoc = (l: Link): Doc | null =>
   Array.isArray(l.tax_documents) ? (l.tax_documents[0] || null) : l.tax_documents;
 
-type Filter = "attention" | "nodoc" | "delta" | "lowscore" | "clean" | "all";
+type Filter = "attention" | "candidates" | "nodoc" | "delta" | "lowscore" | "clean" | "all";
 type NodocReason = "pending_sync" | "no_candidate" | null;
+
+// Fila cruda de order_tax_match_candidates: matches ambiguos o de confianza
+// 60-69 que el motor guarda en vez de auto-vincular, para revisión humana.
+// Antes esta tabla se llenaba pero nada la leía.
+interface CandidateRow {
+  id: string;
+  tax_document_id: string;
+  order_id: string;
+  match_score: number;
+  breakdown: { consolidated?: boolean } | null;
+  tax_documents: Doc | null;
+  orders: {
+    id: string; order_id: string; channel: string | null;
+    product_title: string | null; gross_amount: number | null; amount: number;
+  } | null;
+}
+
+// Una opción vinculable para un documento. Para matches consolidados (1:N)
+// todas las filas de candidato comparten el mismo grupo y se vinculan juntas;
+// para matches simples ambiguos (1:1), cada orden es una opción mutuamente
+// excluyente — vincular una descarta las demás del mismo documento.
+interface CandidateOption {
+  groupKey: string;
+  candidateIds: string[];
+  orders: { id: string; order_id: string; product_title: string | null; amount: number; channel: string | null }[];
+  score: number;
+  consolidated: boolean;
+}
+interface CandidateDocGroup {
+  kind: "candidate";
+  key: string;
+  doc: Doc;
+  options: CandidateOption[];
+}
 
 // Una orden que cubre un documento (puede ser de otro mes que el visible).
 interface DocOrderRef {
@@ -141,6 +175,9 @@ export default function PageConciliacion() {
   const [page, setPage] = useState(0);
   const [maxDocDate, setMaxDocDate] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [candidates, setCandidates] = useState<CandidateRow[]>([]);
+  const [candLoading, setCandLoading] = useState(true);
+  const [actingKey, setActingKey] = useState<string | null>(null);
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) navigate("/auth");
@@ -236,6 +273,123 @@ export default function PageConciliacion() {
   }, [period]);
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
+
+  // Cola de revisión manual: candidatos que auto-reconcile guardó (ambiguos o
+  // score 60-69) en vez de auto-vincular. No está acotada al período — son
+  // pocos casos y el usuario debería poder resolverlos sin cambiar de mes.
+  const fetchCandidates = useCallback(async () => {
+    setCandLoading(true);
+    try {
+      const PAGE = 1000;
+      let offset = 0;
+      const acc: CandidateRow[] = [];
+      while (true) {
+        const { data, error } = await supabase
+          .from("order_tax_match_candidates")
+          .select(`
+            id, tax_document_id, order_id, match_score, breakdown,
+            tax_documents ( id, document_number, document_type, total_amount, external_url ),
+            orders ( id, order_id, channel, product_title, gross_amount, amount )
+          `)
+          .eq("status", "pending")
+          .order("id", { ascending: true })
+          .range(offset, offset + PAGE - 1);
+        if (error) throw error;
+        const batch = (data || []) as unknown as CandidateRow[];
+        acc.push(...batch);
+        if (batch.length < PAGE) break;
+        offset += PAGE;
+      }
+      setCandidates(acc);
+    } catch (e) {
+      console.error("Error cargando candidatos:", e);
+      setCandidates([]);
+    } finally {
+      setCandLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchCandidates(); }, [fetchCandidates]);
+
+  // Agrupa filas de candidatos por documento y, dentro de cada documento, por
+  // opción vinculable (ver CandidateOption arriba).
+  const candidateGroups = useMemo<CandidateDocGroup[]>(() => {
+    const byDoc = new Map<string, { doc: Doc; rows: CandidateRow[] }>();
+    for (const c of candidates) {
+      if (!c.tax_documents || !c.orders) continue;
+      const cur = byDoc.get(c.tax_documents.id) || { doc: c.tax_documents, rows: [] };
+      cur.rows.push(c);
+      byDoc.set(c.tax_documents.id, cur);
+    }
+    const out: CandidateDocGroup[] = [];
+    for (const [docId, { doc, rows }] of byDoc) {
+      const optionsMap = new Map<string, CandidateOption>();
+      for (const r of rows) {
+        if (!r.orders) continue;
+        const consolidated = !!r.breakdown?.consolidated;
+        const groupKey = consolidated ? `${docId}:consolidated` : `${docId}:${r.order_id}`;
+        const opt = optionsMap.get(groupKey) || { groupKey, candidateIds: [], orders: [], score: r.match_score, consolidated };
+        opt.candidateIds.push(r.id);
+        opt.orders.push({
+          id: r.orders.id, order_id: r.orders.order_id, product_title: r.orders.product_title,
+          amount: r.orders.gross_amount ?? r.orders.amount ?? 0, channel: r.orders.channel,
+        });
+        optionsMap.set(groupKey, opt);
+      }
+      out.push({ kind: "candidate", key: "cand:" + docId, doc, options: Array.from(optionsMap.values()) });
+    }
+    return out.sort((a, b) => (b.doc.document_number || "").localeCompare(a.doc.document_number || ""));
+  }, [candidates]);
+
+  // Vincular: crea el/los link(s) de la opción elegida y descarta las demás
+  // opciones del mismo documento (un doc solo puede resolverse de una forma).
+  const vincularOption = async (group: CandidateDocGroup, option: CandidateOption) => {
+    setActingKey(option.groupKey);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const links = option.orders.map((o) => ({
+        order_id: o.id, tax_document_id: group.doc.id, allocated_amount: o.amount,
+        match_source: "MANUAL_REVIEWED", match_score: option.score, created_by: user.id,
+      }));
+      const { error: insErr } = await supabase.from("order_tax_documents").insert(links);
+      if (insErr) throw insErr;
+
+      const siblingIds = candidates
+        .filter((c) => c.tax_document_id === group.doc.id && !option.candidateIds.includes(c.id))
+        .map((c) => c.id);
+      if (siblingIds.length > 0) {
+        await supabase.from("order_tax_match_candidates")
+          .update({ status: "rejected", reviewed_by: user.id, reviewed_at: new Date().toISOString() })
+          .in("id", siblingIds);
+      }
+      await supabase.from("order_tax_match_candidates")
+        .update({ status: "accepted", reviewed_by: user.id, reviewed_at: new Date().toISOString() })
+        .in("id", option.candidateIds);
+
+      await Promise.all([fetchCandidates(), fetchRows()]);
+    } catch (e) {
+      console.error("Error vinculando candidato:", e);
+    } finally {
+      setActingKey(null);
+    }
+  };
+
+  const descartarOption = async (option: CandidateOption) => {
+    setActingKey(option.groupKey);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error } = await supabase.from("order_tax_match_candidates")
+        .update({ status: "rejected", reviewed_by: user?.id, reviewed_at: new Date().toISOString() })
+        .in("id", option.candidateIds);
+      if (error) throw error;
+      await fetchCandidates();
+    } catch (e) {
+      console.error("Error descartando candidato:", e);
+    } finally {
+      setActingKey(null);
+    }
+  };
 
   // Acción para filas "Sin doc · no_candidate": ya hay boletas más nuevas
   // sincronizadas y aun así no hubo match — reintenta el mismo matcher
@@ -371,6 +525,7 @@ export default function PageConciliacion() {
   // Lista visible según el filtro.
   const visible = useMemo<Unit[]>(() => {
     switch (filter) {
+      case "candidates": return [];
       case "nodoc":    return nodocUnits;
       case "delta":    return docUnits.filter((d) => d.reason === "delta")
                                        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
@@ -389,7 +544,8 @@ export default function PageConciliacion() {
   useEffect(() => { setPage(0); }, [filter, period]);
 
   const filters: { key: Filter; label: string }[] = [
-    { key: "attention", label: `Requieren atención (${counts.attention})` },
+    { key: "attention",  label: `Requieren atención (${counts.attention})` },
+    { key: "candidates", label: `Candidatos a revisar (${candidateGroups.length})` },
     { key: "nodoc",     label: `Sin documento (${counts.nodoc})` },
     { key: "delta",     label: `Δ ≠ 0 (${counts.delta})` },
     { key: "lowscore",  label: `Confianza baja (${counts.lowscore})` },
@@ -485,7 +641,72 @@ export default function PageConciliacion() {
           ))}
         </div>
 
-        {/* Tabla */}
+        {/* Cola de candidatos: matches ambiguos o de confianza media que el motor
+            guardó para revisión humana en vez de auto-vincular. */}
+        {filter === "candidates" ? (
+          candLoading ? (
+            <div className="bg-white border rounded-lg p-10 text-center text-slate-400">
+              <Loader2 className="h-5 w-5 animate-spin inline" />
+            </div>
+          ) : candidateGroups.length === 0 ? (
+            <div className="bg-white border rounded-lg p-10 text-center text-slate-400">
+              ✓ No hay candidatos pendientes de revisión
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {candidateGroups.map((g) => (
+                <div key={g.key} className="bg-white border rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <a href={g.doc.external_url || "#"} target="_blank" rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-blue-600 hover:underline font-medium">
+                      {g.doc.document_type} {g.doc.document_number}
+                      {g.doc.external_url && <ExternalLink className="h-3 w-3" />}
+                    </a>
+                    <span className="text-sm tabular-nums text-slate-500">{clp(g.doc.total_amount)}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {g.options.map((opt) => {
+                      const sum = opt.orders.reduce((s, o) => s + o.amount, 0);
+                      const busy = actingKey === opt.groupKey;
+                      return (
+                        <div key={opt.groupKey} className="flex items-center justify-between gap-3 border rounded-md p-2 bg-slate-50">
+                          <div className="flex-1 min-w-0">
+                            {opt.orders.map((o) => (
+                              <div key={o.id} className="flex items-center justify-between gap-2 text-sm">
+                                <span className="truncate max-w-[260px] text-slate-700">
+                                  {o.product_title || o.order_id}
+                                  {o.channel && (
+                                    <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[o.channel] || "bg-slate-100 text-slate-600"}`}>
+                                      {CHANNEL_LABEL[o.channel] ?? o.channel}
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="tabular-nums text-slate-400 shrink-0">{clp(o.amount)}</span>
+                              </div>
+                            ))}
+                            <div className="text-[10px] text-slate-400 mt-1">
+                              Score {opt.score}%{opt.consolidated && opt.orders.length > 1 ? ` · ${opt.orders.length} órdenes consolidadas` : ""} · suma {clp(sum)}
+                            </div>
+                          </div>
+                          <div className="flex gap-2 shrink-0">
+                            <button onClick={() => vincularOption(g, opt)} disabled={busy}
+                              className="text-xs px-3 py-1.5 rounded-md bg-green-600 text-white hover:bg-green-700 disabled:opacity-40">
+                              {busy ? "..." : "Vincular"}
+                            </button>
+                            <button onClick={() => descartarOption(opt)} disabled={busy}
+                              className="text-xs px-3 py-1.5 rounded-md border text-slate-500 hover:bg-slate-100 disabled:opacity-40">
+                              Descartar
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : (
         <div className="bg-white border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead>
@@ -653,9 +874,10 @@ export default function PageConciliacion() {
             </tbody>
           </table>
         </div>
+        )}
 
         {/* Paginación */}
-        {!loading && visible.length > PAGE_SIZE && (
+        {filter !== "candidates" && !loading && visible.length > PAGE_SIZE && (
           <div className="flex items-center justify-between mt-3">
             <p className="text-xs text-slate-400">
               {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, visible.length)} de {visible.length}
