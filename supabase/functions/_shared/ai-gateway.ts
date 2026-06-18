@@ -1,4 +1,4 @@
-import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@0.1.3";
+import { createOpenAI } from "npm:@ai-sdk/openai";
 
 const LOVABLE_AIG_RUN_ID_HEADER = "X-Lovable-AIG-Run-ID";
 
@@ -22,8 +22,8 @@ export function createLovableAiGatewayProvider(lovableApiKey: string, initialRun
   };
   if (runId) publishRunId(runId);
 
-  const provider = createOpenAICompatible({
-    name: "lovable",
+  const provider = createOpenAI({
+    apiKey: lovableApiKey,
     baseURL: "https://ai.gateway.lovable.dev/v1",
     headers: {
       "Lovable-API-Key": lovableApiKey,
