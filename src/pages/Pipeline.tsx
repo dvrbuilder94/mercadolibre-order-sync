@@ -543,6 +543,7 @@ export default function Pipeline() {
         <p className="text-xs text-slate-400 mb-2">Ejecutar en orden:</p>
         <div className="flex items-center gap-2 mb-4 flex-wrap">
           <button onClick={syncML} disabled={busy}
+            title="Trae las órdenes de MercadoLibre del período (ventas, estado, datos del comprador)."
             className="flex items-center gap-2 px-4 py-2 bg-yellow-400 hover:bg-yellow-500 disabled:opacity-40 text-yellow-900 font-medium rounded-lg text-sm transition-colors">
             {syncingML ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             1. Sync MeLi
@@ -551,6 +552,7 @@ export default function Pipeline() {
           <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button onClick={syncPayments} disabled={busy}
+            title="Trae el detalle exacto de pago/comisión de MercadoPago para cada orden ya sincronizada (necesario para conciliar montos)."
             className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors">
             {syncingPayments ? <Loader2 className="h-4 w-4 animate-spin" /> : <Banknote className="h-4 w-4" />}
             2. Sync pagos
@@ -564,6 +566,7 @@ export default function Pipeline() {
           <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button onClick={syncBsale} disabled={busy}
+            title="Trae los documentos tributarios (boletas, facturas, notas de crédito) emitidos en Bsale para el período."
             className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors">
             {syncingBsale ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             3. Sync Bsale
@@ -572,6 +575,7 @@ export default function Pipeline() {
           <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button onClick={enrichRuts} disabled={busy}
+            title="Completa el RUT del comprador consultando la API de facturación de MercadoLibre, para las órdenes que lo necesitan."
             className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-700 font-medium rounded-lg text-sm transition-colors">
             {enriching ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />}
             4. RUTs
@@ -580,6 +584,7 @@ export default function Pipeline() {
           <ArrowRight className="h-4 w-4 text-slate-300 shrink-0" />
 
           <button onClick={reconcile} disabled={busy}
+            title="Vincula cada orden con su documento tributario correspondiente, usando los datos sincronizados arriba."
             className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white font-medium rounded-lg text-sm transition-colors">
             {reconciling ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
             5. Conciliar
