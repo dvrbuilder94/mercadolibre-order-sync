@@ -1,9 +1,10 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { format, subMonths } from "date-fns";
 import { es } from "date-fns/locale";
 import {
-  ChevronLeft, ChevronRight, Home, AlertTriangle,
-  CheckCircle2, XCircle, Loader2, AlertCircle,
+  ChevronLeft, ChevronRight, Home, AlertTriangle, ArrowRight,
+  CheckCircle2, XCircle, Loader2, AlertCircle, TrendingUp, Wallet, Scale,
 } from "lucide-react";
 import { Nav } from "@/components/Nav";
 import { usePeriodReconciliation } from "@/hooks/usePeriodReconciliation";
@@ -71,24 +72,45 @@ function WaterfallRow({ label, amount, total, variant, indent, annotation, appro
   );
 }
 
-// ── Exception row ─────────────────────────────────────────────────────────────
+// ── Cola de revisión: misma data de excepciones, en lenguaje plano + acción ────
+const EXCEPCION_CTA: Record<PeriodReconciliation['excepciones'][number]['tipo'], { sentence: (c: number) => string; ctaLabel: string; to: string }> = {
+  venta_sin_dte:     { sentence: c => `${c} venta${c > 1 ? "s" : ""} sin boleta o factura emitida`,            ctaLabel: "Revisar en Conciliación", to: "/conciliacion" },
+  pago_atascado:     { sentence: c => `${c} pago${c > 1 ? "s" : ""} sin confirmar — faltan datos de MercadoPago`, ctaLabel: "Sincronizar pagos",        to: "/pipeline" },
+  devolucion_sin_nc: { sentence: c => `${c} devolución${c > 1 ? "es" : ""} sin nota de crédito asociada`,       ctaLabel: "Revisar en Conciliación", to: "/conciliacion" },
+  score_bajo:        { sentence: c => `${c} coincidencia${c > 1 ? "s" : ""} de baja confianza entre orden y documento`, ctaLabel: "Revisar en Conciliación", to: "/conciliacion" },
+};
+
 function ExcepcionRow({ exc }: { exc: PeriodReconciliation['excepciones'][number] }) {
-  const isDanger = exc.severidad === 'danger' && exc.count > 0;
-  const isOk     = exc.count === 0;
+  const isOk = exc.count === 0;
+
+  if (isOk) {
+    return (
+      <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs text-slate-400">
+        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+        <span>{exc.label} — sin pendientes</span>
+      </div>
+    );
+  }
+
+  const isDanger = exc.severidad === 'danger';
+  const cta = EXCEPCION_CTA[exc.tipo];
   return (
-    <div className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${
-      isOk ? "bg-emerald-50" : isDanger ? "bg-red-50" : "bg-amber-50"
+    <div className={`flex items-center gap-3 pl-3 pr-2 py-2.5 rounded-lg border-l-[3px] ${
+      isDanger ? "bg-red-50 border-red-400" : "bg-amber-50 border-amber-400"
     }`}>
-      {isOk
-        ? <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-        : isDanger
-          ? <XCircle className="h-4 w-4 text-red-500 shrink-0" />
-          : <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+      {isDanger
+        ? <XCircle className="h-4 w-4 text-red-500 shrink-0" />
+        : <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
       }
-      <span className={`flex-1 text-xs ${isOk ? "text-slate-500" : "text-slate-700"}`}>{exc.label}</span>
-      {exc.count > 0 && (
-        <span className={`text-sm font-bold ${isDanger ? "text-red-600" : "text-amber-600"}`}>{exc.count}</span>
-      )}
+      <span className="flex-1 text-xs text-slate-700">{cta.sentence(exc.count)}</span>
+      <Link
+        to={cta.to}
+        className={`flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap shrink-0 ${
+          isDanger ? "text-red-600 hover:text-red-700" : "text-amber-700 hover:text-amber-800"
+        }`}
+      >
+        {cta.ctaLabel}<ArrowRight className="h-3 w-3" />
+      </Link>
     </div>
   );
 }
@@ -173,7 +195,7 @@ export default function PageDashboard() {
                 <button key={c.id} onClick={() => setCanalId(c.id)}
                   className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
                     canalId === c.id
-                      ? "bg-slate-900 text-white border-slate-900"
+                      ? "bg-primary text-white border-primary"
                       : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
                   }`}>
                   {c.nombre}<span className="ml-1.5 opacity-60">{c.ordenes}</span>
@@ -197,13 +219,23 @@ export default function PageDashboard() {
             <>
               {/* KPI row */}
               <div className="grid grid-cols-3 gap-3">
-                <div className="bg-white rounded-xl border shadow-sm p-4">
-                  <p className="text-xs text-slate-400 mb-1">Ventas brutas</p>
+                <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs text-slate-400">Ventas brutas</p>
+                    <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+                      <TrendingUp className="h-3.5 w-3.5" />
+                    </div>
+                  </div>
                   <p className="text-2xl font-bold text-slate-900 tabular-nums">{CLP(data.ingresos.ventasBrutas)}</p>
                   <p className="text-xs text-slate-400 mt-1">{data.ingresos.porCanal.reduce((s, c) => s + c.ordenes, 0)} órdenes</p>
                 </div>
-                <div className="bg-white rounded-xl border shadow-sm p-4">
-                  <p className="text-xs text-slate-400 mb-1">Líquido a recibir</p>
+                <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs text-slate-400">Líquido a recibir</p>
+                    <div className="h-7 w-7 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                      <Wallet className="h-3.5 w-3.5" />
+                    </div>
+                  </div>
                   <p
                     className="text-2xl font-bold text-slate-900 tabular-nums"
                     title={data.datosExactos.pct < 100 ? "Incluye órdenes con comisión estimada (sin sincronizar con MercadoPago)" : undefined}
@@ -214,8 +246,13 @@ export default function PageDashboard() {
                     {ventasBrutas > 0 ? `${Math.round((data.liquidoRecibido / ventasBrutas) * 100)}% del bruto` : "—"}
                   </p>
                 </div>
-                <div className="bg-white rounded-xl border shadow-sm p-4">
-                  <p className="text-xs text-slate-400 mb-1">Diferencia vs banco</p>
+                <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs text-slate-400">Diferencia vs banco</p>
+                    <div className="h-7 w-7 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
+                      <Scale className="h-3.5 w-3.5" />
+                    </div>
+                  </div>
                   {data.abonosBanco === 0 ? (
                     <>
                       <p className="text-2xl font-bold tabular-nums text-slate-300">—</p>
@@ -235,7 +272,7 @@ export default function PageDashboard() {
               <div className="grid grid-cols-3 gap-5">
                 {/* Left: full P&L waterfall */}
                 <div className="col-span-2 space-y-4">
-                  <div className="bg-white rounded-xl border shadow-sm p-5">
+                  <div className="bg-white rounded-xl border shadow-card p-5">
                     <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Estado de resultados</p>
 
                     {data.datosExactos.pct < 100 && data.datosExactos.total > 0 && (
@@ -310,7 +347,7 @@ export default function PageDashboard() {
                   </div>
 
                   {/* DTE coverage */}
-                  <div className="bg-white rounded-xl border shadow-sm p-4">
+                  <div className="bg-white rounded-xl border shadow-card p-4">
                     <div className="flex justify-between text-xs mb-2">
                       <span className="text-slate-500 font-medium">Cobertura DTE (boleta/factura)</span>
                       <span className={`font-semibold ${data.ingresos.conDte.pct >= 95 ? "text-emerald-600" : data.ingresos.conDte.pct >= 80 ? "text-amber-600" : "text-red-600"}`}>
@@ -329,14 +366,14 @@ export default function PageDashboard() {
 
                 {/* Right: exceptions + cierre */}
                 <div className="space-y-4">
-                  <div className="bg-white rounded-xl border shadow-sm p-4">
-                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Excepciones</p>
+                  <div className="bg-white rounded-xl border shadow-card p-4">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Cola de revisión</p>
                     <div className="space-y-2">
                       {data.excepciones.map(exc => <ExcepcionRow key={exc.tipo} exc={exc} />)}
                     </div>
                   </div>
 
-                  <div className="bg-white rounded-xl border shadow-sm p-4">
+                  <div className="bg-white rounded-xl border shadow-card p-4">
                     <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Cierre de período</p>
                     {data.cierre.estado === 'cerrado' ? (
                       <div className="flex items-center gap-2 text-emerald-600 text-sm font-medium">
@@ -353,7 +390,7 @@ export default function PageDashboard() {
                         <button onClick={handleClose} disabled={!data.cierre.puedeCerrar || closing}
                           className={`w-full py-2 px-4 rounded-lg text-sm font-medium transition-colors ${
                             data.cierre.puedeCerrar
-                              ? "bg-slate-900 text-white hover:bg-slate-700"
+                              ? "bg-primary text-white hover:bg-primary/90"
                               : "bg-slate-100 text-slate-400 cursor-not-allowed"
                           }`}>
                           {closing
