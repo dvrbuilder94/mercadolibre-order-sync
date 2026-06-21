@@ -38,8 +38,9 @@ interface WaterfallRowProps {
   variant: "income" | "expense" | "result" | "neutral";
   indent?: boolean;
   annotation?: string;
+  approx?: boolean;
 }
-function WaterfallRow({ label, amount, total, variant, indent, annotation }: WaterfallRowProps) {
+function WaterfallRow({ label, amount, total, variant, indent, annotation, approx }: WaterfallRowProps) {
   const pct = total > 0 ? Math.abs(amount) / total : 0;
   const barW = Math.max(2, Math.round(pct * 100));
   const colors = {
@@ -60,8 +61,11 @@ function WaterfallRow({ label, amount, total, variant, indent, annotation }: Wat
         </div>
         <span className="text-[11px] text-slate-400 w-7 text-right">{PCT(Math.abs(amount), total)}</span>
       </div>
-      <div className={`text-sm tabular-nums font-medium w-24 text-right ${colors.text}`}>
-        {variant === "expense" ? `−${CLP(Math.abs(amount))}` : CLP(amount)}
+      <div
+        className={`text-sm tabular-nums font-medium w-24 text-right ${colors.text}`}
+        title={approx ? "Incluye órdenes con comisión estimada (sin sincronizar con MercadoPago)" : undefined}
+      >
+        {approx && "≈ "}{variant === "expense" ? `−${CLP(Math.abs(amount))}` : CLP(amount)}
       </div>
     </div>
   );
@@ -200,7 +204,12 @@ export default function PageDashboard() {
                 </div>
                 <div className="bg-white rounded-xl border shadow-sm p-4">
                   <p className="text-xs text-slate-400 mb-1">Líquido a recibir</p>
-                  <p className="text-2xl font-bold text-slate-900 tabular-nums">{CLP(data.liquidoRecibido)}</p>
+                  <p
+                    className="text-2xl font-bold text-slate-900 tabular-nums"
+                    title={data.datosExactos.pct < 100 ? "Incluye órdenes con comisión estimada (sin sincronizar con MercadoPago)" : undefined}
+                  >
+                    {data.datosExactos.pct < 100 && <span className="text-slate-400 mr-1">≈</span>}{CLP(data.liquidoRecibido)}
+                  </p>
                   <p className="text-xs text-slate-400 mt-1">
                     {ventasBrutas > 0 ? `${Math.round((data.liquidoRecibido / ventasBrutas) * 100)}% del bruto` : "—"}
                   </p>
@@ -264,7 +273,8 @@ export default function PageDashboard() {
                       <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Egresos</p>
 
                       <WaterfallRow label="Comisión marketplace" amount={data.egresos.comisionMarketplace.monto} total={ventasBrutas} variant="expense" indent
-                        annotation={data.egresos.comisionMarketplace.conFactura.faltan > 0 ? `${data.egresos.comisionMarketplace.conFactura.faltan} sin factura` : undefined} />
+                        annotation={data.egresos.comisionMarketplace.conFactura.faltan > 0 ? `${data.egresos.comisionMarketplace.conFactura.faltan} sin factura` : undefined}
+                        approx={data.datosExactos.pct < 100} />
                       <WaterfallRow label="Costos de envío" amount={data.egresos.costosEnvio.monto} total={ventasBrutas} variant="expense" indent />
                       <WaterfallRow label="Comisión de pago" amount={data.egresos.comisionPago.monto} total={ventasBrutas} variant="expense" indent
                         annotation={data.egresos.comisionPago.monto === 0 ? "pendiente sincronización" : undefined} />
@@ -275,7 +285,8 @@ export default function PageDashboard() {
                           : undefined} />
 
                       <div className="border-t border-dashed border-slate-100 my-2" />
-                      <WaterfallRow label="Líquido a recibir" amount={data.liquidoRecibido} total={ventasBrutas} variant="result" />
+                      <WaterfallRow label="Líquido a recibir" amount={data.liquidoRecibido} total={ventasBrutas} variant="result"
+                        approx={data.datosExactos.pct < 100} />
 
                       <div className="border-t border-dashed border-slate-100 my-2" />
                       <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Banco</p>
