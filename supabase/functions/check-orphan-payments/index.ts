@@ -131,6 +131,7 @@ Deno.serve(async (req) => {
 
     const unmatched = mpPayments.filter(p => !known.has(p.id));
     const unmatchedAmount = unmatched.reduce((s, p) => s + (p.amount ?? 0), 0);
+    const payments = mpPayments.map(p => ({ ...p, matched: known.has(p.id) }));
 
     return new Response(
       JSON.stringify({
@@ -139,6 +140,7 @@ Deno.serve(async (req) => {
         unmatchedCount: unmatched.length,
         unmatchedAmount,
         unmatched: unmatched.slice(0, 100),
+        payments: payments.slice(0, 500),
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

@@ -10,13 +10,14 @@ import Auth         from "./pages/Auth";
 import MeliCallback from "./pages/MeliCallback";
 import NotFound     from "./pages/NotFound";
 
-// New UX — 7 pages
-import Pipeline         from "./pages/Pipeline";
-import PageVentas       from "./pages/PageVentas";
-import PageConciliacion from "./pages/PageConciliacion";
-import ConfigNew        from "./pages/ConfigNew";
-import PageDashboard    from "./pages/PageDashboard";
-import PageAsistente    from "./pages/PageAsistente";
+// New UX — 8 pages
+import Pipeline              from "./pages/Pipeline";
+import PageVentas            from "./pages/PageVentas";
+import PageConciliacion      from "./pages/PageConciliacion";
+import ConfigNew             from "./pages/ConfigNew";
+import PageDashboard         from "./pages/PageDashboard";
+import PageAsistente         from "./pages/PageAsistente";
+import PageMercadoPagoSandbox from "./pages/PageMercadoPagoSandbox";
 
 const queryClient = new QueryClient();
 
@@ -31,12 +32,13 @@ const App = () => (
           <Route path="/"     element={<Landing />} />
           <Route path="/auth" element={<Auth />} />
 
-          {/* App — 6 pages */}
+          {/* App — 7 pages */}
           <Route path="/resumen"      element={<PageDashboard />} />
           <Route path="/ventas"       element={<PageVentas />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
           <Route path="/pipeline"     element={<Pipeline />} />
           <Route path="/asistente"    element={<PageAsistente />} />
+          <Route path="/sandbox-mp"   element={<PageMercadoPagoSandbox />} />
           <Route path="/config"       element={<ConfigNew />} />
 
           {/* OAuth callbacks — DO NOT TOUCH */}

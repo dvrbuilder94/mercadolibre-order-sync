@@ -59,11 +59,6 @@ export default function Pipeline() {
   const [lastRecon, setLastRecon] = useState<{
     exact: number; pack: number; consolidated: number; auto: number;
   } | null>(null);
-  const [checkingOrphans, setCheckingOrphans] = useState(false);
-  const [orphanResult, setOrphanResult] = useState<{
-    totalChecked: number; unmatchedCount: number; unmatchedAmount: number;
-    unmatched: { id: string; amount: number; date_approved: string }[];
-  } | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -457,32 +452,6 @@ export default function Pipeline() {
     }
   };
 
-  const checkOrphanPayments = async () => {
-    setCheckingOrphans(true);
-    setOrphanResult(null);
-    addLog("› Buscando pagos de MercadoPago sin orden asociada...");
-    try {
-      const { from, to } = periodRange(period);
-      const { data, error } = await supabase.functions.invoke("check-orphan-payments", {
-        body: { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59` },
-      });
-      if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || "error desconocido");
-      setOrphanResult({
-        totalChecked: data.totalChecked, unmatchedCount: data.unmatchedCount,
-        unmatchedAmount: data.unmatchedAmount, unmatched: data.unmatched ?? [],
-      });
-      addLog(data.unmatchedCount > 0
-        ? `⚠️ ${data.unmatchedCount}/${data.totalChecked} pagos de MercadoPago sin orden asociada (${clp(data.unmatchedAmount)})`
-        : `✅ Pagos huérfanos: 0/${data.totalChecked} — todos los pagos de MercadoPago calzan con una orden`
-      );
-    } catch (e: any) {
-      addLog(`❌ Pagos huérfanos: ${await errorDetail(e)}`);
-    } finally {
-      setCheckingOrphans(false);
-    }
-  };
-
   const busy = syncingML || syncingPayments || syncingBsale || reconciling || enriching;
 
   const exportSample = async (includeRaw = false) => {
@@ -634,61 +603,6 @@ export default function Pipeline() {
             ↺ Limpiar y reprocesar {periodLabel(period)} desde cero
             <span className="text-slate-300 no-underline ml-2">(borra los vínculos con respaldo y rehace el match — no borra documentos)</span>
           </button>
-        </div>
-
-        {/* Auditoría: pagos de MercadoPago sin orden asociada */}
-        <div className="bg-white border rounded-lg p-4 mb-8">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-sm font-medium text-slate-800">Pagos huérfanos en MercadoPago</p>
-              <p className="text-xs text-slate-500 mt-1">
-                Busca directamente en MercadoPago los pagos aprobados de {periodLabel(period)} y los compara
-                contra los que ya tenemos vinculados a una orden. Detecta plata que entró pero que el resto
-                del pipeline nunca llegó a ver (porque siempre parte desde la orden, nunca desde el pago).
-              </p>
-            </div>
-            <button onClick={checkOrphanPayments} disabled={checkingOrphans}
-              className="shrink-0 flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white text-sm font-medium rounded-lg">
-              {checkingOrphans ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Verificar
-            </button>
-          </div>
-
-          {orphanResult && (
-            <div className="mt-3">
-              {orphanResult.unmatchedCount === 0 ? (
-                <p className="text-xs text-green-700">
-                  ✓ {orphanResult.totalChecked} pagos revisados · todos calzan con una orden
-                </p>
-              ) : (
-                <>
-                  <p className="text-xs text-red-600 font-medium">
-                    {orphanResult.unmatchedCount}/{orphanResult.totalChecked} pagos sin orden asociada · {clp(orphanResult.unmatchedAmount)}
-                  </p>
-                  <div className="mt-2 border rounded-md overflow-hidden">
-                    <table className="w-full text-xs">
-                      <thead className="bg-slate-50 text-slate-500">
-                        <tr>
-                          <th className="text-left px-3 py-1.5">Payment ID</th>
-                          <th className="text-right px-3 py-1.5">Monto</th>
-                          <th className="text-left px-3 py-1.5">Fecha</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {orphanResult.unmatched.map(p => (
-                          <tr key={p.id} className="border-t">
-                            <td className="px-3 py-1.5 font-mono">{p.id}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums">{clp(p.amount)}</td>
-                            <td className="px-3 py-1.5 text-slate-500">{p.date_approved?.slice(0, 10)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Raw API extractor */}
