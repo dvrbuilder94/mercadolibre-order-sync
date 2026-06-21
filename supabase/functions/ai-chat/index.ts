@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { messages } = await req.json();
+    const { messages, context } = await req.json();
 
     // Query recent data to ground the assistant
     // 1. Get recent orders summary
@@ -57,10 +57,30 @@ Deno.serve(async (req) => {
       .order('period', { ascending: false })
       .limit(3);
 
+    // `context` is the already-computed period reconciliation summary (same data
+    // shown on /resumen, via usePeriodReconciliation), sent by the frontend on
+    // each request. Without it, the model only sees 10 raw orders and can't
+    // answer "why is closing blocked" or "what discrepancies exist" — the real
+    // exception/bloqueador breakdown lives in that hook's client-side aggregation,
+    // not in any table this function can query on its own.
+    const periodSummary = context ? `
+Resumen del período actual (${context.periodo}):
+- Ventas brutas: $${context.ventasBrutas} (${context.ventasSinDte} sin boleta/factura)
+- Comisión marketplace: $${context.comisionMarketplace} (${context.datosExactosPct}% de las órdenes con datos exactos de MercadoPago; el resto es estimado)
+- Costos de envío: $${context.costosEnvio}
+- Devoluciones: $${context.devoluciones} (${context.devolucionesConNotaCredito?.con ?? 0}/${context.devolucionesConNotaCredito?.total ?? 0} con nota de crédito)
+- Líquido a recibir: $${context.liquidoRecibido}
+- Abonos en banco: $${context.abonosBanco} (diferencia vs líquido: $${context.diferencia})
+- Estado de cierre: ${context.cierre?.estado} (${context.cierre?.bloqueadores ?? 0} bloqueadores, puede cerrar: ${context.cierre?.puedeCerrar ? 'sí' : 'no'})
+- Excepciones activas:
+${(context.excepciones ?? []).map((e: any) => `  * ${e.label}: ${e.count}`).join('\n')}
+` : '';
+
     // Grounding context
     const groundingContext = `
 Información actual de la cuenta del usuario:
 - Canales conectados: ${meliAccounts || 0} cuentas MercadoLibre, ${bsaleAccounts || 0} cuentas Bsale.
+${periodSummary}
 - Últimas 10 órdenes procesadas:
 ${(recentOrders || []).map(o => `  * Orden ID: ${o.order_id} (${o.channel}) - Fecha: ${o.order_date} - Bruto: $${o.gross_amount} - Neto: $${o.net_amount || 'N/D'} - Comisión: $${o.commission_amount || 'N/D'} - Estado: ${o.status} - Exacto: ${o.has_exact_data ? 'Sí' : 'No'}`).join('\n')}
 - Cierres de período recientes:

@@ -22,7 +22,7 @@ export function Nav() {
 
   return (
     <aside className="w-48 min-h-screen border-r bg-white flex flex-col py-6 px-3 shrink-0">
-      <p className="font-bold text-lg px-3 mb-8">LedgerSync</p>
+      <p className="font-bold text-lg px-3 mb-8">Quadra</p>
 
       <nav className="flex flex-col gap-1 flex-1">
         {links.map(({ to, label, icon: Icon }) => (

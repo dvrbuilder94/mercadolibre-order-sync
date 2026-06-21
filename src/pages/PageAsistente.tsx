@@ -1,11 +1,17 @@
 import { useState, useRef, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
-import { 
-  Sparkles, Send, Loader2, ArrowRight, BookOpen, 
-  HelpCircle, ChevronRight, Calculator, AlertTriangle 
+import {
+  Sparkles, Send, Loader2, ArrowRight, BookOpen,
+  HelpCircle, ChevronRight, Calculator, AlertTriangle
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import { usePeriodReconciliation } from "@/hooks/usePeriodReconciliation";
+
+const periodoActual = (() => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+})();
 
 interface Message {
   role: "user" | "assistant";
@@ -37,13 +43,14 @@ export default function PageAsistente() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content: "¡Hola! Soy Quadra AI, tu copiloto financiero para LedgerSync. Puedo ayudarte a auditar tus conciliaciones de MercadoLibre contra Bsale, analizar por qué se bloquea un cierre de mes, o desglosar tus comisiones y costos de envío.\n\n¿En qué te puedo asistir hoy?"
+      content: "¡Hola! Soy Quadra AI, tu copiloto financiero para Quadra. Puedo ayudarte a auditar tus conciliaciones de MercadoLibre contra Bsale, analizar por qué se bloquea un cierre de mes, o desglosar tus comisiones y costos de envío.\n\n¿En qué te puedo asistir hoy?"
     }
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+  const { data: reconciliation } = usePeriodReconciliation("todos", periodoActual);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -83,7 +90,22 @@ export default function PageAsistente() {
             "Authorization": `Bearer ${session.access_token}`,
           },
           body: JSON.stringify({
-            messages: newMessages.map(m => ({ role: m.role, content: m.content }))
+            messages: newMessages.map(m => ({ role: m.role, content: m.content })),
+            context: reconciliation ? {
+              periodo: reconciliation.periodo,
+              ventasBrutas: reconciliation.ingresos.ventasBrutas,
+              ventasSinDte: reconciliation.ingresos.conDte.faltan,
+              comisionMarketplace: reconciliation.egresos.comisionMarketplace.monto,
+              costosEnvio: reconciliation.egresos.costosEnvio.monto,
+              devoluciones: reconciliation.egresos.reembolsos.monto,
+              devolucionesConNotaCredito: reconciliation.egresos.reembolsos.conNotaCredito,
+              liquidoRecibido: reconciliation.liquidoRecibido,
+              abonosBanco: reconciliation.abonosBanco,
+              diferencia: reconciliation.diferencia,
+              datosExactosPct: reconciliation.datosExactos.pct,
+              excepciones: reconciliation.excepciones,
+              cierre: reconciliation.cierre,
+            } : null,
           }),
         }
       );
