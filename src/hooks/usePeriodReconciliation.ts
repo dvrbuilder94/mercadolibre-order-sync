@@ -150,9 +150,12 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         const comisionPagoMonto = 0;
 
         // Devoluciones
+        // A return only counts as "covered" if it has a non-voided NOTA DE CRÉDITO
+        // (not just any linked tax document) whose total_amount adds up to at least
+        // the order's gross_amount — a partial NC must not read as fully resolved.
         let devQuery = supabase
           .from('orders')
-          .select('gross_amount, order_tax_documents(id, tax_documents(status))')
+          .select('gross_amount, order_tax_documents(id, tax_documents(status, document_type, total_amount))')
           .gte('order_date', from)
           .lte('order_date', to)
           .in('status', ['cancelled', 'returned']);
@@ -161,10 +164,12 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         const devolucionMonto = (devRows ?? []).reduce((s, r) => s + (r.gross_amount ?? 0), 0);
         const devConNC = (devRows ?? []).filter(r => {
           const links = (r.order_tax_documents as any[]) ?? [];
-          return links.some(l => {
+          const ncTotal = links.reduce((sum, l) => {
             const td = Array.isArray(l.tax_documents) ? l.tax_documents[0] : l.tax_documents;
-            return td != null && td.status !== 'voided';
-          });
+            if (!td || td.status === 'voided' || td.document_type !== 'nota_credito') return sum;
+            return sum + (td.total_amount ?? 0);
+          }, 0);
+          return ncTotal >= (r.gross_amount ?? 0) - 100;
         }).length;
         const devTotal = (devRows ?? []).length;
 
