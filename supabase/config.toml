@@ -42,9 +42,6 @@ verify_jwt = true
 [functions.import-bank-movements]
 verify_jwt = true
 
-[functions.calculate-settlements]
-verify_jwt = true
-
 [functions.get-bsale-auth-url]
 verify_jwt = true
 
