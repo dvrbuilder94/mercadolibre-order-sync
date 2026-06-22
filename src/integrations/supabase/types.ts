@@ -327,7 +327,7 @@ export type Database = {
           {
             foreignKeyName: "meli_payment_details_order_id_fkey"
             columns: ["order_id"]
-            isOneToOne: true
+            isOneToOne: false
             referencedRelation: "orders"
             referencedColumns: ["id"]
           },
@@ -437,6 +437,57 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      order_tax_documents_reset_log: {
+        Row: {
+          allocated_amount: number | null
+          id: string
+          match_score: number | null
+          match_source: string | null
+          order_id: string
+          original_created_at: string | null
+          original_created_by: string | null
+          original_id: string
+          period_from: string
+          period_to: string
+          reset_at: string
+          reset_batch_id: string
+          reset_by: string
+          tax_document_id: string
+        }
+        Insert: {
+          allocated_amount?: number | null
+          id?: string
+          match_score?: number | null
+          match_source?: string | null
+          order_id: string
+          original_created_at?: string | null
+          original_created_by?: string | null
+          original_id: string
+          period_from: string
+          period_to: string
+          reset_at?: string
+          reset_batch_id: string
+          reset_by: string
+          tax_document_id: string
+        }
+        Update: {
+          allocated_amount?: number | null
+          id?: string
+          match_score?: number | null
+          match_source?: string | null
+          order_id?: string
+          original_created_at?: string | null
+          original_created_by?: string | null
+          original_id?: string
+          period_from?: string
+          period_to?: string
+          reset_at?: string
+          reset_batch_id?: string
+          reset_by?: string
+          tax_document_id?: string
+        }
+        Relationships: []
       }
       order_tax_match_candidates: {
         Row: {
