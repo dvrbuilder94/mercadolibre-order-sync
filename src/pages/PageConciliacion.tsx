@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
-import { SCORE_OK, CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
+import { SCORE_OK, CHANNEL_LABEL, CHANNEL_COLOR, HARD_MATCH_SOURCES as HARD_SOURCES } from "@/lib/constants";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -25,12 +25,6 @@ const clp = (n: number | null | undefined) =>
     .format(n || 0);
 
 const PAGE_SIZE = 50;
-
-// Matches por ID determinístico: se consideran conciliados sin revisión humana.
-const HARD_SOURCES = new Set([
-  "AUTO_HARD_ORDER_ID", "AUTO_HARD_PACK_ID", "AUTO_CONSOLIDATED",
-  "webhook_external_order_id", "webhook_fallback_boleta",
-]);
 
 // match_source → etiqueta + estilo, en lenguaje de negocio (no nombres
 // internos del motor de matching). Se usa tanto en el badge de cada fila
@@ -165,13 +159,21 @@ type NodocUnit = {
 };
 type Unit = DocUnit | NodocUnit;
 
+const FILTER_VALUES = new Set<Filter>(["attention", "candidates", "nodoc", "delta", "lowscore", "clean", "all"]);
+
 export default function PageConciliacion() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [rows, setRows] = useState<OrderRow[]>([]);
   const [docLinks, setDocLinks] = useState<DocLinkRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<Filter>("attention");
+  // El dashboard puede deep-linkear directo a una vista (ej. "?filter=candidates"
+  // desde la cola de revisión de /resumen), así que el filtro inicial respeta la URL.
+  const [filter, setFilter] = useState<Filter>(() => {
+    const fromUrl = searchParams.get("filter");
+    return fromUrl && FILTER_VALUES.has(fromUrl as Filter) ? (fromUrl as Filter) : "attention";
+  });
   const [page, setPage] = useState(0);
   const [maxDocDate, setMaxDocDate] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
