@@ -79,6 +79,7 @@ const EXCEPCION_CTA: Record<PeriodReconciliation['excepciones'][number]['tipo'],
   pago_atascado:     { sentence: c => `${c} pago${c > 1 ? "s" : ""} sin confirmar — faltan datos de MercadoPago`, ctaLabel: "Sincronizar pagos",        to: "/pipeline" },
   devolucion_sin_nc: { sentence: c => `${c} devolución${c > 1 ? "es" : ""} sin nota de crédito asociada`,       ctaLabel: "Revisar en Conciliación", to: "/conciliacion" },
   score_bajo:        { sentence: c => `${c} coincidencia${c > 1 ? "s" : ""} de baja confianza entre orden y documento`, ctaLabel: "Revisar en Conciliación", to: "/conciliacion" },
+  candidato_pendiente: { sentence: c => `${c} documento${c > 1 ? "s" : ""} con candidatos esperando que elijas la orden correcta`, ctaLabel: "Revisar candidatos", to: "/conciliacion?filter=candidates" },
 };
 
 function ExcepcionRow({ exc }: { exc: PeriodReconciliation['excepciones'][number] }) {

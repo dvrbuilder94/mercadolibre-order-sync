@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import type { PeriodReconciliation } from '@/types/reconciliation';
-import { SCORE_OK } from '@/lib/constants';
+import { SCORE_OK, HARD_MATCH_SOURCES } from '@/lib/constants';
 
 const CHANNEL_LABEL: Record<string, string> = {
   meli: 'MercadoLibre', falabella: 'Falabella', paris: 'Paris',
@@ -46,7 +46,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               .select(`
                 id, gross_amount, net_amount, commission_amount, shipping_cost,
                 status, channel, money_release_date, has_exact_data, raw_data,
-                order_tax_documents(id, tax_documents(status))
+                order_tax_documents(id, match_score, match_source, tax_documents(status))
               `)
               .gte('order_date', from)
               .lte('order_date', to)
@@ -195,16 +195,36 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         const pagosAtascados = rows.filter(r =>
           r.money_release_date && new Date(r.money_release_date) < hoy && !r.has_exact_data
         ).length;
+        // scoreBajo = órdenes vinculadas a un documento por un match "soft" (score
+        // calculado, no determinístico) cuyo match_score cae bajo SCORE_OK.
+        // HARD_MATCH_SOURCES no llevan score real, así que se excluyen explícitamente.
         const scoreBajo = rows.filter(r => {
-          const score = (r.raw_data as any)?.score;
-          return score != null && score < SCORE_OK;
+          const links = (r.order_tax_documents as any[]) ?? [];
+          return links.some(l =>
+            l.match_score != null && l.match_score < SCORE_OK && !HARD_MATCH_SOURCES.has(l.match_source)
+          );
         }).length;
 
+        // ── 9b. Candidatos pendientes de revisión manual ──────────────────────
+        // order_tax_match_candidates: matches ambiguos que auto-reconcile no
+        // vinculó solo y dejó para que un humano decida. Acotado al período y
+        // canal seleccionados (igual que el resto del dashboard).
+        let candQuery = supabase
+          .from('order_tax_match_candidates')
+          .select('tax_document_id, orders!inner(order_date, channel)')
+          .eq('status', 'pending')
+          .gte('orders.order_date', from)
+          .lte('orders.order_date', to);
+        if (canalId !== 'todos') candQuery = candQuery.eq('orders.channel', canalId as any);
+        const { data: candRows } = await candQuery;
+        const candidatosPendientes = new Set((candRows ?? []).map((r: any) => r.tax_document_id)).size;
+
         const excepciones: PeriodReconciliation['excepciones'] = [
-          { tipo: 'venta_sin_dte',     label: 'Ventas sin boleta/factura',          count: conDte.faltan,    severidad: conDte.faltan > 0 ? 'danger' : 'warning' },
-          { tipo: 'pago_atascado',     label: 'Pagos sin confirmar (faltan datos)', count: pagosAtascados,   severidad: 'warning' },
-          { tipo: 'devolucion_sin_nc', label: 'Devoluciones sin nota de crédito',   count: devTotal - devConNC, severidad: (devTotal - devConNC) > 0 ? 'danger' : 'warning' },
-          { tipo: 'score_bajo',        label: 'Coincidencias de baja confianza',    count: scoreBajo,         severidad: 'warning' },
+          { tipo: 'venta_sin_dte',       label: 'Ventas sin boleta/factura',          count: conDte.faltan,    severidad: conDte.faltan > 0 ? 'danger' : 'warning' },
+          { tipo: 'pago_atascado',       label: 'Pagos sin confirmar (faltan datos)', count: pagosAtascados,   severidad: 'warning' },
+          { tipo: 'devolucion_sin_nc',   label: 'Devoluciones sin nota de crédito',   count: devTotal - devConNC, severidad: (devTotal - devConNC) > 0 ? 'danger' : 'warning' },
+          { tipo: 'score_bajo',          label: 'Coincidencias de baja confianza',    count: scoreBajo,         severidad: 'warning' },
+          { tipo: 'candidato_pendiente', label: 'Documentos con candidatos por revisar', count: candidatosPendientes, severidad: 'warning' },
         ];
 
         // ── 10. Cierre ────────────────────────────────────────────────────────

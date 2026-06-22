@@ -28,7 +28,7 @@ export interface PeriodReconciliation {
   datosExactos: { ordenes: number; total: number; pct: number };
 
   excepciones: {
-    tipo: 'venta_sin_dte' | 'pago_atascado' | 'devolucion_sin_nc' | 'score_bajo';
+    tipo: 'venta_sin_dte' | 'pago_atascado' | 'devolucion_sin_nc' | 'score_bajo' | 'candidato_pendiente';
     label: string;
     count: number;
     severidad: 'warning' | 'danger';
