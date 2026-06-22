@@ -310,12 +310,17 @@ export default function PageConciliacion() {
         const chunk = orderIds.slice(i, i + 200);
         const { data, error } = await supabase
           .from("payment_sales")
-          .select("sale_id, payments ( external_payment_id )")
+          .select("sale_id, payments ( external_payment_id, raw_data )")
           .in("sale_id", chunk);
         if (error) throw error;
         for (const r of (data || []) as any[]) {
           const ref = Array.isArray(r.payments) ? r.payments[0] : r.payments;
-          if (!ref) continue;
+          // sync-meli-settlements (sin botón en el frontend hoy, pero igual
+          // desplegado y alcanzable) fabrica filas en payments re-empaquetando
+          // nuestras propias órdenes — no son pagos reales de MercadoPago. Se
+          // marcan con raw_data.ledger_type = LOGICAL_BATCH; hay que excluirlas
+          // de la trazabilidad "MP <id>" para no mostrar un ID inventado.
+          if (!ref || ref.raw_data?.ledger_type === "LOGICAL_BATCH") continue;
           const arr = payMap.get(r.sale_id) || [];
           arr.push({ external_payment_id: ref.external_payment_id });
           payMap.set(r.sale_id, arr);

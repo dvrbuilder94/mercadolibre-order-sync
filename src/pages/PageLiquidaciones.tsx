@@ -41,7 +41,18 @@ interface PaymentRow {
   fees_amount: number | null;
   gross_amount: number | null;
   payment_sales: { allocated_amount: number; orders: PaySaleOrder | null }[] | null;
+  raw_data: { ledger_type?: string } | null;
 }
+
+// sync-meli-settlements (no expuesto en ningún botón hoy, pero sigue desplegado
+// y alcanzable) escribe filas en payments que NO vienen de MercadoPago: agrupa
+// nuestras propias órdenes por fecha de liberación y las re-empaqueta como un
+// "pago" sintético (external_payment_id = MELI_<seller>_<fecha>, monto = Σ
+// ventas del día). Se marca a sí mismo con raw_data.ledger_type = LOGICAL_BATCH.
+// Solo sync-meli-payment-details (y sync-payments) traen datos reales de la
+// API de pagos de MercadoPago — hay que excluir lo sintético explícitamente,
+// porque ambos comparten la misma tabla y el mismo payment_provider.
+const isRealMpPayment = (p: PaymentRow) => p.raw_data?.ledger_type !== "LOGICAL_BATCH";
 
 // Unidad de liquidación derivada — lo que de verdad le importa al usuario:
 // cuánto le depositaron, por qué venta(s), y si ya está respaldado con
@@ -122,7 +133,7 @@ export default function PageLiquidaciones() {
         const { data, error } = await supabase
           .from("payments")
           .select(`
-            id, external_payment_id, payment_date, net_amount, fees_amount, gross_amount,
+            id, external_payment_id, payment_date, net_amount, fees_amount, gross_amount, raw_data,
             payment_sales (
               allocated_amount,
               orders ( id, order_id, channel, product_title, gross_amount, money_release_date,
@@ -136,7 +147,7 @@ export default function PageLiquidaciones() {
           .range(offset, offset + PAGE - 1);
         if (error) throw error;
         const batch = (data || []) as unknown as PaymentRow[];
-        acc.push(...batch);
+        acc.push(...batch.filter(isRealMpPayment));
         if (batch.length < PAGE) break;
         offset += PAGE;
       }
