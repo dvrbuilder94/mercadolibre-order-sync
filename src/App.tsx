@@ -18,6 +18,7 @@ import ConfigNew             from "./pages/ConfigNew";
 import PageDashboard         from "./pages/PageDashboard";
 import PageAsistente         from "./pages/PageAsistente";
 import PageLiquidaciones     from "./pages/PageLiquidaciones";
+import PageDevoluciones      from "./pages/PageDevoluciones";
 
 const queryClient = new QueryClient();
 
@@ -38,6 +39,7 @@ const App = () => (
           <Route path="/documentos"   element={<PageVentas />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
           <Route path="/liquidaciones" element={<PageLiquidaciones />} />
+          <Route path="/devoluciones"  element={<PageDevoluciones />} />
           <Route path="/pipeline"     element={<Pipeline />} />
           <Route path="/asistente"    element={<PageAsistente />} />
           <Route path="/config"       element={<ConfigNew />} />

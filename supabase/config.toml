@@ -9,6 +9,9 @@ verify_jwt = true
 [functions.sync-meli-orders]
 verify_jwt = true
 
+[functions.sync-meli-claims]
+verify_jwt = true
+
 [functions.sync-meli-payment-details]
 verify_jwt = true
 
