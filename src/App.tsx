@@ -19,6 +19,7 @@ import PageDashboard         from "./pages/PageDashboard";
 import PageAsistente         from "./pages/PageAsistente";
 import PageLiquidaciones     from "./pages/PageLiquidaciones";
 import PageDevoluciones      from "./pages/PageDevoluciones";
+import PageDocumentos        from "./pages/PageDocumentos";
 
 const queryClient = new QueryClient();
 
@@ -36,7 +37,7 @@ const App = () => (
           {/* App — 7 pages */}
           <Route path="/resumen"      element={<PageDashboard />} />
           <Route path="/ventas"       element={<PageVentas />} />
-          <Route path="/documentos"   element={<PageVentas />} />
+          <Route path="/documentos"   element={<PageDocumentos />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
           <Route path="/liquidaciones" element={<PageLiquidaciones />} />
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
