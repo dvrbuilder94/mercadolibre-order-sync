@@ -112,7 +112,7 @@ Deno.serve(async (req) => {
 
     for (let page = 0; page < maxPagesParam; page++) {
       const url = `https://api.mercadolibre.com/post-purchase/v1/claims/search` +
-        `?player.user_id=${sellerId}&player.role=respondent&limit=${LIMIT}&offset=${offset}`;
+        `?players.role=respondent&players.id=${sellerId}&limit=${LIMIT}&offset=${offset}`;
       const res = await fetch(url, {
         headers: { 'Authorization': `Bearer ${accessToken}` },
       });
@@ -120,6 +120,22 @@ Deno.serve(async (req) => {
       if (!res.ok) {
         const errorText = await res.text();
         console.error('Error fetching claims:', res.status, errorText);
+        // 403 PolicyAgent: la app MELI no tiene permiso sobre Post-Purchase
+        // (requiere habilitación manual desde MercadoLibre, no es un bug).
+        if (res.status === 403) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              found: 0,
+              upserted: 0,
+              available: 0,
+              error_code: 'meli_post_purchase_not_authorized',
+              message:
+                'La aplicación MercadoLibre conectada no tiene permiso sobre la API de Post-Venta (reclamos/devoluciones). Esta API requiere habilitación específica por parte de MercadoLibre sobre la aplicación — no se otorga automáticamente al conectar la cuenta. Mientras tanto, la sección sigue mostrando los pagos reembolsados/en mediación que sí llegan por sync-meli-payment-details.',
+            }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
         throw new Error(`MercadoLibre claims API error: ${res.status}`);
       }
 
