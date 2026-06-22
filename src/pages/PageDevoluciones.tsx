@@ -161,7 +161,11 @@ export default function PageDevoluciones() {
         body: { max_pages: 10 },
       });
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || "error desconocido");
+      if (data?.error_code === "meli_post_purchase_not_authorized") {
+        setSyncMsg(`⚠️ ${data.message}`);
+        return;
+      }
+      if (!data?.success) throw new Error(data?.error || data?.message || "error desconocido");
       setSyncMsg(`✅ ${data.upserted} reclamos sincronizados (${data.found} encontrados de ${data.available ?? "?"} totales)`);
       fetchRows();
     } catch (e: any) {
