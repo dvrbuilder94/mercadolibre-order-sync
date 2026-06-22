@@ -1,8 +1,5 @@
 project_id = "opdclqitvxyqzeqzegih"
 
-[functions.sync-payments]
-verify_jwt = true
-
 [functions.sync-meli-settlements]
 verify_jwt = true
 

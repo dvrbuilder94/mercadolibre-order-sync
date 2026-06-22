@@ -51,9 +51,9 @@ interface PaymentRow {
 // nuestras propias órdenes por fecha de liberación y las re-empaqueta como un
 // "pago" sintético (external_payment_id = MELI_<seller>_<fecha>, monto = Σ
 // ventas del día). Se marca a sí mismo con raw_data.ledger_type = LOGICAL_BATCH.
-// Solo sync-meli-payment-details (y sync-payments) traen datos reales de la
-// API de pagos de MercadoPago — hay que excluir lo sintético explícitamente,
-// porque ambos comparten la misma tabla y el mismo payment_provider.
+// Solo sync-meli-payment-details trae datos reales de la API de pagos de
+// MercadoPago — hay que excluir lo sintético explícitamente, porque ambos
+// comparten la misma tabla y el mismo payment_provider.
 const isRealMpPayment = (p: PaymentRow) => p.raw_data?.ledger_type !== "LOGICAL_BATCH";
 
 // Unidad de liquidación derivada — lo que de verdad le importa al usuario:
