@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { getMeliAccount } from '../_shared/meli-account.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -34,12 +35,14 @@ Deno.serve(async (req) => {
 
     const userId = claims.claims.sub as string
 
-    // Get MELI account to verify user has one
-    const { data: meliAccount, error: meliError } = await supabase
-      .from('meli_accounts')
-      .select('id')
-      .eq('user_id', userId)
-      .maybeSingle()
+    // Get MELI account to verify user has one. account_id can be passed as a
+    // query param since this debug tool is invoked directly (no JSON body).
+    const accountIdParam = new URL(req.url).searchParams.get('account_id')
+    const { data: meliAccount, error: meliError } = await getMeliAccount(supabase, userId, {
+      accountId: accountIdParam,
+      columns: 'id',
+      maybeSingle: true,
+    })
 
     if (meliError || !meliAccount) {
       return new Response(JSON.stringify({ 

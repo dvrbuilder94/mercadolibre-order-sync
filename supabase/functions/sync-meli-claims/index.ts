@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -34,9 +35,11 @@ Deno.serve(async (req) => {
     );
 
     let maxPagesParam = 10;
+    let accountIdParam: string | null = null;
     try {
       const body = await req.json();
       maxPagesParam = body.max_pages || 10;
+      accountIdParam = body.account_id || null;
     } catch {
       // sin body, usar default
     }
@@ -49,13 +52,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { data: meliAccount, error: accountError } = await supabaseClient
-      .from('meli_accounts')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .single();
+    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
+      accountId: accountIdParam,
+    });
 
     if (accountError || !meliAccount) {
       return new Response(
@@ -98,7 +97,7 @@ Deno.serve(async (req) => {
             refresh_token: refreshData.refresh_token,
             expires_at: expiresAt.toISOString(),
           })
-          .eq('user_id', user.id);
+          .eq('id', meliAccount.id);
       } else {
         throw new Error('Failed to refresh token');
       }

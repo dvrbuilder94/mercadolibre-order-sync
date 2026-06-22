@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -72,13 +73,14 @@ async function processJob(jobId: string, admin: any) {
   await admin.from('raw_extraction_jobs').update({ status: 'running' }).eq('id', jobId);
 
   try {
-    const { data: account, error: accErr } = await admin
-      .from('meli_accounts')
-      .select('*')
-      .eq('user_id', job.user_id)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // account_id (if the job was created with one) travels inside checkpoint —
+    // it's set on the very first run below and persisted on every resume, so a
+    // job always keeps targeting the same store even across chained invocations.
+    const accountIdParam: string | null = job.checkpoint?.account_id ?? null;
+    const { data: account, error: accErr } = await getMeliAccount(admin, job.user_id, {
+      accountId: accountIdParam,
+      maybeSingle: true,
+    });
     if (accErr || !account) throw new Error('Cuenta MercadoLibre no encontrada');
     if (!account.access_token || !account.seller_id) throw new Error('Cuenta ML sin token o seller_id');
 
@@ -89,12 +91,14 @@ async function processJob(jobId: string, admin: any) {
     const dateFrom = new Date(Date.UTC(y, m - 1, 1)).toISOString();
     const dateTo = new Date(Date.UTC(y, m, 0, 23, 59, 59)).toISOString();
 
-    const checkpoint = job.checkpoint || {
+    const checkpoint = {
       phase: 'fetch',
       orders_offset: 0,
       total_orders: 0,
       processed: 0,
       seller_id: sellerId,
+      account_id: account.id,
+      ...(job.checkpoint || {}),
     };
     let chunksCount = job.chunks_count || 0;
     const tmpDir = `${job.user_id}/.tmp/${jobId}`;
@@ -312,7 +316,7 @@ Deno.serve(async (req) => {
       period,
       status: 'pending',
       current_step: 'Encolado',
-      checkpoint: null,
+      checkpoint: { account_id: body.account_id ?? null },
       chunks_count: 0,
     }).select('id').single();
     if (jobErr || !job) throw new Error(jobErr?.message || 'No se pudo crear el job');

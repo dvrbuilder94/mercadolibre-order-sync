@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -49,14 +50,12 @@ Deno.serve(async (req) => {
       );
     }
 
+    const { date_from, date_to, account_id: accountIdParam } = await req.json().catch(() => ({}));
+
     // Get user's Mercado Libre account
-    const { data: meliAccount, error: accountError } = await supabaseClient
-      .from('meli_accounts')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .single();
+    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
+      accountId: accountIdParam,
+    });
 
     if (accountError || !meliAccount) {
       return new Response(
@@ -114,8 +113,6 @@ Deno.serve(async (req) => {
         );
       }
     }
-
-    const { date_from, date_to } = await req.json().catch(() => ({}));
 
     // Get orders without customer_tax_id that need enrichment
     let ordersQuery = supabaseClient
@@ -299,7 +296,9 @@ Deno.serve(async (req) => {
     if ((remainingCount || 0) > 0 && enrichedCount > 0) {
       console.log(`Chaining: ${remainingCount} orders remain, invoking enrich-meli-billing again`);
       try {
-        supabaseClient.functions.invoke('enrich-meli-billing', { body: { date_from, date_to } }).catch((e) =>
+        supabaseClient.functions.invoke('enrich-meli-billing', {
+          body: { date_from, date_to, account_id: meliAccount.id },
+        }).catch((e) =>
           console.error('Chain invoke failed:', e)
         );
       } catch (e) {

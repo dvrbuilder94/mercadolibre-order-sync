@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SignJWT } from 'https://esm.sh/jose@5.2.0';
+import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -31,12 +32,16 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Optional: target a specific store (multi-tienda). Falls back to the
+    // most recently updated account for this user when not provided.
+    const body = await req.json().catch(() => ({} as Record<string, unknown>));
+    const accountId = (body as { account_id?: string })?.account_id ?? null;
+
     // Get user's Mercado Libre account configuration
-    const { data: meliAccount, error: accountError } = await supabaseClient
-      .from('meli_accounts')
-      .select('client_id, redirect_uri, site_id')
-      .eq('user_id', user.id)
-      .single();
+    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
+      accountId,
+      columns: 'id, client_id, redirect_uri, site_id',
+    });
 
     if (accountError || !meliAccount) {
       return new Response(
@@ -64,7 +69,7 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_JWT_SECRET') || Deno.env.get('SUPABASE_ANON_KEY') || ''
     );
     
-    const state = await new SignJWT({ user_id: user.id })
+    const state = await new SignJWT({ user_id: user.id, account_id: meliAccount.id })
       .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
       .setExpirationTime('10m')
       .setIssuedAt()

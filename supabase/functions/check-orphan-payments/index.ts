@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.74.0';
+import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -26,7 +27,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { date_from, date_to } = await req.json().catch(() => ({}));
+    const { date_from, date_to, account_id: accountIdParam } = await req.json().catch(() => ({}));
     if (!date_from || !date_to) {
       return new Response(
         JSON.stringify({ success: false, error: 'date_from y date_to son requeridos' }),
@@ -34,13 +35,11 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { data: meliAccount, error: accountError } = await supabase
-      .from('meli_accounts')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const { data: meliAccount, error: accountError } = await getMeliAccount(supabase, user.id, {
+      accountId: accountIdParam,
+      orderBy: 'created_at',
+      maybeSingle: true,
+    });
 
     if (accountError || !meliAccount) {
       return new Response(

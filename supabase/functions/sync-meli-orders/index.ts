@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -26,12 +27,14 @@ Deno.serve(async (req) => {
     let dateFromParam: string | null = null;
     let dateToParam: string | null = null;
     let maxPagesParam: number = 10;
+    let accountIdParam: string | null = null;
 
     try {
       const body = await req.json();
       dateFromParam = body.date_from || null;
       dateToParam = body.date_to || null;
       maxPagesParam = body.max_pages || 10;
+      accountIdParam = body.account_id || null;
     } catch {
       // No body or invalid JSON, use defaults
     }
@@ -45,14 +48,10 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Get user's Mercado Libre account (most recent one)
-    const { data: meliAccount, error: accountError } = await supabaseClient
-      .from('meli_accounts')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .single();
+    // Get user's Mercado Libre account (explicit account_id if given, else most recent one)
+    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
+      accountId: accountIdParam,
+    });
 
     console.log('=== SYNC MELI ORDERS DEBUG ===');
     console.log('User ID:', user.id);
@@ -113,7 +112,7 @@ Deno.serve(async (req) => {
             refresh_token: refreshData.refresh_token,
             expires_at: expiresAt.toISOString(),
           })
-          .eq('user_id', user.id);
+          .eq('id', meliAccount.id);
       }
     }
 
@@ -423,7 +422,9 @@ Deno.serve(async (req) => {
     if (syncedCount > 0) {
       console.log('Triggering enrich-meli-billing...');
       try {
-        supabaseClient.functions.invoke('enrich-meli-billing').catch((e) =>
+        supabaseClient.functions.invoke('enrich-meli-billing', {
+          body: { account_id: meliAccount.id },
+        }).catch((e) =>
           console.error('enrich-meli-billing invoke failed:', e)
         );
       } catch (e) {

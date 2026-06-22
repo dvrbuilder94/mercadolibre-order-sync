@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { jwtVerify } from 'https://esm.sh/jose@5.2.0';
+import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -47,20 +48,26 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Verify state token
+    // Verify state token. account_id (if present) was embedded by
+    // get-meli-auth-url and identifies which store this callback belongs to —
+    // it travels through the signed JWT rather than a client-supplied body
+    // field, so it can't be spoofed to overwrite a different store's tokens.
+    let accountId: string | null = null;
     try {
       const jwtSecret = new TextEncoder().encode(
         Deno.env.get('SUPABASE_JWT_SECRET') || Deno.env.get('SUPABASE_ANON_KEY') || ''
       );
-      
+
       const { payload } = await jwtVerify(state, jwtSecret);
-      
+
       if (payload.user_id !== user.id) {
         return new Response(
           JSON.stringify({ error: 'Invalid state token' }),
           { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
+
+      accountId = typeof payload.account_id === 'string' ? payload.account_id : null;
     } catch (error) {
       console.error('Error verifying state token:', error);
       return new Response(
@@ -70,11 +77,9 @@ Deno.serve(async (req) => {
     }
 
     // Get user's Mercado Libre account configuration
-    const { data: meliAccount, error: accountError } = await supabaseClient
-      .from('meli_accounts')
-      .select('*')
-      .eq('user_id', user.id)
-      .single();
+    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
+      accountId,
+    });
 
     if (accountError || !meliAccount) {
       return new Response(
@@ -150,7 +155,7 @@ Deno.serve(async (req) => {
         expires_at: expiresAt.toISOString(),
         seller_id: userInfo.id.toString(),
       })
-      .eq('user_id', user.id);
+      .eq('id', meliAccount.id);
 
     if (updateError) {
       console.error('Error updating account:', updateError);
@@ -164,7 +169,7 @@ Deno.serve(async (req) => {
     const { data: savedAccount, error: fetchError } = await supabaseClient
       .from('meli_accounts')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('id', meliAccount.id)
       .single();
     
     if (!fetchError && savedAccount) {

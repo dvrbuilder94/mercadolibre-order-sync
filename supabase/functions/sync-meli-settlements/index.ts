@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -33,14 +34,12 @@ Deno.serve(async (req) => {
     console.log('=== SYNC MELI SETTLEMENTS START ===');
     console.log('User ID:', user.id);
 
+    const { account_id: accountIdParam } = await req.json().catch(() => ({}));
+
     // Get user's MercadoLibre account
-    const { data: meliAccount, error: accountError } = await supabaseClient
-      .from('meli_accounts')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .single();
+    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
+      accountId: accountIdParam,
+    });
 
     if (accountError || !meliAccount) {
       console.error('Account Error:', accountError);
