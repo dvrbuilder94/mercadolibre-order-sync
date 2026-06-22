@@ -5,6 +5,7 @@ import { es } from "date-fns/locale";
 import {
   ChevronLeft, ChevronRight, Home, AlertTriangle, ArrowRight,
   CheckCircle2, XCircle, Loader2, AlertCircle, TrendingUp, Wallet, Scale,
+  Store, Plus,
 } from "lucide-react";
 import { Nav } from "@/components/Nav";
 import { usePeriodReconciliation } from "@/hooks/usePeriodReconciliation";
