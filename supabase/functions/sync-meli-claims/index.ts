@@ -112,7 +112,7 @@ Deno.serve(async (req) => {
 
     for (let page = 0; page < maxPagesParam; page++) {
       const url = `https://api.mercadolibre.com/post-purchase/v1/claims/search` +
-        `?player.user_id=${sellerId}&player.role=respondent&limit=${LIMIT}&offset=${offset}`;
+        `?limit=${LIMIT}&offset=${offset}`;
       const res = await fetch(url, {
         headers: { 'Authorization': `Bearer ${accessToken}` },
       });
