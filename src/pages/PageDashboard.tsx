@@ -363,6 +363,9 @@ export default function PageDashboard() {
                 </div>
               </div>
 
+              {/* Breakdown multi-marketplace */}
+              <MarketplaceBreakdown data={data} />
+
               <div className="grid grid-cols-3 gap-5">
                 {/* Left: full P&L waterfall */}
                 <div className="col-span-2 space-y-4">
