@@ -73,8 +73,7 @@ export default function ConfigNew() {
 
       const { data: shopifyData } = await supabase
         .from("shopify_accounts")
-        .select("shop_domain, status, updated_at")
-        .eq("status", "connected")
+        .select("shop_domain, updated_at")
         .maybeSingle();
 
       if (shopifyData) {

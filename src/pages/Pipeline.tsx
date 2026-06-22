@@ -201,12 +201,12 @@ export default function Pipeline() {
     setTimelineLoading(true);
     try {
       const { data, error } = await supabase
-        .from("pipeline_sync_runs")
+        .from("pipeline_sync_runs" as any)
         .select("id, started_at, finished_at, period, step, status, detail")
         .order("started_at", { ascending: false })
         .limit(40);
       if (error) throw error;
-      setTimelineRuns((data || []) as PipelineRun[]);
+      setTimelineRuns((data || []) as unknown as PipelineRun[]);
     } catch (e: any) {
       addLog(`❌ Historial: ${e?.message || "error desconocido"}`);
     } finally {
