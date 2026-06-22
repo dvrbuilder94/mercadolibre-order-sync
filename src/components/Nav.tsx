@@ -3,23 +3,23 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Home, ShoppingBag, GitMerge, Activity, Settings, LogOut,
-  Sparkles, FlaskConical, Wrench,
+  Sparkles, Wrench, Landmark,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const ADV_KEY = "quadra.advancedMode";
 
 const primary = [
-  { to: "/resumen",      label: "Resumen",      icon: Home },
-  { to: "/conciliacion", label: "Conciliación", icon: GitMerge },
-  { to: "/ventas",       label: "Ventas",       icon: ShoppingBag },
-  { to: "/config",       label: "Conexiones",   icon: Settings },
+  { to: "/resumen",       label: "Resumen",       icon: Home },
+  { to: "/conciliacion",  label: "Conciliación",  icon: GitMerge },
+  { to: "/liquidaciones", label: "Liquidaciones", icon: Landmark },
+  { to: "/ventas",        label: "Ventas",        icon: ShoppingBag },
+  { to: "/config",        label: "Conexiones",    icon: Settings },
 ];
 
 const advanced = [
   { to: "/pipeline",   label: "Sincronización", icon: Activity },
   { to: "/asistente",  label: "Asistente AI",   icon: Sparkles },
-  { to: "/sandbox-mp", label: "Sandbox MP",     icon: FlaskConical },
 ];
 
 export function Nav() {

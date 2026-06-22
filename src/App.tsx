@@ -17,7 +17,7 @@ import PageConciliacion      from "./pages/PageConciliacion";
 import ConfigNew             from "./pages/ConfigNew";
 import PageDashboard         from "./pages/PageDashboard";
 import PageAsistente         from "./pages/PageAsistente";
-import PageMercadoPagoSandbox from "./pages/PageMercadoPagoSandbox";
+import PageLiquidaciones     from "./pages/PageLiquidaciones";
 
 const queryClient = new QueryClient();
 
@@ -36,9 +36,9 @@ const App = () => (
           <Route path="/resumen"      element={<PageDashboard />} />
           <Route path="/ventas"       element={<PageVentas />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
+          <Route path="/liquidaciones" element={<PageLiquidaciones />} />
           <Route path="/pipeline"     element={<Pipeline />} />
           <Route path="/asistente"    element={<PageAsistente />} />
-          <Route path="/sandbox-mp"   element={<PageMercadoPagoSandbox />} />
           <Route path="/config"       element={<ConfigNew />} />
 
           {/* OAuth callbacks — DO NOT TOUCH */}
@@ -46,6 +46,7 @@ const App = () => (
 
           {/* Legacy redirects */}
           <Route path="/dashboard"        element={<Navigate to="/resumen" replace />} />
+          <Route path="/sandbox-mp"       element={<Navigate to="/liquidaciones" replace />} />
           <Route path="/mercadolibre"     element={<Navigate to="/ventas" replace />} />
           <Route path="/bsale"            element={<Navigate to="/ventas" replace />} />
           <Route path="/flujo"            element={<Navigate to="/resumen" replace />} />
