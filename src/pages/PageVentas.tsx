@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import { useLocation } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
@@ -94,18 +93,11 @@ function inferChannel(detected: string | null, rawData: any): string | null {
   return null;
 }
 
-type Tab = "ordenes" | "docs";
-
 const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
 export default function PageVentas() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
-  const { pathname } = useLocation();
-  const [tab, setTab] = useState<Tab>(pathname.startsWith("/documentos") ? "docs" : "ordenes");
-  useEffect(() => {
-    setTab(pathname.startsWith("/documentos") ? "docs" : "ordenes");
-  }, [pathname]);
   const [channelFilter, setChannelFilter] = useState<string>("todos");
 
   // Orders tab
@@ -419,23 +411,8 @@ export default function PageVentas() {
           </div>
         </div>
 
-        {/* Tabs + canal filter */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-1 bg-white border rounded-lg p-1 w-fit">
-            <button
-              onClick={() => setTab("ordenes")}
-              className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${tab === "ordenes" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800"}`}
-            >
-              Órdenes
-            </button>
-            <button
-              onClick={() => setTab("docs")}
-              className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${tab === "docs" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800"}`}
-            >
-              Documentos Bsale
-            </button>
-          </div>
-          {/* Canal filter */}
+        {/* Canal filter */}
+        <div className="flex items-center justify-end mb-6">
           <div className="flex items-center gap-1 flex-wrap">
             {["todos", ...ALL_CHANNELS].map(ch => (
               <button
@@ -453,10 +430,8 @@ export default function PageVentas() {
           </div>
         </div>
 
-        {/* ── ÓRDENES TAB ────────────────────────────────────────────────── */}
-        {tab === "ordenes" && (
-          <>
-            <div className="flex items-center justify-between mb-4">
+        <>
+          <div className="flex items-center justify-between mb-4">
               <div className="grid grid-cols-4 gap-3 flex-1 mr-4">
                 {[
                   { label: "Órdenes",       value: ordersLoading ? "—" : ordersTotal,                                              sub: "no canceladas" },
@@ -631,132 +606,7 @@ export default function PageVentas() {
                 </div>
               </div>
             )}
-          </>
-        )}
-
-        {/* ── DOCUMENTOS BSALE TAB ────────────────────────────────────────── */}
-        {tab === "docs" && (
-          <>
-            <div className="flex items-center justify-between mb-4">
-              <div className="grid grid-cols-4 gap-3 flex-1 mr-4">
-                {[
-                  { label: "Documentos",       value: docsLoading ? "—" : docsTotal,                                             sub: "en el período" },
-                  { label: "Total facturado",  value: docsLoading || docsSum === null ? "—" : CLP(docsSum),                     sub: "documentos emitidos" },
-                  { label: "Vinculados MeLi",  value: docsLoading ? "—" : docsMeliCount,                                        sub: "con orden ML", color: "text-emerald-600" },
-                  { label: "Otros canales",    value: docsLoading ? "—" : Math.max(docsTotal - docsMeliCount, 0),               sub: "tienda física / web", color: "text-slate-700" },
-                ].map(({ label, value, sub, color }) => (
-                  <div key={label} className="bg-white border rounded-lg p-3">
-                    <p className="text-xs text-slate-400 mb-0.5">{label}</p>
-                    <p className={`text-xl font-bold ${color || "text-slate-800"}`}>{value}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{sub}</p>
-                  </div>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                {docSyncMsg && <span className={`text-xs ${docSyncMsg.includes("❌") ? "text-red-500" : "text-green-600"}`}>{docSyncMsg}</span>}
-                <button onClick={syncDocs} disabled={docSyncing || docsLoading}
-                  className="flex items-center gap-2 px-3 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white font-medium rounded-lg text-sm">
-                  {docSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                  Sync Bsale
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-white border rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-slate-50 text-xs text-slate-500">
-                    <th className="text-left px-4 py-3 font-medium">Tipo</th>
-                    <th className="text-left px-4 py-3 font-medium">Número</th>
-                    <th className="text-left px-4 py-3 font-medium">Fecha</th>
-                    <th className="text-left px-4 py-3 font-medium">Canal</th>
-                    <th className="text-right px-4 py-3 font-medium">Monto</th>
-                    <th className="text-left px-4 py-3 font-medium">RUT cliente</th>
-                    <th className="text-left px-4 py-3 font-medium">Orden vinculada</th>
-                    <th className="w-8 px-4 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {docsLoading ? (
-                    <tr><td colSpan={8} className="text-center py-12 text-slate-400">
-                      <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...
-                    </td></tr>
-                  ) : docs.length === 0 ? (
-                    <tr><td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
-                      {channelFilter === "todos"
-                        ? "Sin documentos. Prueba Sync Bsale."
-                        : `Sin documentos de ${CHANNEL_LABEL[channelFilter] ?? channelFilter} en este período.`}
-                    </td></tr>
-                  ) : docs.map(d => {
-                    const linkCount = (d.order_tax_documents as any[])?.length ?? 0;
-                    const isLinked = linkCount > 0;
-                    const isPack = linkCount > 1;
-                    const isVoided = d.status === "voided";
-                    const isSelected = selectedDoc?.id === d.id;
-                    const effectiveChannel = inferChannel(d.detected_channel, d.raw_data);
-                    return (
-                      <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${isVoided ? "opacity-40" : ""} ${isSelected ? "bg-slate-100" : ""}`}>
-                        <td className="px-4 py-2.5">
-                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>
-                            {DOC_LABEL[d.document_type] || d.document_type}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{d.document_number}</td>
-                        <td className="px-4 py-2.5 text-xs text-slate-500">{d.document_date}</td>
-                        <td className="px-4 py-2.5">
-                          {effectiveChannel
-                            ? <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[effectiveChannel] || "bg-slate-100 text-slate-600"}`}>
-                                {CHANNEL_LABEL[effectiveChannel] || effectiveChannel}
-                              </span>
-                            : <span className="text-xs text-slate-300">—</span>
-                          }
-                        </td>
-                        <td className="px-4 py-2.5 text-right font-mono text-xs">{CLP(d.total_amount)}</td>
-                        <td className="px-4 py-2.5 font-mono text-xs text-slate-500">
-                          {formatRut(d.client_tax_id)}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          {isVoided
-                            ? <span className="text-xs text-slate-300">Anulado</span>
-                            : isPack
-                              ? <span className="inline-flex items-center gap-1 text-violet-700 bg-violet-50 border border-violet-200 px-1.5 py-0.5 rounded text-[11px] font-medium">
-                                  <Package className="h-3.5 w-3.5" />Pack · {linkCount} ventas
-                                </span>
-                              : isLinked
-                                ? <span className="flex items-center gap-1 text-emerald-600 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />Vinculada</span>
-                                : <span className="flex items-center gap-1 text-slate-300 text-xs">Sin vincular</span>
-                          }
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <button onClick={() => setSelectedDoc(isSelected ? null : d)}
-                            className={`${isSelected ? "text-slate-600" : "text-slate-300 hover:text-slate-500"}`}>
-                            <Info className="h-3.5 w-3.5" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {docTotalPages > 1 && (
-              <div className="flex items-center justify-between mt-3">
-                <span className="text-xs text-slate-400">Página {docPage + 1} de {docTotalPages} · {docListTotal} documentos</span>
-                <div className="flex gap-2">
-                  <button onClick={() => setDocPage(p => Math.max(0, p - 1))} disabled={docPage === 0 || docsLoading}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-white border rounded text-sm disabled:opacity-40 hover:bg-slate-50">
-                    <ChevronLeft className="h-3.5 w-3.5" /> Anterior
-                  </button>
-                  <button onClick={() => setDocPage(p => Math.min(docTotalPages - 1, p + 1))} disabled={docPage >= docTotalPages - 1 || docsLoading}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-white border rounded text-sm disabled:opacity-40 hover:bg-slate-50">
-                    Siguiente <ChevronRight className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            )}
-          </>
-        )}
+        </>
       </main>
 
       {selectedOrder && (
