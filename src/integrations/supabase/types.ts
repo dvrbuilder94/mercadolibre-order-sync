@@ -215,6 +215,59 @@ export type Database = {
         }
         Relationships: []
       }
+      meli_accounts: {
+        Row: {
+          access_token: string | null
+          client_id: string
+          client_secret: string
+          created_at: string
+          expires_at: string | null
+          id: string
+          redirect_uri: string
+          refresh_token: string | null
+          seller_id: string | null
+          site_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          access_token?: string | null
+          client_id: string
+          client_secret: string
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          redirect_uri: string
+          refresh_token?: string | null
+          seller_id?: string | null
+          site_id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          access_token?: string | null
+          client_id?: string
+          client_secret?: string
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          redirect_uri?: string
+          refresh_token?: string | null
+          seller_id?: string | null
+          site_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "meli_accounts_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       meli_claims: {
         Row: {
           channel_account_id: string | null
@@ -283,59 +336,6 @@ export type Database = {
             columns: ["order_id"]
             isOneToOne: false
             referencedRelation: "orders"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      meli_accounts: {
-        Row: {
-          access_token: string | null
-          client_id: string
-          client_secret: string
-          created_at: string
-          expires_at: string | null
-          id: string
-          redirect_uri: string
-          refresh_token: string | null
-          seller_id: string | null
-          site_id: string
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          access_token?: string | null
-          client_id: string
-          client_secret: string
-          created_at?: string
-          expires_at?: string | null
-          id?: string
-          redirect_uri: string
-          refresh_token?: string | null
-          seller_id?: string | null
-          site_id?: string
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          access_token?: string | null
-          client_id?: string
-          client_secret?: string
-          created_at?: string
-          expires_at?: string | null
-          id?: string
-          redirect_uri?: string
-          refresh_token?: string | null
-          seller_id?: string | null
-          site_id?: string
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "meli_accounts_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: true
-            referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
         ]
