@@ -220,9 +220,10 @@ Deno.serve(async (req) => {
             }
 
             const paymentDetails = await response.json();
-            
+
             console.log(`    📊 Payment ${paymentId} response:`, JSON.stringify({
               id: paymentDetails.id,
+              status: paymentDetails.status,
               transaction_amount: paymentDetails.transaction_amount,
               net_received_amount: paymentDetails.net_received_amount,
               transaction_details: paymentDetails.transaction_details,
@@ -230,26 +231,32 @@ Deno.serve(async (req) => {
             }));
 
             // MercadoLibre payments API returns transaction_details with net_received_amount
-            const netReceived = paymentDetails.net_received_amount || 
+            const transactionAmount = paymentDetails.transaction_amount || 0;
+            const netReceived = paymentDetails.net_received_amount ||
                                paymentDetails.transaction_details?.net_received_amount ||
                                0;
-            
-            if (netReceived > 0 || paymentDetails.transaction_amount) {
-              const transactionAmount = paymentDetails.transaction_amount || 0;
-              const actualNetReceived = netReceived || (transactionAmount * 0.97); // Fallback estimate
-              const paymentFees = paymentDetails.fee_details?.reduce((sum: number, f: any) => sum + (f.amount || 0), 0) || 
-                                 (transactionAmount - actualNetReceived); // Calculate from difference if no fee_details
-              
-              // Save individual payment details
+
+            if (transactionAmount > 0 || netReceived > 0) {
+              // fee_details can legitimately sum to 0 (e.g. account_money with no
+              // commission) — `||` would wrongly fall through to the difference
+              // calc in that case, so check array length instead.
+              const feeDetailsList: any[] = Array.isArray(paymentDetails.fee_details) ? paymentDetails.fee_details : [];
+              const paymentFees = feeDetailsList.length > 0
+                ? feeDetailsList.reduce((sum: number, f: any) => sum + (f.amount || 0), 0)
+                : (transactionAmount - netReceived);
+
+              // Save the raw detail regardless of status — useful for audit/
+              // Sandbox MP visibility even when we don't fold it into the
+              // order's exact totals below.
               const { error: insertError } = await supabase.from('meli_payment_details').upsert({
                 order_id: order.id,
                 payment_id: paymentId.toString(),
                 transaction_amount: transactionAmount,
-                net_received_amount: actualNetReceived,
+                net_received_amount: netReceived,
                 total_fees: paymentFees,
-                marketplace_fee: paymentDetails.fee_details?.find((f: any) => f.type === 'marketplace_fee')?.amount || paymentFees,
-                financing_fee: paymentDetails.fee_details?.find((f: any) => f.type === 'financing_fee')?.amount || 0,
-                shipping_fee: paymentDetails.fee_details?.find((f: any) => f.type === 'shipping_fee')?.amount || 0,
+                marketplace_fee: feeDetailsList.find((f: any) => f.type === 'marketplace_fee')?.amount ?? paymentFees,
+                financing_fee: feeDetailsList.find((f: any) => f.type === 'financing_fee')?.amount || 0,
+                shipping_fee: feeDetailsList.find((f: any) => f.type === 'shipping_fee')?.amount || 0,
                 fee_details: paymentDetails.fee_details,
                 payment_method: paymentDetails.payment_method_id,
                 date_approved: paymentDetails.date_approved,
@@ -261,10 +268,20 @@ Deno.serve(async (req) => {
               if (insertError) {
                 console.error(`    ❌ Error saving payment details: ${insertError.message}`);
                 errors++;
+              } else if (paymentDetails.status !== 'approved') {
+                // Not settled money (refunded, charged_back, in_mediation,
+                // rejected, pending, ...) — recorded above for visibility, but
+                // excluded from the order's net/exact totals.
+                console.log(`    ⚠️ Payment ${paymentId} status is '${paymentDetails.status}' (not approved), excluded from exact totals`);
+              } else if (netReceived <= 0) {
+                // Approved but MercadoPago hasn't populated net_received_amount
+                // yet (e.g. money not released). Don't guess — leave the order
+                // out of "exact" until a later sync sees the real figure.
+                console.log(`    ⚠️ Payment ${paymentId} is approved but has no net_received_amount yet, skipping (no fabricated estimate)`);
               } else {
-                console.log(`    ✅ Saved payment ${paymentId} details (net: ${actualNetReceived})`);
+                console.log(`    ✅ Saved payment ${paymentId} details (net: ${netReceived})`);
                 orderHasValidPayment = true;
-                totalNetReceived += actualNetReceived;
+                totalNetReceived += netReceived;
                 totalFees += paymentFees;
 
                 // Track latest money release date
@@ -285,9 +302,9 @@ Deno.serve(async (req) => {
                     external_payment_id: paymentId.toString(),
                     payment_date: paymentDetails.date_approved || releaseDate || new Date().toISOString(),
                     gross_amount: transactionAmount,
-                    net_amount: actualNetReceived,
+                    net_amount: netReceived,
                     fees_amount: paymentFees,
-                    amount: actualNetReceived,
+                    amount: netReceived,
                     status: 'ALLOCATED',
                     reference: `MP ${paymentId} · Orden ${order.order_id}`,
                     raw_data: {
@@ -309,7 +326,7 @@ Deno.serve(async (req) => {
                     .upsert({
                       payment_id: paymentRow.id,
                       sale_id: order.id,
-                      allocated_amount: actualNetReceived,
+                      allocated_amount: netReceived,
                     }, { onConflict: 'payment_id,sale_id' });
 
                   if (linkError) {
