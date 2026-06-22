@@ -268,6 +268,78 @@ export type Database = {
           },
         ]
       }
+      meli_claims: {
+        Row: {
+          channel_account_id: string | null
+          claim_id: string
+          created_at: string
+          date_created: string | null
+          fulfilled: boolean | null
+          id: string
+          last_updated: string | null
+          order_id: string | null
+          raw_data: Json | null
+          reason_id: string | null
+          resource_id: string | null
+          stage: string | null
+          status: string | null
+          type: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          channel_account_id?: string | null
+          claim_id: string
+          created_at?: string
+          date_created?: string | null
+          fulfilled?: boolean | null
+          id?: string
+          last_updated?: string | null
+          order_id?: string | null
+          raw_data?: Json | null
+          reason_id?: string | null
+          resource_id?: string | null
+          stage?: string | null
+          status?: string | null
+          type?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          channel_account_id?: string | null
+          claim_id?: string
+          created_at?: string
+          date_created?: string | null
+          fulfilled?: boolean | null
+          id?: string
+          last_updated?: string | null
+          order_id?: string | null
+          raw_data?: Json | null
+          reason_id?: string | null
+          resource_id?: string | null
+          stage?: string | null
+          status?: string | null
+          type?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "meli_claims_channel_account_id_fkey"
+            columns: ["channel_account_id"]
+            isOneToOne: false
+            referencedRelation: "meli_accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "meli_claims_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       meli_payment_details: {
         Row: {
           created_at: string | null
