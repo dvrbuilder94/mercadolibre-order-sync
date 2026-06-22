@@ -170,6 +170,33 @@ export type Database = {
         }
         Relationships: []
       }
+      bsale_sync_checkpoints: {
+        Row: {
+          batch_id: string | null
+          cursor: Json
+          period: string
+          total_available: number | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          batch_id?: string | null
+          cursor: Json
+          period: string
+          total_available?: number | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          batch_id?: string | null
+          cursor?: Json
+          period?: string
+          total_available?: number | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       falabella_accounts: {
         Row: {
           access_token: string | null
@@ -262,7 +289,7 @@ export type Database = {
           {
             foreignKeyName: "meli_accounts_user_id_fkey"
             columns: ["user_id"]
-            isOneToOne: true
+            isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
@@ -903,6 +930,42 @@ export type Database = {
         }
         Relationships: []
       }
+      pipeline_sync_runs: {
+        Row: {
+          detail: Json | null
+          finished_at: string | null
+          id: string
+          meli_account_id: string | null
+          period: string | null
+          started_at: string
+          status: string
+          step: string
+          user_id: string | null
+        }
+        Insert: {
+          detail?: Json | null
+          finished_at?: string | null
+          id?: string
+          meli_account_id?: string | null
+          period?: string | null
+          started_at?: string
+          status?: string
+          step: string
+          user_id?: string | null
+        }
+        Update: {
+          detail?: Json | null
+          finished_at?: string | null
+          id?: string
+          meli_account_id?: string | null
+          period?: string | null
+          started_at?: string
+          status?: string
+          step?: string
+          user_id?: string | null
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           company_address: string | null
@@ -1199,31 +1262,34 @@ export type Database = {
       shopify_accounts: {
         Row: {
           access_token: string
-          api_key: string
-          api_secret: string
+          api_key: string | null
+          api_secret: string | null
           created_at: string
           id: string
           shop_domain: string
+          status: string | null
           updated_at: string
           user_id: string
         }
         Insert: {
           access_token: string
-          api_key: string
-          api_secret: string
+          api_key?: string | null
+          api_secret?: string | null
           created_at?: string
           id?: string
           shop_domain: string
+          status?: string | null
           updated_at?: string
           user_id: string
         }
         Update: {
           access_token?: string
-          api_key?: string
-          api_secret?: string
+          api_key?: string | null
+          api_secret?: string | null
           created_at?: string
           id?: string
           shop_domain?: string
+          status?: string | null
           updated_at?: string
           user_id?: string
         }
