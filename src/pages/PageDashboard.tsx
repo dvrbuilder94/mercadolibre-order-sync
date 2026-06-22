@@ -337,19 +337,25 @@ export default function PageDashboard() {
                   <p className="text-xl font-bold text-slate-900 tabular-nums" title="Confirmado por MercadoPago — pagos aprobados con monto neto real">
                     {CLP(data.recibidoReal)}
                   </p>
-                  <p className="text-xs text-slate-400 mt-1">{data.datosExactos.pct}% de las órdenes confirmadas</p>
+                  {/* Conteo exacto, no % redondeado — con pocas órdenes confirmadas el
+                      % redondea a 0 y un "0%" junto a un monto en pesos lee como
+                      contradicción ("¿0% pero llegó plata?"). */}
+                  <p className="text-xs text-slate-400 mt-1">{data.datosExactos.ordenes}/{data.datosExactos.total} órdenes confirmadas</p>
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs text-slate-400">Por cobrar</p>
+                    <p className="text-xs text-slate-400">Sin confirmar</p>
                     <div className="h-7 w-7 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
                       <AlertCircle className="h-3.5 w-3.5" />
                     </div>
                   </div>
-                  <p className="text-xl font-bold text-slate-900 tabular-nums" title="Ventas sin confirmación de pago de MercadoPago todavía">
+                  <p
+                    className="text-xl font-bold text-slate-900 tabular-nums"
+                    title="MercadoLibre puede haberte pagado esto ya — todavía no sincronizamos el dato real de MercadoPago para confirmarlo"
+                  >
                     {CLP(data.porCobrar)}
                   </p>
-                  <p className="text-xs text-slate-400 mt-1">{data.datosExactos.total - data.datosExactos.ordenes} órdenes sin confirmar</p>
+                  <p className="text-xs text-slate-400 mt-1">{data.datosExactos.total - data.datosExactos.ordenes} órdenes sin sincronizar</p>
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
@@ -377,6 +383,26 @@ export default function PageDashboard() {
                 </div>
               </div>
 
+              {/* Banner de sincronización — el mensaje más importante de la página
+                  cuando la mayoría de las órdenes todavía no tiene datos reales de
+                  MercadoPago: qué falta y qué botón soluciona el problema, antes de
+                  que el usuario llegue a leer cualquier otro número. */}
+              {data.datosExactos.pct < 100 && data.datosExactos.total > 0 && (
+                <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span className="flex-1 text-sm">
+                    Solo {data.datosExactos.ordenes} de {data.datosExactos.total} órdenes tienen el pago confirmado por MercadoPago.
+                    Las {data.datosExactos.total - data.datosExactos.ordenes} restantes pueden estar ya pagadas — falta sincronizarlas para saberlo con certeza.
+                  </span>
+                  <Link
+                    to="/pipeline"
+                    className="flex items-center gap-1 text-sm font-semibold whitespace-nowrap shrink-0 text-amber-700 hover:text-amber-900"
+                  >
+                    Sincronizar pagos<ArrowRight className="h-3.5 w-3.5" />
+                  </Link>
+                </div>
+              )}
+
               {/* Breakdown multi-marketplace */}
               <MarketplaceBreakdown data={data} />
 
@@ -385,17 +411,6 @@ export default function PageDashboard() {
                 <div className="col-span-2 space-y-4">
                   <div className="bg-white rounded-xl border shadow-card p-5">
                     <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Estado de resultados</p>
-
-                    {data.datosExactos.pct < 100 && data.datosExactos.total > 0 && (
-                      <div className="flex items-start gap-2 text-xs bg-amber-50 text-amber-700 rounded-lg px-3 py-2 mb-4">
-                        <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                        <span>
-                          {data.datosExactos.ordenes}/{data.datosExactos.total} órdenes con datos exactos de MercadoPago.
-                          Las {data.datosExactos.total - data.datosExactos.ordenes} restantes usan comisión aproximada.
-                          Sincroniza los pagos en Conciliación para cifras 100% reales.
-                        </span>
-                      </div>
-                    )}
 
                     <div className="space-y-0.5">
                       <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Ingresos</p>
