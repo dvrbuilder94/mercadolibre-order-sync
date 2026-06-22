@@ -149,19 +149,53 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         // TODO: comision_pago per-order breakdown — needs meli_payment_details FK in schema
         const comisionPagoMonto = 0;
 
-        // Devoluciones
-        // A return only counts as "covered" if it has a non-voided NOTA DE CRÉDITO
-        // (not just any linked tax document) whose total_amount adds up to at least
-        // the order's gross_amount — a partial NC must not read as fully resolved.
+        // ── 6b. Devoluciones ─────────────────────────────────────────────────
+        // El monto devuelto es la plata que MercadoPago confirmó como reembolsada
+        // o contracargada (misma fuente que la pantalla Devoluciones), NO el bruto
+        // de las órdenes canceladas. Una orden cancelada normalmente nunca se pagó:
+        // contarla inflaba la cifra y, como ventasBrutas ya excluye las canceladas,
+        // el líquido terminaba restándolas dos veces.
+        const periodOrderIds: string[] = [];
+        {
+          let offset = 0;
+          while (true) {
+            let q = supabase
+              .from('orders').select('id')
+              .gte('order_date', from).lte('order_date', to)
+              .order('id', { ascending: true })
+              .range(offset, offset + PAGE - 1);
+            if (canalId !== 'todos') q = q.eq('channel', canalId as any);
+            const { data: batch, error: e } = await q;
+            if (e) throw e;
+            periodOrderIds.push(...(batch ?? []).map((o: any) => o.id));
+            if ((batch ?? []).length < PAGE) break;
+            offset += PAGE;
+          }
+        }
+        let devolucionMonto = 0;
+        for (let i = 0; i < periodOrderIds.length; i += 300) {
+          const { data: pd } = await supabase
+            .from('meli_payment_details')
+            .select('net_received_amount, status')
+            .in('order_id', periodOrderIds.slice(i, i + 300))
+            .in('status', ['refunded', 'charged_back']);
+          devolucionMonto += (pd ?? []).reduce(
+            (s: number, p: any) => s + Math.abs(p.net_received_amount ?? 0), 0);
+        }
+
+        // Cobertura tributaria de las devoluciones reales (órdenes 'returned'): una
+        // devolución debería tener una NOTA DE CRÉDITO que la reverse ante el SII.
+        // Las canceladas no entran acá — una cancelación sin pago no exige NC.
+        // La NC sólo cuenta como cobertura si está vigente y su total cubre al menos
+        // el bruto de la orden (una NC parcial no debe leerse como resuelta).
         let devQuery = supabase
           .from('orders')
           .select('gross_amount, order_tax_documents(id, tax_documents(status, document_type, total_amount))')
           .gte('order_date', from)
           .lte('order_date', to)
-          .in('status', ['cancelled', 'returned']);
+          .eq('status', 'returned');
         if (canalId !== 'todos') devQuery = devQuery.eq('channel', canalId as any);
         const { data: devRows } = await devQuery;
-        const devolucionMonto = (devRows ?? []).reduce((s, r) => s + (r.gross_amount ?? 0), 0);
         const devConNC = (devRows ?? []).filter(r => {
           const links = (r.order_tax_documents as any[]) ?? [];
           const ncTotal = links.reduce((sum, l) => {

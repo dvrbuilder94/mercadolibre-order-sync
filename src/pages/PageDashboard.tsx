@@ -441,10 +441,10 @@ export default function PageDashboard() {
                       <WaterfallRow label="Costos de envío" amount={data.egresos.costosEnvio.monto} total={ventasBrutas} variant="expense" indent />
                       <WaterfallRow label="Comisión de pago" amount={data.egresos.comisionPago.monto} total={ventasBrutas} variant="expense" indent
                         annotation={data.egresos.comisionPago.monto === 0 ? "pendiente sincronización" : undefined} />
-                      <WaterfallRow label="Devoluciones"
+                      <WaterfallRow label="Devoluciones confirmadas"
                         amount={data.egresos.reembolsos.monto} total={ventasBrutas} variant="expense" indent
                         annotation={data.egresos.reembolsos.conNotaCredito.total > 0
-                          ? `${data.egresos.reembolsos.conNotaCredito.con}/${data.egresos.reembolsos.conNotaCredito.total} con NC`
+                          ? `${data.egresos.reembolsos.conNotaCredito.con}/${data.egresos.reembolsos.conNotaCredito.total} con nota de crédito`
                           : undefined} />
 
                       <div className="border-t border-dashed border-slate-100 my-2" />
