@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.74.0';
 import { getMeliAccount } from '../_shared/meli-account.ts';
+import { resolveUserId } from '../_shared/auth.ts';
 
 // CORS configuration - MUST be present on ALL responses
 const corsHeaders = {
@@ -31,23 +32,24 @@ Deno.serve(async (req) => {
       }
     );
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
-      console.error('❌ Authentication failed:', authError);
+    const { date_from, date_to, days_back, limit = 50, account_id: accountIdParam, user_id: userIdParam } = await req.json().catch(() => ({}));
+    const effectiveLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+
+    const userId = await resolveUserId(req, supabase, userIdParam);
+    if (!userId) {
+      console.error('❌ Authentication failed');
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           success: false,
           error: 'No autorizado. Por favor, recarga la página e inicia sesión nuevamente.'
         }),
-        { 
+        {
           status: 401,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         }
       );
     }
-
-    const { date_from, date_to, days_back, limit = 50, account_id: accountIdParam } = await req.json().catch(() => ({}));
-    const effectiveLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+    const user = { id: userId };
 
     console.log(`🚀 Fetching exact payment details (limit: ${effectiveLimit}, date_from: ${date_from ?? '-'}, date_to: ${date_to ?? '-'}, days_back: ${days_back ?? 'sin límite — backfill completo'})`);
 
@@ -429,7 +431,7 @@ Deno.serve(async (req) => {
     if ((remainingCount || 0) > 0 && updated > 0) {
       console.log(`Chaining: ${remainingCount} orders remain, invoking sync-meli-payment-details again`);
       try {
-        supabase.functions.invoke('sync-meli-payment-details', { body: { date_from, date_to, days_back, limit, account_id: meliAccount.id } }).catch((e) =>
+        supabase.functions.invoke('sync-meli-payment-details', { body: { date_from, date_to, days_back, limit, account_id: meliAccount.id, user_id: userId } }).catch((e) =>
           console.error('Chain invoke failed:', e)
         );
       } catch (e) {

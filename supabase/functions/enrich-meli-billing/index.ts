@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getMeliAccount } from '../_shared/meli-account.ts';
+import { resolveUserId } from '../_shared/auth.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -41,16 +42,17 @@ Deno.serve(async (req) => {
       }
     );
 
-    const { data: { user } } = await supabaseClient.auth.getUser();
-    
-    if (!user) {
+    const { date_from, date_to, account_id: accountIdParam, user_id: userIdParam } = await req.json().catch(() => ({}));
+
+    const userId = await resolveUserId(req, supabaseClient, userIdParam);
+
+    if (!userId) {
       return new Response(
         JSON.stringify({ error: 'Unauthorized' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
-
-    const { date_from, date_to, account_id: accountIdParam } = await req.json().catch(() => ({}));
+    const user = { id: userId };
 
     // Get user's Mercado Libre account
     const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
@@ -297,7 +299,7 @@ Deno.serve(async (req) => {
       console.log(`Chaining: ${remainingCount} orders remain, invoking enrich-meli-billing again`);
       try {
         supabaseClient.functions.invoke('enrich-meli-billing', {
-          body: { date_from, date_to, account_id: meliAccount.id },
+          body: { date_from, date_to, account_id: meliAccount.id, user_id: userId },
         }).catch((e) =>
           console.error('Chain invoke failed:', e)
         );

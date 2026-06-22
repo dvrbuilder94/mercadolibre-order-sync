@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.74.0';
+import { resolveUserId } from '../_shared/auth.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -157,19 +158,20 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
 
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
     // Optional period scope (limits Stage 3 order/doc fetch for performance).
     // If omitted, Stage 3 scans the full history as before.
     const body = await req.json().catch(() => ({} as any));
     const periodFrom: string | null = body?.date_from || null;
     const periodTo: string | null = body?.date_to || null;
+
+    const userId = await resolveUserId(req, supabase, body?.user_id || null);
+    if (!userId) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    const user = { id: userId };
 
     console.log('=== AUTO-RECONCILE 4-STAGE START ===');
     console.log('=== build:paginate-docs-v2 ===');

@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { resolveUserId } from '../_shared/auth.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -305,33 +306,6 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
 
-    // Validate user from auth header
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const userClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      { global: { headers: { Authorization: authHeader } } }
-    );
-
-    const { data: { user } } = await userClient.auth.getUser();
-    
-    if (!user) {
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    console.log('=== SYNC BSALE DOCS START ===');
-    console.log('User ID:', user.id);
-
     // Get request body for optional filters
     const body = await req.json().catch(() => ({}));
     const {
@@ -343,8 +317,29 @@ Deno.serve(async (req) => {
       resync_batch = null,
       start_code_sii = null,
       start_offset = 0,
-      reclassify_b2b = false  // If true: fix existing B2B docs to MARKETPLACE (no new sync)
+      reclassify_b2b = false,  // If true: fix existing B2B docs to MARKETPLACE (no new sync)
+      user_id: userIdParam = null,
     } = body;
+
+    // Validate user from auth header (or service-role + user_id for cron calls)
+    const userClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } } }
+    );
+
+    const userId = await resolveUserId(req, userClient, userIdParam);
+
+    if (!userId) {
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    const user = { id: userId };
+
+    console.log('=== SYNC BSALE DOCS START ===');
+    console.log('User ID:', user.id);
 
     // MODE: reclassify_b2b — fix existing docs that were wrongly saved as B2B
     if (reclassify_b2b) {
