@@ -151,7 +151,7 @@ Deno.serve(async (req) => {
       return { body: clean.slice(0, -1), dv: clean.slice(-1) };
     };
 
-    const transformOrder = (order: any) => {
+    const transformOrder = (order: any, preserveExact: boolean) => {
       const buyer = order.buyer || {};
       const orderDate = new Date(order.date_created);
 
@@ -209,7 +209,7 @@ Deno.serve(async (req) => {
       const productTitle = firstItem?.item?.title || null;
       const sellerSku = firstItem?.item?.seller_custom_field || null;
 
-      return {
+      const base = {
         channel: 'meli',
         channel_account_id: meliAccount.id,
         meli_account_id: meliAccount.id, // Keep for backward compatibility
@@ -224,7 +224,8 @@ Deno.serve(async (req) => {
         items: order.order_items?.length || 1,
         raw_data: order,
 
-        // Financial data
+        // Financial data (estimated — overwritten with the real MercadoPago
+        // figures by sync-meli-payment-details once it processes this order)
         gross_amount: grossAmount,
         net_amount: netAmount,
         commission_percentage: commissionPercentage,
@@ -259,6 +260,21 @@ Deno.serve(async (req) => {
         seller_sku: sellerSku,
         product_title: productTitle,
       };
+
+      if (!preserveExact) return base;
+
+      // This order already has has_exact_data=true — sync-meli-payment-details
+      // computed these columns from the real MercadoPago payment(s). Drop them
+      // from this upsert entirely (rather than re-set them to the estimate
+      // above) so a routine order resync can't silently revert verified data
+      // back to a guess. Status/shipping/raw_data still refresh normally.
+      const {
+        gross_amount, net_amount, commission_percentage, commission_amount,
+        expected_payment_date, money_release_date, settlement_date,
+        settlement_amount, financing_fee, tax_amount, has_exact_data,
+        ...preserved
+      } = base;
+      return preserved;
     };
 
     // Fetch + persist orders page by page (1 upsert por página, no por orden ni al final)
@@ -314,34 +330,73 @@ Deno.serve(async (req) => {
 
       totalFetched += orders.length;
 
-      // Transform + upsert this page in a single round-trip
-      const pageOrdersData: any[] = [];
+      // Orders already enriched with real MercadoPago data must not be
+      // re-upserted with the estimate fields, or this resync would wipe out
+      // has_exact_data + the real amounts (see transformOrder's preserveExact).
+      const pageOrderIds = orders.map((o: any) => o.id.toString());
+      const { data: exactRows } = await supabaseClient
+        .from('orders')
+        .select('order_id')
+        .eq('channel_account_id', meliAccount.id)
+        .eq('channel', 'meli')
+        .in('order_id', pageOrderIds)
+        .eq('has_exact_data', true);
+      const exactOrderIds = new Set((exactRows || []).map((r: any) => r.order_id));
+
+      // Transform + upsert this page. Split into two homogeneous batches —
+      // PostgREST's bulk upsert needs a consistent column set per request, so
+      // "already exact" rows (fewer columns) can't share a batch with fresh
+      // ones (full estimate columns).
+      const fullRows: any[] = [];
+      const preserveRows: any[] = [];
       for (const order of orders) {
         try {
-          pageOrdersData.push(transformOrder(order));
+          const isExact = exactOrderIds.has(order.id.toString());
+          const transformed = transformOrder(order, isExact);
+          (isExact ? preserveRows : fullRows).push(transformed);
         } catch (error) {
           console.error(`❌ Error processing order ${order.id}:`, error);
           errorCount++;
         }
       }
 
-      if (pageOrdersData.length > 0) {
+      let pageSynced = 0;
+      if (fullRows.length > 0) {
         const { data: upserted, error: upsertError } = await supabaseClient
           .from('orders')
-          .upsert(pageOrdersData, {
+          .upsert(fullRows, {
             onConflict: 'channel_account_id,order_id',
             ignoreDuplicates: false,
           })
           .select('id');
 
         if (upsertError) {
-          console.error(`❌ Error upserting page ${currentPage + 1}:`, upsertError);
-          errorCount += pageOrdersData.length;
+          console.error(`❌ Error upserting page ${currentPage + 1} (full):`, upsertError);
+          errorCount += fullRows.length;
         } else {
-          syncedCount += upserted?.length || pageOrdersData.length;
-          console.log(`✅ Page ${currentPage + 1}: upserted ${upserted?.length || pageOrdersData.length} orders`);
+          pageSynced += upserted?.length || fullRows.length;
         }
       }
+
+      if (preserveRows.length > 0) {
+        const { data: upserted, error: upsertError } = await supabaseClient
+          .from('orders')
+          .upsert(preserveRows, {
+            onConflict: 'channel_account_id,order_id',
+            ignoreDuplicates: false,
+          })
+          .select('id');
+
+        if (upsertError) {
+          console.error(`❌ Error upserting page ${currentPage + 1} (preserve-exact):`, upsertError);
+          errorCount += preserveRows.length;
+        } else {
+          pageSynced += upserted?.length || preserveRows.length;
+        }
+      }
+
+      syncedCount += pageSynced;
+      console.log(`✅ Page ${currentPage + 1}: upserted ${pageSynced} orders (${fullRows.length} full, ${preserveRows.length} exact-preserved)`);
 
       // Check if we've fetched all available orders
       if (offset + limit >= totalAvailable) {
