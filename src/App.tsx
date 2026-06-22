@@ -35,6 +35,7 @@ const App = () => (
           {/* App — 7 pages */}
           <Route path="/resumen"      element={<PageDashboard />} />
           <Route path="/ventas"       element={<PageVentas />} />
+          <Route path="/documentos"   element={<PageVentas />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
           <Route path="/liquidaciones" element={<PageLiquidaciones />} />
           <Route path="/pipeline"     element={<Pipeline />} />
