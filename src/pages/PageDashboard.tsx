@@ -5,6 +5,7 @@ import { es } from "date-fns/locale";
 import {
   ChevronLeft, ChevronRight, Home, AlertTriangle, ArrowRight,
   CheckCircle2, XCircle, Loader2, AlertCircle, TrendingUp, Wallet, Scale,
+  Store, Plus,
 } from "lucide-react";
 import { Nav } from "@/components/Nav";
 import { usePeriodReconciliation } from "@/hooks/usePeriodReconciliation";
@@ -111,6 +112,99 @@ function ExcepcionRow({ exc }: { exc: PeriodReconciliation['excepciones'][number
       >
         {cta.ctaLabel}<ArrowRight className="h-3 w-3" />
       </Link>
+    </div>
+  );
+}
+
+// ── Breakdown multi-marketplace ────────────────────────────────────────────────
+// Lista fija de marketplaces objetivo. Hoy sólo Meli entrega datos; el resto se
+// muestra como "Sin conectar" con CTA → /config. Nunca se inventan métricas.
+const MARKETPLACES: { id: string; nombre: string }[] = [
+  { id: 'meli',      nombre: 'MercadoLibre' },
+  { id: 'amazon',    nombre: 'Amazon' },
+  { id: 'shopify',   nombre: 'Shopify' },
+  { id: 'falabella', nombre: 'Falabella' },
+];
+
+function MarketplaceBreakdown({ data }: { data: PeriodReconciliation }) {
+  const byChannel = new Map(data.ingresos.porCanal.map(c => [c.canalId, c]));
+  return (
+    <div className="bg-white rounded-xl border shadow-card p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+            Breakdown por marketplace
+          </p>
+          <p className="text-[11px] text-slate-400 mt-0.5">
+            Lo que vendió cada canal en el período. Sólo se muestran cifras reales.
+          </p>
+        </div>
+        <Link to="/config" className="text-[11px] text-primary hover:underline flex items-center gap-1">
+          Gestionar conexiones <ArrowRight className="h-3 w-3" />
+        </Link>
+      </div>
+      <div className="overflow-hidden rounded-lg border border-slate-100">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400">
+            <tr>
+              <th className="text-left font-semibold px-3 py-2">Canal</th>
+              <th className="text-right font-semibold px-3 py-2">Órdenes</th>
+              <th className="text-right font-semibold px-3 py-2">Ventas brutas</th>
+              <th className="text-right font-semibold px-3 py-2">% del total</th>
+              <th className="text-right font-semibold px-3 py-2">Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {MARKETPLACES.map(mp => {
+              const row = byChannel.get(mp.id);
+              const connected = !!row;
+              const pct = connected && data.ingresos.ventasBrutas > 0
+                ? Math.round((row!.monto / data.ingresos.ventasBrutas) * 100)
+                : 0;
+              return (
+                <tr key={mp.id} className="border-t border-slate-100">
+                  <td className="px-3 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <div className={`h-6 w-6 rounded-md flex items-center justify-center ${connected ? 'bg-primary/10 text-primary' : 'bg-slate-100 text-slate-400'}`}>
+                        <Store className="h-3 w-3" />
+                      </div>
+                      <span className={connected ? 'text-slate-800 font-medium' : 'text-slate-400'}>
+                        {mp.nombre}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-600">
+                    {connected ? row!.ordenes : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-800">
+                    {connected ? CLP(row!.monto) : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-500">
+                    {connected ? `${pct}%` : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    {connected ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                        <CheckCircle2 className="h-3 w-3" /> Conectado
+                      </span>
+                    ) : (
+                      <Link
+                        to="/config"
+                        className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-primary bg-slate-50 hover:bg-primary/10 px-2 py-0.5 rounded-full transition-colors"
+                      >
+                        <Plus className="h-3 w-3" /> Conectar
+                      </Link>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10px] text-slate-400 mt-3">
+        Quadra está diseñado para operar múltiples marketplaces. Más integraciones próximamente.
+      </p>
     </div>
   );
 }
@@ -268,6 +362,9 @@ export default function PageDashboard() {
                   )}
                 </div>
               </div>
+
+              {/* Breakdown multi-marketplace */}
+              <MarketplaceBreakdown data={data} />
 
               <div className="grid grid-cols-3 gap-5">
                 {/* Left: full P&L waterfall */}
