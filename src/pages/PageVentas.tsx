@@ -411,23 +411,8 @@ export default function PageVentas() {
           </div>
         </div>
 
-        {/* Tabs + canal filter */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-1 bg-white border rounded-lg p-1 w-fit">
-            <button
-              onClick={() => setTab("ordenes")}
-              className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${tab === "ordenes" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800"}`}
-            >
-              Órdenes
-            </button>
-            <button
-              onClick={() => setTab("docs")}
-              className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${tab === "docs" ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800"}`}
-            >
-              Documentos Bsale
-            </button>
-          </div>
-          {/* Canal filter */}
+        {/* Canal filter */}
+        <div className="flex items-center justify-end mb-6">
           <div className="flex items-center gap-1 flex-wrap">
             {["todos", ...ALL_CHANNELS].map(ch => (
               <button
@@ -445,10 +430,8 @@ export default function PageVentas() {
           </div>
         </div>
 
-        {/* ── ÓRDENES TAB ────────────────────────────────────────────────── */}
-        {tab === "ordenes" && (
-          <>
-            <div className="flex items-center justify-between mb-4">
+        <>
+          <div className="flex items-center justify-between mb-4">
               <div className="grid grid-cols-4 gap-3 flex-1 mr-4">
                 {[
                   { label: "Órdenes",       value: ordersLoading ? "—" : ordersTotal,                                              sub: "no canceladas" },
