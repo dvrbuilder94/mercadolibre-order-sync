@@ -20,11 +20,24 @@ const periodRange = (p: string) => {
     to:   format(new Date(y, m, 0),     "yyyy-MM-dd"),
   };
 };
+const rollingRange = (daysBack: number) => {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - daysBack);
+  return { from: format(from, "yyyy-MM-dd"), to: format(to, "yyyy-MM-dd") };
+};
 const clp = (n: number | null | undefined) =>
   new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 })
     .format(n || 0);
 
 const PAGE_SIZE = 50;
+
+type RangeMode = "1D" | "1W" | "1M" | "3M";
+const RANGE_TABS: RangeMode[] = ["1D", "1W", "1M", "3M"];
+const ROLLING_LABEL: Record<RangeMode, string> = {
+  "1D": "Hoy", "1W": "Últimos 7 días", "1M": "", "3M": "Últimos 3 meses",
+};
+type StatusFilter = "all" | "pendiente" | "liberado";
 
 // Fila cruda: un pago real de MercadoPago (payments) con las órdenes que
 // cubre (payment_sales → orders) y si cada una ya tiene documento tributario.
@@ -98,6 +111,43 @@ const toLiquidacion = (p: PaymentRow): Liquidacion => {
   };
 };
 
+// Vista agrupada: muchas liquidaciones comparten la misma fecha de liberación
+// (es el mismo depósito de MercadoPago) — sin esto, un período con miles de
+// ventas se ve como miles de filas casi idénticas en vez de un puñado de
+// depósitos reales.
+interface ReleaseGroup {
+  key: string;
+  releaseDate: string | null;
+  liberado: boolean;
+  net: number;
+  count: number;
+  docsOk: number;
+  ordersCount: number;
+  channels: string[];
+  items: Liquidacion[];
+}
+const groupByRelease = (items: Liquidacion[]): ReleaseGroup[] => {
+  const map = new Map<string, ReleaseGroup>();
+  for (const l of items) {
+    const key = l.latestRelease ? l.latestRelease.slice(0, 10) : "sin-fecha";
+    let g = map.get(key);
+    if (!g) {
+      g = {
+        key, releaseDate: l.latestRelease ? l.latestRelease.slice(0, 10) : null,
+        liberado: l.liberado, net: 0, count: 0, docsOk: 0, ordersCount: 0, channels: [], items: [],
+      };
+      map.set(key, g);
+    }
+    g.net += l.net;
+    g.count += 1;
+    g.docsOk += l.docsOk;
+    g.ordersCount += l.orders.length;
+    for (const ch of l.channels) if (!g.channels.includes(ch)) g.channels.push(ch);
+    g.items.push(l);
+  }
+  return Array.from(map.values()).sort((a, b) => (b.releaseDate ?? "").localeCompare(a.releaseDate ?? ""));
+};
+
 interface OrphanResult {
   totalChecked: number; unmatchedCount: number; unmatchedAmount: number;
   unmatched: { id: string; amount: number; date_approved: string }[];
@@ -105,7 +155,10 @@ interface OrphanResult {
 
 export default function PageLiquidaciones() {
   const navigate = useNavigate();
+  const [rangeMode, setRangeMode] = useState<RangeMode>("1M");
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [grouped, setGrouped] = useState(false);
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<PaymentRow[]>([]);
   const [page, setPage] = useState(0);
@@ -116,6 +169,13 @@ export default function PageLiquidaciones() {
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditResult, setAuditResult] = useState<OrphanResult | null>(null);
 
+  const range = useMemo(() => {
+    if (rangeMode === "1M") return periodRange(period);
+    if (rangeMode === "1D") return rollingRange(0);
+    if (rangeMode === "1W") return rollingRange(6);
+    return rollingRange(89);
+  }, [rangeMode, period]);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) navigate("/auth");
@@ -125,7 +185,7 @@ export default function PageLiquidaciones() {
   const fetchRows = useCallback(async () => {
     setLoading(true);
     try {
-      const { from, to } = periodRange(period);
+      const { from, to } = range;
       const PAGE = 1000;
       let offset = 0;
       const acc: PaymentRow[] = [];
@@ -158,10 +218,12 @@ export default function PageLiquidaciones() {
     } finally {
       setLoading(false);
     }
-  }, [period]);
+  }, [range]);
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
-  useEffect(() => { setPage(0); setAuditResult(null); setAuditOpen(false); }, [period]);
+  useEffect(() => {
+    setPage(0); setExpanded(null); setAuditResult(null); setAuditOpen(false);
+  }, [range.from, range.to, statusFilter, grouped]);
 
   const liquidaciones = useMemo(() => rows.map(toLiquidacion), [rows]);
 
@@ -175,8 +237,16 @@ export default function PageLiquidaciones() {
     return { total, liberado, pendiente, sinDocumento, count: liquidaciones.length };
   }, [liquidaciones]);
 
-  const totalPages = Math.max(1, Math.ceil(liquidaciones.length / PAGE_SIZE));
-  const pageRows = liquidaciones.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+  const filtered = useMemo(() => {
+    if (statusFilter === "all") return liquidaciones;
+    return liquidaciones.filter((l) => (statusFilter === "liberado" ? l.liberado : !l.liberado));
+  }, [liquidaciones, statusFilter]);
+
+  const groups = useMemo(() => (grouped ? groupByRelease(filtered) : []), [grouped, filtered]);
+  const displayCount = grouped ? groups.length : filtered.length;
+  const totalPages = Math.max(1, Math.ceil(displayCount / PAGE_SIZE));
+  const pageLiquidaciones = grouped ? [] : filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+  const pageGroups = grouped ? groups.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE) : [];
 
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
@@ -187,7 +257,7 @@ export default function PageLiquidaciones() {
     setAuditLoading(true);
     setAuditError(null);
     try {
-      const { from, to } = periodRange(period);
+      const { from, to } = range;
       const { data, error } = await supabase.functions.invoke("check-orphan-payments", {
         body: { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59` },
       });
@@ -204,27 +274,70 @@ export default function PageLiquidaciones() {
     }
   };
 
+  const channelBadges = (channels: string[]) => (
+    <div className="flex flex-col gap-1">
+      {channels.length > 0 ? channels.map((ch) => (
+        <span key={ch} className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${CHANNEL_COLOR[ch] || "bg-slate-100 text-slate-600"}`}>
+          {CHANNEL_LABEL[ch] ?? ch}
+        </span>
+      )) : <span className="text-slate-300">—</span>}
+    </div>
+  );
+  const docBadge = (ok: number, of: number) => of === 0 ? (
+    <span className="text-slate-300">—</span>
+  ) : ok === of ? (
+    <span className="text-xs px-2 py-0.5 rounded font-medium bg-green-100 text-green-700 w-fit">✓ {ok}/{of}</span>
+  ) : (
+    <span className="text-xs px-2 py-0.5 rounded font-medium bg-red-100 text-red-700 w-fit">{ok}/{of} · falta</span>
+  );
+  const stateBadge = (liberado: boolean, dateStr?: string | null) => (
+    <span className={`text-xs px-1.5 py-0.5 rounded font-medium w-fit ${liberado ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
+      {liberado ? "Liberado" : "Pendiente"}
+      {dateStr ? ` ${format(new Date(dateStr), "dd/MM", { locale: es })}` : ""}
+    </span>
+  );
+
   return (
     <div className="flex min-h-screen bg-slate-50">
       <Nav />
       <main className="flex-1 p-8 max-w-5xl">
 
-        <div className="flex items-center gap-3 mb-6">
-          <button onClick={() => changePeriod(-1)} className="p-1 hover:bg-slate-200 rounded">
-            <ChevronLeft className="h-5 w-5" />
-          </button>
-          <h1 className="text-xl font-semibold capitalize w-44 text-center">{periodLabel(period)}</h1>
-          <button onClick={() => changePeriod(1)} className="p-1 hover:bg-slate-200 rounded">
-            <ChevronRight className="h-5 w-5" />
-          </button>
-          <button onClick={fetchRows} disabled={loading}
-            className="ml-2 p-1 hover:bg-slate-200 rounded text-slate-400 disabled:opacity-40">
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          </button>
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            {rangeMode === "1M" ? (
+              <>
+                <button onClick={() => changePeriod(-1)} className="p-1 hover:bg-slate-200 rounded">
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
+                <h1 className="text-xl font-semibold capitalize w-44 text-center">{periodLabel(period)}</h1>
+                <button onClick={() => changePeriod(1)} className="p-1 hover:bg-slate-200 rounded">
+                  <ChevronRight className="h-5 w-5" />
+                </button>
+              </>
+            ) : (
+              <h1 className="text-xl font-semibold">{ROLLING_LABEL[rangeMode]}</h1>
+            )}
+            <button onClick={fetchRows} disabled={loading}
+              className="ml-1 p-1 hover:bg-slate-200 rounded text-slate-400 disabled:opacity-40">
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+            {RANGE_TABS.map((m) => (
+              <button key={m} onClick={() => setRangeMode(m)}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  rangeMode === m ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-700"
+                }`}>
+                {m}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* KPIs: lo que de verdad importa de una liquidación — cuánto, cuánto
-            ya está liberado, y si falta respaldo tributario. */}
+            ya está liberado, y si falta respaldo tributario. Siempre reflejan
+            todo el período, sin importar el filtro Pendientes/Liberadas. */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           <div className="bg-white rounded-xl border shadow-card p-4">
             <p className="text-xs text-slate-400 mb-1">Total liquidado</p>
@@ -250,13 +363,33 @@ export default function PageLiquidaciones() {
           </div>
         </div>
 
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          {([
+            ["all", "Todas"], ["pendiente", "Pendientes"], ["liberado", "Liberadas"],
+          ] as [StatusFilter, string][]).map(([val, label]) => (
+            <button key={val} onClick={() => setStatusFilter(val)}
+              className={`px-3 py-1 text-xs font-medium rounded-full border transition-colors ${
+                statusFilter === val
+                  ? "bg-slate-800 text-white border-slate-800"
+                  : "bg-white text-slate-500 border-slate-200 hover:border-slate-300"
+              }`}>
+              {label}
+            </button>
+          ))}
+          <label className="ml-auto flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
+            <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)}
+              className="rounded border-slate-300" />
+            Agrupar por fecha de liberación
+          </label>
+        </div>
+
         <div className="bg-white border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-slate-400 border-b">
-                <th className="px-4 py-2 font-medium">Fecha</th>
+                <th className="px-4 py-2 font-medium">{grouped ? "Fecha liberación" : "Fecha"}</th>
                 <th className="px-4 py-2 font-medium">Canal</th>
-                <th className="px-4 py-2 font-medium">Pago ID</th>
+                <th className="px-4 py-2 font-medium">{grouped ? "Liquidaciones" : "Pago ID"}</th>
                 <th className="px-4 py-2 font-medium text-right">Monto neto</th>
                 <th className="px-4 py-2 font-medium">Venta(s)</th>
                 <th className="px-4 py-2 font-medium">Documento</th>
@@ -269,12 +402,63 @@ export default function PageLiquidaciones() {
                 <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin inline" />
                 </td></tr>
-              ) : pageRows.length === 0 ? (
+              ) : displayCount === 0 ? (
                 <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                   Sin liquidaciones de MercadoPago en este período. Corre <b>Sync pagos</b> en{" "}
                   <a href="/pipeline" className="text-blue-500 underline">Sincronización</a> si esperabas ver datos acá.
                 </td></tr>
-              ) : pageRows.map((l) => {
+              ) : grouped ? pageGroups.map((g) => {
+                const isOpen = expanded === g.key;
+                return (
+                  <Fragment key={g.key}>
+                    <tr className="border-b last:border-0 hover:bg-slate-50 align-top cursor-pointer"
+                      onClick={() => setExpanded(isOpen ? null : g.key)}>
+                      <td className="px-4 py-2 text-slate-500">
+                        {g.releaseDate ? format(new Date(g.releaseDate), "dd/MM/yyyy") : "Sin fecha"}
+                      </td>
+                      <td className="px-4 py-2">{channelBadges(g.channels)}</td>
+                      <td className="px-4 py-2 text-slate-500">{g.count} pagos</td>
+                      <td className="px-4 py-2 text-right tabular-nums font-medium">{clp(g.net)}</td>
+                      <td className="px-4 py-2 text-slate-500">{g.ordersCount} órdenes</td>
+                      <td className="px-4 py-2">{docBadge(g.docsOk, g.ordersCount)}</td>
+                      <td className="px-4 py-2">{stateBadge(g.liberado)}</td>
+                      <td className="px-4 py-2 text-slate-400">
+                        {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                      </td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="border-b bg-slate-50">
+                        <td colSpan={8} className="px-4 py-3">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="text-left text-slate-400 border-b">
+                                <th className="py-1 font-medium">Pago ID</th>
+                                <th className="py-1 font-medium">Canal</th>
+                                <th className="py-1 font-medium">Venta(s)</th>
+                                <th className="py-1 font-medium text-right">Monto neto</th>
+                                <th className="py-1 font-medium">Documento</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {g.items.map((l) => (
+                                <tr key={l.key} className="border-b last:border-0">
+                                  <td className="py-1 font-mono text-slate-500">{l.externalPaymentId || "—"}</td>
+                                  <td className="py-1 text-slate-600">{l.channels.map((c) => CHANNEL_LABEL[c] ?? c).join(", ") || "—"}</td>
+                                  <td className="py-1 text-slate-700 truncate max-w-[220px]">
+                                    {l.orders.map((o) => o.title || o.orderId).join(", ") || "—"}
+                                  </td>
+                                  <td className="py-1 text-right tabular-nums">{clp(l.net)}</td>
+                                  <td className="py-1">{docBadge(l.docsOk, l.orders.length)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              }) : pageLiquidaciones.map((l) => {
                 const isOpen = expanded === l.key;
                 const multi = l.orders.length > 1;
                 return (
@@ -282,15 +466,7 @@ export default function PageLiquidaciones() {
                     <tr className="border-b last:border-0 hover:bg-slate-50 align-top cursor-pointer"
                       onClick={() => setExpanded(isOpen ? null : l.key)}>
                       <td className="px-4 py-2 text-slate-500">{l.paymentDate.slice(0, 10)}</td>
-                      <td className="px-4 py-2">
-                        <div className="flex flex-col gap-1">
-                          {l.channels.length > 0 ? l.channels.map((ch) => (
-                            <span key={ch} className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${CHANNEL_COLOR[ch] || "bg-slate-100 text-slate-600"}`}>
-                              {CHANNEL_LABEL[ch] ?? ch}
-                            </span>
-                          )) : <span className="text-slate-300">—</span>}
-                        </div>
-                      </td>
+                      <td className="px-4 py-2">{channelBadges(l.channels)}</td>
                       <td className="px-4 py-2 font-mono text-xs text-slate-500">{l.externalPaymentId || "—"}</td>
                       <td className="px-4 py-2 text-right tabular-nums font-medium">{clp(l.net)}</td>
                       <td className="px-4 py-2">
@@ -306,33 +482,14 @@ export default function PageLiquidaciones() {
                           <div className="text-[10px] text-slate-400 mt-1">{l.orders.length} órdenes en este pago</div>
                         )}
                       </td>
-                      <td className="px-4 py-2">
-                        {l.orders.length === 0 ? (
-                          <span className="text-slate-300">—</span>
-                        ) : l.docsOk === l.orders.length ? (
-                          <span className="text-xs px-2 py-0.5 rounded font-medium bg-green-100 text-green-700 w-fit">
-                            ✓ {l.docsOk}/{l.orders.length}
-                          </span>
-                        ) : (
-                          <span className="text-xs px-2 py-0.5 rounded font-medium bg-red-100 text-red-700 w-fit">
-                            {l.docsOk}/{l.orders.length} · falta
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-2">
-                        <span className={`text-xs px-1.5 py-0.5 rounded font-medium w-fit ${
-                          l.liberado ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-                        }`}>
-                          {l.liberado ? "Liberado" : "Pendiente"}
-                          {l.latestRelease ? ` ${format(new Date(l.latestRelease), "dd/MM", { locale: es })}` : ""}
-                        </span>
-                      </td>
+                      <td className="px-4 py-2">{docBadge(l.docsOk, l.orders.length)}</td>
+                      <td className="px-4 py-2">{stateBadge(l.liberado, l.latestRelease)}</td>
                       <td className="px-4 py-2 text-slate-400">
                         {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                       </td>
                     </tr>
                     {isOpen && (
-                      <tr key={l.key + ":detail"} className="border-b bg-slate-50">
+                      <tr className="border-b bg-slate-50">
                         <td colSpan={8} className="px-4 py-3">
                           <div className="grid grid-cols-3 gap-4 mb-3 text-xs">
                             <div><span className="text-slate-400">Bruto: </span><span className="tabular-nums">{clp(l.gross)}</span></div>
@@ -371,10 +528,10 @@ export default function PageLiquidaciones() {
           </table>
         </div>
 
-        {!loading && liquidaciones.length > PAGE_SIZE && (
+        {!loading && displayCount > PAGE_SIZE && (
           <div className="flex items-center justify-between mt-3">
             <p className="text-xs text-slate-400">
-              {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, liquidaciones.length)} de {liquidaciones.length}
+              {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, displayCount)} de {displayCount}
             </p>
             <div className="flex items-center gap-2">
               <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}
