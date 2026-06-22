@@ -387,7 +387,7 @@ export default function PageDashboard() {
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs text-slate-400">Sin confirmar</p>
+                    <p className="text-xs text-slate-400">Por cobrar</p>
                     <div className="h-7 w-7 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
                       <AlertCircle className="h-3.5 w-3.5" />
                     </div>
@@ -402,7 +402,7 @@ export default function PageDashboard() {
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs text-slate-400">Diferencia vs banco</p>
+                    <p className="text-xs text-slate-400">Diferencia</p>
                     <div className="h-7 w-7 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
                       <Scale className="h-3.5 w-3.5" />
                     </div>
