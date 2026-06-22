@@ -137,7 +137,7 @@ function MarketplaceBreakdown({ data }: { data: PeriodReconciliation }) {
             Breakdown por marketplace
           </p>
           <p className="text-[11px] text-slate-400 mt-0.5">
-            Lo que vendió cada canal en el período. Sólo se muestran cifras reales.
+            Lo que vendió, lo que cobró, lo que costó y lo que todavía no cuadra.
           </p>
         </div>
         <Link to="/config" className="text-[11px] text-primary hover:underline flex items-center gap-1">
@@ -150,8 +150,12 @@ function MarketplaceBreakdown({ data }: { data: PeriodReconciliation }) {
             <tr>
               <th className="text-left font-semibold px-3 py-2">Canal</th>
               <th className="text-right font-semibold px-3 py-2">Órdenes</th>
-              <th className="text-right font-semibold px-3 py-2">Ventas brutas</th>
-              <th className="text-right font-semibold px-3 py-2">% del total</th>
+              <th className="text-right font-semibold px-3 py-2">Ventas</th>
+              <th className="text-right font-semibold px-3 py-2">Comisiones</th>
+              <th className="text-right font-semibold px-3 py-2">Dev.</th>
+              <th className="text-right font-semibold px-3 py-2">Esperado</th>
+              <th className="text-right font-semibold px-3 py-2">Pagado</th>
+              <th className="text-right font-semibold px-3 py-2">Diferencia</th>
               <th className="text-right font-semibold px-3 py-2">Estado</th>
             </tr>
           </thead>
@@ -159,9 +163,20 @@ function MarketplaceBreakdown({ data }: { data: PeriodReconciliation }) {
             {MARKETPLACES.map(mp => {
               const row = byChannel.get(mp.id);
               const connected = !!row;
-              const pct = connected && data.ingresos.ventasBrutas > 0
-                ? Math.round((row!.monto / data.ingresos.ventasBrutas) * 100)
-                : 0;
+              const diff = connected ? row!.pagado - row!.esperado : 0;
+              const diffAbs = Math.abs(diff);
+              // Estado de conexión: OK si pagado ≈ esperado, Revisar si <5%, Crítico si >5%.
+              // Pendiente si todavía no hay órdenes confirmadas (pagado=0 con ventas>0).
+              let estado: { label: string; cls: string } = { label: 'OK', cls: 'text-emerald-600 bg-emerald-50' };
+              if (connected) {
+                if (row!.ordenesExactas === 0 && row!.ordenes > 0) {
+                  estado = { label: 'Pendiente', cls: 'text-slate-500 bg-slate-100' };
+                } else if (row!.esperado > 0 && diffAbs / row!.esperado > 0.05) {
+                  estado = { label: 'Crítico', cls: 'text-red-600 bg-red-50' };
+                } else if (diffAbs > 100) {
+                  estado = { label: 'Revisar', cls: 'text-amber-600 bg-amber-50' };
+                }
+              }
               return (
                 <tr key={mp.id} className="border-t border-slate-100">
                   <td className="px-3 py-2.5">
@@ -177,16 +192,32 @@ function MarketplaceBreakdown({ data }: { data: PeriodReconciliation }) {
                   <td className="px-3 py-2.5 text-right tabular-nums text-slate-600">
                     {connected ? row!.ordenes : <span className="text-slate-300">—</span>}
                   </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-800">
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-800 font-medium">
                     {connected ? CLP(row!.monto) : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums text-slate-500">
-                    {connected ? `${pct}%` : <span className="text-slate-300">—</span>}
+                    {connected ? CLP(row!.comisiones) : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-500">
+                    {connected ? (row!.devoluciones > 0 ? CLP(row!.devoluciones) : <span className="text-slate-300">$0</span>) : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-700 font-medium">
+                    {connected ? CLP(row!.esperado) : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-700">
+                    {connected ? CLP(row!.pagado) : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${
+                    !connected ? '' : diffAbs < 100 ? 'text-emerald-600' : diff < 0 ? 'text-red-600' : 'text-amber-600'
+                  }`}>
+                    {connected
+                      ? (diffAbs < 100 ? CLP(0) : `${diff >= 0 ? '+' : '−'}${CLP(diffAbs)}`)
+                      : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="px-3 py-2.5 text-right">
                     {connected ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
-                        <CheckCircle2 className="h-3 w-3" /> Conectado
+                      <span className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full ${estado.cls}`}>
+                        {estado.label}
                       </span>
                     ) : (
                       <Link
@@ -316,7 +347,7 @@ export default function PageDashboard() {
                   preguntas que el dashboard tiene que responder. Recibido y Por
                   Cobrar usan solo has_exact_data: pago confirmado por MercadoPago
                   o no, sin estimaciones mezcladas. */}
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-5 gap-3">
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
                     <p className="text-xs text-slate-400">Ventas brutas</p>
@@ -326,6 +357,18 @@ export default function PageDashboard() {
                   </div>
                   <p className="text-xl font-bold text-slate-900 tabular-nums">{CLP(data.ingresos.ventasBrutas)}</p>
                   <p className="text-xs text-slate-400 mt-1">{data.ingresos.porCanal.reduce((s, c) => s + c.ordenes, 0)} órdenes</p>
+                </div>
+                <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs text-slate-400">Neto conciliado</p>
+                    <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+                      <Scale className="h-3.5 w-3.5" />
+                    </div>
+                  </div>
+                  <p className="text-xl font-bold text-slate-900 tabular-nums" title="Ventas − comisiones − devoluciones (estimado de P&L)">
+                    {data.datosExactos.pct < 100 && "≈ "}{CLP(data.liquidoRecibido)}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">después de comisiones y devoluciones</p>
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
@@ -344,7 +387,7 @@ export default function PageDashboard() {
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs text-slate-400">Sin confirmar</p>
+                    <p className="text-xs text-slate-400">Por cobrar</p>
                     <div className="h-7 w-7 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
                       <AlertCircle className="h-3.5 w-3.5" />
                     </div>
@@ -359,7 +402,7 @@ export default function PageDashboard() {
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs text-slate-400">Diferencia vs banco</p>
+                    <p className="text-xs text-slate-400">Diferencia</p>
                     <div className="h-7 w-7 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
                       <Scale className="h-3.5 w-3.5" />
                     </div>

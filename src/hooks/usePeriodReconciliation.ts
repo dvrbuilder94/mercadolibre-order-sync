@@ -105,15 +105,28 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         // ── 4. Ingresos ───────────────────────────────────────────────────────
         const ventasBrutas = rows.reduce((s, r) => s + (r.gross_amount ?? 0), 0);
 
-        const porCanalMap = new Map<string, { ordenes: number; monto: number }>();
+        type CanalAgg = {
+          ordenes: number; monto: number; comisiones: number;
+          devoluciones: number; pagado: number; ordenesExactas: number;
+        };
+        const porCanalMap = new Map<string, CanalAgg>();
+        const orderIdToChannel = new Map<string, string>();
         for (const r of rows) {
           const ch = (r.channel as string) ?? 'desconocido';
-          const cur = porCanalMap.get(ch) ?? { ordenes: 0, monto: 0 };
-          porCanalMap.set(ch, { ordenes: cur.ordenes + 1, monto: cur.monto + (r.gross_amount ?? 0) });
+          orderIdToChannel.set(r.id, ch);
+          const cur = porCanalMap.get(ch) ?? {
+            ordenes: 0, monto: 0, comisiones: 0,
+            devoluciones: 0, pagado: 0, ordenesExactas: 0,
+          };
+          cur.ordenes += 1;
+          cur.monto += r.gross_amount ?? 0;
+          cur.comisiones += Math.abs(r.commission_amount ?? 0);
+          if (r.has_exact_data) {
+            cur.pagado += r.net_amount ?? 0;
+            cur.ordenesExactas += 1;
+          }
+          porCanalMap.set(ch, cur);
         }
-        const porCanal = Array.from(porCanalMap.entries()).map(([ch, v]) => ({
-          canalId: ch, nombre: channelLabel(ch), ordenes: v.ordenes, monto: v.monto,
-        }));
 
         const conDteCount = rows.filter(r => {
           const links = (r.order_tax_documents as any[]) ?? [];
@@ -176,12 +189,31 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         for (let i = 0; i < periodOrderIds.length; i += 300) {
           const { data: pd } = await supabase
             .from('meli_payment_details')
-            .select('net_received_amount, status')
+            .select('order_id, net_received_amount, status')
             .in('order_id', periodOrderIds.slice(i, i + 300))
             .in('status', ['refunded', 'charged_back']);
-          devolucionMonto += (pd ?? []).reduce(
-            (s: number, p: any) => s + Math.abs(p.net_received_amount ?? 0), 0);
+          for (const p of (pd ?? []) as any[]) {
+            const amt = Math.abs(p.net_received_amount ?? 0);
+            devolucionMonto += amt;
+            const ch = orderIdToChannel.get(p.order_id);
+            if (ch) {
+              const cur = porCanalMap.get(ch);
+              if (cur) cur.devoluciones += amt;
+            }
+          }
         }
+
+        const porCanal = Array.from(porCanalMap.entries()).map(([ch, v]) => ({
+          canalId: ch,
+          nombre: channelLabel(ch),
+          ordenes: v.ordenes,
+          monto: v.monto,
+          comisiones: v.comisiones,
+          devoluciones: v.devoluciones,
+          esperado: v.monto - v.comisiones - v.devoluciones,
+          pagado: v.pagado,
+          ordenesExactas: v.ordenesExactas,
+        }));
 
         // Cobertura tributaria de las devoluciones reales (órdenes 'returned'): una
         // devolución debería tener una NOTA DE CRÉDITO que la reverse ante el SII.

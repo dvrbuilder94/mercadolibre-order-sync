@@ -8,7 +8,17 @@ export interface PeriodReconciliation {
 
   ingresos: {
     ventasBrutas: number;
-    porCanal: { canalId: string; nombre: string; ordenes: number; monto: number }[];
+    porCanal: {
+      canalId: string;
+      nombre: string;
+      ordenes: number;
+      monto: number;          // ventas brutas
+      comisiones: number;     // comisión marketplace + pago
+      devoluciones: number;   // monto reembolsado / contracargado
+      esperado: number;       // ventas − comisiones − devoluciones (P&L estimado)
+      pagado: number;         // Σ net_amount confirmado por MercadoPago
+      ordenesExactas: number; // órdenes con has_exact_data=true
+    }[];
     conDte: Respaldo;        // % ventas con DTE emitido (match direccional MeLi→Bsale)
   };
 
