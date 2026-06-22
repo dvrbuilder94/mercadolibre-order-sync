@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Home, ShoppingBag, GitMerge, Activity, Settings, LogOut,
-  Sparkles, Wrench, Landmark,
+  Sparkles, Wrench, Landmark, FileText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -11,9 +11,10 @@ const ADV_KEY = "quadra.advancedMode";
 
 const primary = [
   { to: "/resumen",       label: "Resumen",       icon: Home },
-  { to: "/conciliacion",  label: "Conciliación",  icon: GitMerge },
-  { to: "/liquidaciones", label: "Liquidaciones", icon: Landmark },
   { to: "/ventas",        label: "Ventas",        icon: ShoppingBag },
+  { to: "/documentos",    label: "Documentos",    icon: FileText },
+  { to: "/liquidaciones", label: "Liquidaciones", icon: Landmark },
+  { to: "/conciliacion",  label: "Conciliación",  icon: GitMerge },
   { to: "/config",        label: "Conexiones",    icon: Settings },
 ];
 

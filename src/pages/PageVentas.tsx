@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
@@ -100,7 +101,11 @@ const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 export default function PageVentas() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
-  const [tab, setTab] = useState<Tab>("ordenes");
+  const { pathname } = useLocation();
+  const [tab, setTab] = useState<Tab>(pathname.startsWith("/documentos") ? "docs" : "ordenes");
+  useEffect(() => {
+    setTab(pathname.startsWith("/documentos") ? "docs" : "ordenes");
+  }, [pathname]);
   const [channelFilter, setChannelFilter] = useState<string>("todos");
 
   // Orders tab
