@@ -20,23 +20,12 @@ const periodRange = (p: string) => {
     to:   format(new Date(y, m, 0),     "yyyy-MM-dd"),
   };
 };
-const rollingRange = (daysBack: number) => {
-  const to = new Date();
-  const from = new Date();
-  from.setDate(from.getDate() - daysBack);
-  return { from: format(from, "yyyy-MM-dd"), to: format(to, "yyyy-MM-dd") };
-};
 const clp = (n: number | null | undefined) =>
   new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 })
     .format(n || 0);
 
 const PAGE_SIZE = 50;
 
-type RangeMode = "1D" | "1W" | "1M" | "3M";
-const RANGE_TABS: RangeMode[] = ["1D", "1W", "1M", "3M"];
-const ROLLING_LABEL: Record<RangeMode, string> = {
-  "1D": "Hoy", "1W": "Últimos 7 días", "1M": "", "3M": "Últimos 3 meses",
-};
 type StatusFilter = "all" | "pendiente" | "liberado";
 
 // Fila cruda: un pago real de MercadoPago (payments) con las órdenes que
@@ -155,10 +144,9 @@ interface OrphanResult {
 
 export default function PageLiquidaciones() {
   const navigate = useNavigate();
-  const [rangeMode, setRangeMode] = useState<RangeMode>("1M");
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [grouped, setGrouped] = useState(false);
+  const [grouped, setGrouped] = useState(true);
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<PaymentRow[]>([]);
   const [page, setPage] = useState(0);
@@ -169,12 +157,7 @@ export default function PageLiquidaciones() {
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditResult, setAuditResult] = useState<OrphanResult | null>(null);
 
-  const range = useMemo(() => {
-    if (rangeMode === "1M") return periodRange(period);
-    if (rangeMode === "1D") return rollingRange(0);
-    if (rangeMode === "1W") return rollingRange(6);
-    return rollingRange(89);
-  }, [rangeMode, period]);
+  const range = useMemo(() => periodRange(period), [period]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -304,34 +287,17 @@ export default function PageLiquidaciones() {
 
         <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
           <div className="flex items-center gap-3">
-            {rangeMode === "1M" ? (
-              <>
-                <button onClick={() => changePeriod(-1)} className="p-1 hover:bg-slate-200 rounded">
-                  <ChevronLeft className="h-5 w-5" />
-                </button>
-                <h1 className="text-xl font-semibold capitalize w-44 text-center">{periodLabel(period)}</h1>
-                <button onClick={() => changePeriod(1)} className="p-1 hover:bg-slate-200 rounded">
-                  <ChevronRight className="h-5 w-5" />
-                </button>
-              </>
-            ) : (
-              <h1 className="text-xl font-semibold">{ROLLING_LABEL[rangeMode]}</h1>
-            )}
+            <button onClick={() => changePeriod(-1)} className="p-1 hover:bg-slate-200 rounded">
+              <ChevronLeft className="h-5 w-5" />
+            </button>
+            <h1 className="text-xl font-semibold capitalize w-44 text-center">{periodLabel(period)}</h1>
+            <button onClick={() => changePeriod(1)} className="p-1 hover:bg-slate-200 rounded">
+              <ChevronRight className="h-5 w-5" />
+            </button>
             <button onClick={fetchRows} disabled={loading}
               className="ml-1 p-1 hover:bg-slate-200 rounded text-slate-400 disabled:opacity-40">
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
-          </div>
-
-          <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
-            {RANGE_TABS.map((m) => (
-              <button key={m} onClick={() => setRangeMode(m)}
-                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                  rangeMode === m ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-700"
-                }`}>
-                {m}
-              </button>
-            ))}
           </div>
         </div>
 
