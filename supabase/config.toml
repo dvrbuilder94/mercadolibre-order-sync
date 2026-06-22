@@ -63,6 +63,12 @@ verify_jwt = false
 [functions.cron-pipeline-sync]
 verify_jwt = false
 
+[functions.connect-shopify]
+verify_jwt = false
+
+[functions.sync-shopify-orders]
+verify_jwt = true
+
 [functions.ai-chat]
 verify_jwt = true
 

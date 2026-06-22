@@ -15,7 +15,13 @@ export default function ConfigNew() {
   const [loading, setLoading] = useState(true);
   const [meli, setMeli] = useState<Connection | null>(null);
   const [bsale, setBsale] = useState<Connection | null>(null);
+  const [shopify, setShopify] = useState<Connection | null>(null);
   const [connectingMeli, setConnectingMeli] = useState(false);
+  const [showShopifyForm, setShowShopifyForm] = useState(false);
+  const [shopifyDomain, setShopifyDomain] = useState("");
+  const [shopifyToken, setShopifyToken] = useState("");
+  const [connectingShopify, setConnectingShopify] = useState(false);
+  const [shopifyError, setShopifyError] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -64,6 +70,22 @@ export default function ConfigNew() {
       } else {
         setBsale({ name: "Bsale", connected: false, detail: "No conectado" });
       }
+
+      const { data: shopifyData } = await supabase
+        .from("shopify_accounts")
+        .select("shop_domain, status, updated_at")
+        .eq("status", "connected")
+        .maybeSingle();
+
+      if (shopifyData) {
+        setShopify({
+          name: "Shopify",
+          connected: true,
+          detail: `${shopifyData.shop_domain} · última sync ${shopifyData.updated_at?.slice(0, 10) || "—"}`,
+        });
+      } else {
+        setShopify({ name: "Shopify", connected: false, detail: "No conectado" });
+      }
     } finally {
       setLoading(false);
     }
@@ -87,6 +109,31 @@ export default function ConfigNew() {
       window.location.href = data.url || data.auth_url;
     } catch (e) {
       alert("Error al obtener URL de Bsale");
+    }
+  };
+
+  const connectShopify = async () => {
+    setShopifyError(null);
+    if (!shopifyDomain.trim() || !shopifyToken.trim()) {
+      setShopifyError("Completa el shop domain y el access token");
+      return;
+    }
+    setConnectingShopify(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("connect-shopify", {
+        body: { shop_domain: shopifyDomain.trim(), access_token: shopifyToken.trim() },
+      });
+      if (error || !data?.success) {
+        setShopifyError(data?.error || "Error al conectar con Shopify");
+        return;
+      }
+      setShopifyToken("");
+      setShowShopifyForm(false);
+      await fetchConnections();
+    } catch (e) {
+      setShopifyError("Error al conectar con Shopify");
+    } finally {
+      setConnectingShopify(false);
     }
   };
 
@@ -145,6 +192,66 @@ export default function ConfigNew() {
                 <ExternalLink className="h-3.5 w-3.5" />
                 {bsale?.connected ? "Reconectar" : "Conectar"}
               </button>
+            </div>
+
+            {/* Shopify */}
+            <div className="bg-white border rounded-lg p-5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {shopify?.connected
+                    ? <CheckCircle2 className="h-5 w-5 text-green-500" />
+                    : <XCircle className="h-5 w-5 text-red-400" />}
+                  <div>
+                    <p className="font-medium">Shopify</p>
+                    <p className="text-sm text-slate-400">{shopify?.detail}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowShopifyForm((v) => !v)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-md hover:bg-slate-50 transition-colors"
+                >
+                  {shopify?.connected ? "Reconectar" : "Conectar"}
+                </button>
+              </div>
+
+              {showShopifyForm && (
+                <div className="mt-4 pt-4 border-t space-y-3">
+                  <p className="text-xs text-slate-400">
+                    Crea una app personalizada en tu admin de Shopify (Settings → Apps → Develop apps),
+                    dale el scope <code className="bg-slate-100 px-1 rounded">read_orders</code> e instálala
+                    para obtener el Admin API access token.
+                  </p>
+                  <div>
+                    <label className="text-sm text-slate-600">Shop domain</label>
+                    <input
+                      type="text"
+                      value={shopifyDomain}
+                      onChange={(e) => setShopifyDomain(e.target.value)}
+                      placeholder="mitienda.myshopify.com"
+                      className="mt-1 w-full border rounded-md px-3 py-1.5 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-slate-600">Admin API access token</label>
+                    <input
+                      type="password"
+                      value={shopifyToken}
+                      onChange={(e) => setShopifyToken(e.target.value)}
+                      placeholder="shpat_..."
+                      className="mt-1 w-full border rounded-md px-3 py-1.5 text-sm"
+                    />
+                  </div>
+                  {shopifyError && <p className="text-sm text-red-500">{shopifyError}</p>}
+                  <button
+                    onClick={connectShopify}
+                    disabled={connectingShopify}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-900 text-white rounded-md hover:bg-slate-700 disabled:opacity-50 transition-colors"
+                  >
+                    {connectingShopify && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    Guardar y validar
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
