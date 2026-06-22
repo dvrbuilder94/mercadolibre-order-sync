@@ -606,28 +606,7 @@ export default function PageVentas() {
                 </div>
               </div>
             )}
-          </>
-        )}
-
-        {/* ── DOCUMENTOS BSALE TAB ────────────────────────────────────────── */}
-        {tab === "docs" && (
-          <>
-            <div className="flex items-center justify-between mb-4">
-              <div className="grid grid-cols-4 gap-3 flex-1 mr-4">
-                {[
-                  { label: "Documentos",       value: docsLoading ? "—" : docsTotal,                                             sub: "en el período" },
-                  { label: "Total facturado",  value: docsLoading || docsSum === null ? "—" : CLP(docsSum),                     sub: "documentos emitidos" },
-                  { label: "Vinculados MeLi",  value: docsLoading ? "—" : docsMeliCount,                                        sub: "con orden ML", color: "text-emerald-600" },
-                  { label: "Otros canales",    value: docsLoading ? "—" : Math.max(docsTotal - docsMeliCount, 0),               sub: "tienda física / web", color: "text-slate-700" },
-                ].map(({ label, value, sub, color }) => (
-                  <div key={label} className="bg-white border rounded-lg p-3">
-                    <p className="text-xs text-slate-400 mb-0.5">{label}</p>
-                    <p className={`text-xl font-bold ${color || "text-slate-800"}`}>{value}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{sub}</p>
-                  </div>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
+        </>
                 {docSyncMsg && <span className={`text-xs ${docSyncMsg.includes("❌") ? "text-red-500" : "text-green-600"}`}>{docSyncMsg}</span>}
                 <button onClick={syncDocs} disabled={docSyncing || docsLoading}
                   className="flex items-center gap-2 px-3 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white font-medium rounded-lg text-sm">
