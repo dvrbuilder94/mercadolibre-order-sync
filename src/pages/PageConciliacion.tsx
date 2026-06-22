@@ -81,12 +81,32 @@ interface DocLinkRow {
   orders: {
     id: string; order_id: string; order_date: string; channel: string | null;
     product_title: string | null; gross_amount: number | null; amount: number;
+    net_amount: number | null; money_release_date: string | null; has_exact_data: boolean | null;
   } | null;
   tax_documents: Doc | null;
 }
 
+// Referencia al pago real de MercadoPago detrás de una venta — viene del
+// ledger payments/payment_sales, que hoy se escribe pero no se mostraba en
+// ningún lado. Solo se usa para trazabilidad (el ID real); el monto y el
+// estado liberado/pendiente siguen viniendo de los campos de la orden, que
+// ya son la cifra correcta por venta (sumar allocated_amount entre órdenes
+// de un mismo pago compartido duplicaría el monto).
+interface PaymentRef { external_payment_id: string | null }
+
 const firstDoc = (l: Link): Doc | null =>
   Array.isArray(l.tax_documents) ? (l.tax_documents[0] || null) : l.tax_documents;
+
+// Etiqueta corta con el/los ID real(es) de pago MercadoPago detrás de una o
+// más órdenes — la trazabilidad que vivía solo en payments/payment_sales y
+// nunca llegaba a pantalla.
+const paymentLabel = (orderIds: string[], payMap: Map<string, { external_payment_id: string | null }[]>) => {
+  const ids = Array.from(new Set(
+    orderIds.flatMap((id) => (payMap.get(id) || []).map((r) => r.external_payment_id).filter(Boolean) as string[])
+  ));
+  if (ids.length === 0) return null;
+  return ids.length === 1 ? `MP ${ids[0]}` : `MP ${ids[0]} +${ids.length - 1}`;
+};
 
 type Filter = "attention" | "candidates" | "nodoc" | "delta" | "lowscore" | "clean" | "all";
 type NodocReason = "pending_sync" | "no_candidate" | null;
@@ -134,6 +154,9 @@ interface DocOrderRef {
   product_title: string | null;
   amount: number;      // venta usada para el Δ (allocated_amount si viene, si no gross)
   inPeriod: boolean;
+  net_amount: number | null;
+  money_release_date: string | null;
+  has_exact_data: boolean | null;
 }
 
 // Unidad de conciliación: o un DOCUMENTO (con las N órdenes que cubre), o una
@@ -150,6 +173,12 @@ type DocUnit = {
   matchScore: number | null;
   reason: "delta" | "lowscore" | null;
   outOfPeriodCount: number;
+  pago: {
+    exactCount: number;       // cuántas de sus órdenes tienen pago MP confirmado
+    netSum: number;           // Σ net_amount de esas órdenes
+    status: "sin_datos" | "pendiente" | "liberado";
+    latestRelease: string | null;
+  };
 };
 type NodocUnit = {
   kind: "nodoc";
@@ -180,6 +209,7 @@ export default function PageConciliacion() {
   const [candidates, setCandidates] = useState<CandidateRow[]>([]);
   const [candLoading, setCandLoading] = useState(true);
   const [actingKey, setActingKey] = useState<string | null>(null);
+  const [paymentRefs, setPaymentRefs] = useState<Map<string, PaymentRef[]>>(new Map());
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) navigate("/auth");
@@ -251,7 +281,8 @@ export default function PageConciliacion() {
             .from("order_tax_documents")
             .select(`
               tax_document_id, allocated_amount, match_source, match_score,
-              orders ( id, order_id, order_date, channel, product_title, gross_amount, amount ),
+              orders ( id, order_id, order_date, channel, product_title, gross_amount, amount,
+                       net_amount, money_release_date, has_exact_data ),
               tax_documents ( id, document_number, document_type, total_amount, external_url )
             `)
             .in("tax_document_id", chunk)
@@ -265,6 +296,32 @@ export default function PageConciliacion() {
         }
       }
       setDocLinks(links);
+
+      // 3) Ledger real de MercadoPago (payments/payment_sales) para las
+      //    órdenes en pantalla — hoy se escribe en sync-meli-payment-details
+      //    pero ningún frontend lo consulta. Solo se usa el ID real del pago
+      //    como trazabilidad junto al monto/estado que ya viven en orders.
+      const orderIds = Array.from(new Set([
+        ...acc.map((o) => o.id),
+        ...links.map((l) => l.orders?.id).filter(Boolean) as string[],
+      ]));
+      const payMap = new Map<string, PaymentRef[]>();
+      for (let i = 0; i < orderIds.length; i += 200) {
+        const chunk = orderIds.slice(i, i + 200);
+        const { data, error } = await supabase
+          .from("payment_sales")
+          .select("sale_id, payments ( external_payment_id )")
+          .in("sale_id", chunk);
+        if (error) throw error;
+        for (const r of (data || []) as any[]) {
+          const ref = Array.isArray(r.payments) ? r.payments[0] : r.payments;
+          if (!ref) continue;
+          const arr = payMap.get(r.sale_id) || [];
+          arr.push({ external_payment_id: ref.external_payment_id });
+          payMap.set(r.sale_id, arr);
+        }
+      }
+      setPaymentRefs(payMap);
     } catch (e) {
       console.error("Error cargando conciliación:", e);
       setRows([]);
@@ -440,6 +497,7 @@ export default function PageConciliacion() {
         id: ord.id, order_id: ord.order_id, order_date: ord.order_date, channel: ord.channel,
         product_title: ord.product_title, amount: venta,
         inPeriod: periodOrderIds.has(ord.id),
+        net_amount: ord.net_amount, money_release_date: ord.money_release_date, has_exact_data: ord.has_exact_data,
       });
       cur.sum += venta;
       if (cur.source == null) cur.source = l.match_source;
@@ -447,11 +505,20 @@ export default function PageConciliacion() {
       m.set(doc.id, cur);
     }
     const out: DocUnit[] = [];
+    const today = new Date();
     for (const [id, v] of m) {
       const delta = Math.round((v.sum - (v.doc.total_amount || 0)) * 100) / 100;
       let reason: "delta" | "lowscore" | null = null;
       if (Math.abs(delta) > 5) reason = "delta";
       else if (!HARD_SOURCES.has(v.source || "") && v.minScore != null && v.minScore < SCORE_OK) reason = "lowscore";
+
+      const withPayment = v.orders.filter((o) => o.has_exact_data);
+      const netSum = withPayment.reduce((s, o) => s + (o.net_amount || 0), 0);
+      const latestRelease = withPayment.reduce<string | null>((latest, o) =>
+        o.money_release_date && (!latest || new Date(o.money_release_date) > new Date(latest))
+          ? o.money_release_date : latest, null);
+      const anyPending = withPayment.some((o) => o.money_release_date && new Date(o.money_release_date) > today);
+
       out.push({
         kind: "doc", key: "doc:" + id, doc: v.doc,
         orders: v.orders.sort((a, b) => b.amount - a.amount),
@@ -459,6 +526,11 @@ export default function PageConciliacion() {
         ordersSum: v.sum, delta,
         matchSource: v.source, matchScore: v.minScore, reason,
         outOfPeriodCount: v.orders.filter((o) => !o.inPeriod).length,
+        pago: {
+          exactCount: withPayment.length, netSum,
+          status: withPayment.length === 0 ? "sin_datos" : anyPending ? "pendiente" : "liberado",
+          latestRelease,
+        },
       });
     }
     return out;
@@ -726,7 +798,7 @@ export default function PageConciliacion() {
                 <th className="px-4 py-2 font-medium text-right">Monto doc</th>
                 <th className="px-4 py-2 font-medium">Match</th>
                 <th className="px-4 py-2 font-medium text-right">Δ (ventas − doc)</th>
-                <th className="px-4 py-2 font-medium">Pago</th>
+                <th className="px-4 py-2 font-medium" title="Liquidación real de MercadoPago: monto neto depositado y el ID del pago, no una estimación">Liquidación</th>
               </tr>
             </thead>
             <tbody>
@@ -793,6 +865,12 @@ export default function PageConciliacion() {
                                 }`}>
                                   {liberado ? "Liberado" : "Pendiente"} {format(new Date(o.money_release_date), "dd/MM", { locale: es })}
                                 </span>
+                              );
+                            })()}
+                            {(() => {
+                              const label = paymentLabel([o.id], paymentRefs);
+                              return label && (
+                                <span className="text-[10px] text-slate-400 font-mono">{label}</span>
                               );
                             })()}
                           </div>
@@ -875,7 +953,28 @@ export default function PageConciliacion() {
                         </div>
                       )}
                     </td>
-                    <td className="px-4 py-2 text-slate-300">—</td>
+                    <td className="px-4 py-2">
+                      {u.pago.exactCount === 0 ? (
+                        <span className="text-slate-300">—</span>
+                      ) : (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="tabular-nums text-slate-700">{clp(u.pago.netSum)}</span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium w-fit ${
+                            u.pago.status === "liberado" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                          }`}>
+                            {u.pago.status === "liberado" ? "Liberado" : "Pendiente"}
+                            {u.pago.latestRelease ? ` ${format(new Date(u.pago.latestRelease), "dd/MM", { locale: es })}` : ""}
+                            {u.pago.exactCount < u.orders.length ? ` · ${u.pago.exactCount}/${u.orders.length}` : ""}
+                          </span>
+                          {(() => {
+                            const label = paymentLabel(u.orders.map((o) => o.id), paymentRefs);
+                            return label && (
+                              <span className="text-[10px] text-slate-400 font-mono">{label}</span>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
