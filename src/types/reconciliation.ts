@@ -19,9 +19,11 @@ export interface PeriodReconciliation {
     reembolsos:          { monto: number; conNotaCredito: { con: number; total: number } };
   };
 
-  liquidoRecibido: number;   // ventasBrutas − suma(egresos)
+  liquidoRecibido: number;   // ventasBrutas − suma(egresos), estimado de P&L (puede ser ≈)
+  recibidoReal: number;      // Σ net_amount de órdenes con has_exact_data=true (pago confirmado por MercadoPago)
+  porCobrar: number;         // Σ gross_amount de órdenes con has_exact_data=false (sin confirmación de pago aún)
   abonosBanco: number;       // suma de bank_movements del período
-  diferencia: number;        // liquidoRecibido − abonosBanco (objetivo: 0)
+  diferencia: number;        // recibidoReal − abonosBanco (objetivo: 0) — compara solo cifras confirmadas
 
   // Cobertura de datos EXACTOS (traídos del payment provider, no aproximados).
   // pct alto = la mayoría de los montos arriba son reales, no estimaciones.

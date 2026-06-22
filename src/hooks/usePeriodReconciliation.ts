@@ -176,8 +176,22 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         // TODO: facturas de comisión de MeLi no disponibles en tax_documents aún
         const comisionConFactura = { pct: 0, faltan: 0 };
 
-        // ── 7. Líquido ────────────────────────────────────────────────────────
+        // ── 7. Líquido (estimado, P&L) ───────────────────────────────────────
+        // liquidoRecibido es un cálculo de estado de resultados (ventas − egresos
+        // estimados), NO plata confirmada. Se mantiene para el waterfall, pero el
+        // KPI "Recibido" de arriba usa recibidoReal (ver abajo), que es la única
+        // cifra basada 100% en pagos confirmados por MercadoPago.
         const liquidoRecibido = ventasBrutas - comisionMonto - envioCosto - comisionPagoMonto - devolucionMonto;
+
+        // ── 7b. Recibido real vs. por cobrar ─────────────────────────────────
+        // Partición exacta de las órdenes del período según el único campo en
+        // el que confiamos: has_exact_data. true = sync-meli-payment-details ya
+        // trajo el pago real aprobado de MercadoPago (net_amount es real).
+        // false = todavía no hay confirmación de pago, sea por estar pendiente
+        // o por no haberse sincronizado — su monto bruto cuenta como "por cobrar"
+        // en vez de inventar un neto estimado.
+        const recibidoReal = rows.reduce((s, r) => s + (r.has_exact_data ? (r.net_amount ?? 0) : 0), 0);
+        const porCobrar     = rows.reduce((s, r) => s + (!r.has_exact_data ? (r.gross_amount ?? 0) : 0), 0);
 
         // ── 8. Abonos banco ───────────────────────────────────────────────────
         let bankQuery = supabase
@@ -188,7 +202,10 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         if (canalId !== 'todos') bankQuery = (bankQuery as any).eq('source_channel', canalId);
         const { data: bankRows } = await bankQuery;
         const abonosBanco = (bankRows ?? []).reduce((s: number, r: any) => s + (r.amount ?? 0), 0);
-        const diferencia  = liquidoRecibido - abonosBanco;
+        // Comparamos dos cifras reales (MP confirmado vs. banco confirmado), no
+        // el estimado de P&L — así la diferencia refleja un problema real y no
+        // ruido de órdenes sin sincronizar.
+        const diferencia  = recibidoReal - abonosBanco;
 
         // ── 9. Excepciones ────────────────────────────────────────────────────
         const hoy = new Date();
@@ -244,7 +261,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               comisionPago:        { monto: comisionPagoMonto },
               reembolsos:          { monto: devolucionMonto, conNotaCredito: { con: devConNC, total: devTotal } },
             },
-            liquidoRecibido, abonosBanco, diferencia, datosExactos, excepciones,
+            liquidoRecibido, recibidoReal, porCobrar, abonosBanco, diferencia, datosExactos, excepciones,
             cierre: { estado: estadoCierre, bloqueadores, puedeCerrar: bloqueadores === 0 },
           });
           setLoading(false);

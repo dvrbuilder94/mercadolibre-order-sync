@@ -312,8 +312,11 @@ export default function PageDashboard() {
 
           {!loading && !error && data && (
             <>
-              {/* KPI row */}
-              <div className="grid grid-cols-3 gap-3">
+              {/* KPI row — Vendí / Me pagaron / Falta por cobrar / Diferencia, las 4
+                  preguntas que el dashboard tiene que responder. Recibido y Por
+                  Cobrar usan solo has_exact_data: pago confirmado por MercadoPago
+                  o no, sin estimaciones mezcladas. */}
+              <div className="grid grid-cols-4 gap-3">
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
                     <p className="text-xs text-slate-400">Ventas brutas</p>
@@ -321,25 +324,32 @@ export default function PageDashboard() {
                       <TrendingUp className="h-3.5 w-3.5" />
                     </div>
                   </div>
-                  <p className="text-2xl font-bold text-slate-900 tabular-nums">{CLP(data.ingresos.ventasBrutas)}</p>
+                  <p className="text-xl font-bold text-slate-900 tabular-nums">{CLP(data.ingresos.ventasBrutas)}</p>
                   <p className="text-xs text-slate-400 mt-1">{data.ingresos.porCanal.reduce((s, c) => s + c.ordenes, 0)} órdenes</p>
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs text-slate-400">Líquido a recibir</p>
+                    <p className="text-xs text-slate-400">Recibido</p>
                     <div className="h-7 w-7 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
                       <Wallet className="h-3.5 w-3.5" />
                     </div>
                   </div>
-                  <p
-                    className="text-2xl font-bold text-slate-900 tabular-nums"
-                    title={data.datosExactos.pct < 100 ? "Incluye órdenes con comisión estimada (sin sincronizar con MercadoPago)" : undefined}
-                  >
-                    {data.datosExactos.pct < 100 && <span className="text-slate-400 mr-1">≈</span>}{CLP(data.liquidoRecibido)}
+                  <p className="text-xl font-bold text-slate-900 tabular-nums" title="Confirmado por MercadoPago — pagos aprobados con monto neto real">
+                    {CLP(data.recibidoReal)}
                   </p>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {ventasBrutas > 0 ? `${Math.round((data.liquidoRecibido / ventasBrutas) * 100)}% del bruto` : "—"}
+                  <p className="text-xs text-slate-400 mt-1">{data.datosExactos.pct}% de las órdenes confirmadas</p>
+                </div>
+                <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs text-slate-400">Por cobrar</p>
+                    <div className="h-7 w-7 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
+                      <AlertCircle className="h-3.5 w-3.5" />
+                    </div>
+                  </div>
+                  <p className="text-xl font-bold text-slate-900 tabular-nums" title="Ventas sin confirmación de pago de MercadoPago todavía">
+                    {CLP(data.porCobrar)}
                   </p>
+                  <p className="text-xs text-slate-400 mt-1">{data.datosExactos.total - data.datosExactos.ordenes} órdenes sin confirmar</p>
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
@@ -350,12 +360,15 @@ export default function PageDashboard() {
                   </div>
                   {data.abonosBanco === 0 ? (
                     <>
-                      <p className="text-2xl font-bold tabular-nums text-slate-300">—</p>
+                      <p className="text-xl font-bold tabular-nums text-slate-300">—</p>
                       <p className="text-xs text-slate-400 mt-1">banco no conectado</p>
                     </>
                   ) : (
                     <>
-                      <p className={`text-2xl font-bold tabular-nums ${Math.abs(data.diferencia) < 100 ? "text-emerald-600" : "text-amber-600"}`}>
+                      <p
+                        className={`text-xl font-bold tabular-nums ${Math.abs(data.diferencia) < 100 ? "text-emerald-600" : "text-amber-600"}`}
+                        title="MercadoPago confirmado vs. abonos de banco — solo cifras reales"
+                      >
                         {data.diferencia >= 0 ? "+" : ""}{CLP(data.diferencia)}
                       </p>
                       <p className="text-xs text-slate-400 mt-1">vs {CLP(data.abonosBanco)} banco</p>
