@@ -394,11 +394,11 @@ export default function PageDashboard() {
                   </div>
                   <p
                     className="text-xl font-bold text-slate-900 tabular-nums"
-                    title="MercadoLibre puede haberte pagado esto ya — todavía no sincronizamos el dato real de MercadoPago para confirmarlo"
+                    title="MercadoLibre puede haberte pagado esto ya — el sistema todavía no trajo el dato real de MercadoPago para confirmarlo"
                   >
                     {CLP(data.porCobrar)}
                   </p>
-                  <p className="text-xs text-slate-400 mt-1">{data.datosExactos.total - data.datosExactos.ordenes} órdenes sin sincronizar</p>
+                  <p className="text-xs text-slate-400 mt-1">{data.datosExactos.total - data.datosExactos.ordenes} órdenes con pago aún sin confirmar</p>
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
@@ -410,17 +410,19 @@ export default function PageDashboard() {
                   {data.abonosBanco === 0 ? (
                     <>
                       <p className="text-xl font-bold tabular-nums text-slate-300">—</p>
-                      <p className="text-xs text-slate-400 mt-1">banco no conectado</p>
+                      <p className="text-xs text-slate-400 mt-1" title="MercadoPago no es tu cuenta bancaria: es donde el dinero llega primero. Esta comparación es contra tu cuenta bancaria real, todavía sin conectar.">
+                        cuenta bancaria sin conectar
+                      </p>
                     </>
                   ) : (
                     <>
                       <p
                         className={`text-xl font-bold tabular-nums ${Math.abs(data.diferencia) < 100 ? "text-emerald-600" : "text-amber-600"}`}
-                        title="MercadoPago confirmado vs. abonos de banco — solo cifras reales"
+                        title="MercadoPago confirmado vs. lo que efectivamente entró a tu cuenta bancaria real (no es el saldo de MercadoPago)"
                       >
                         {data.diferencia >= 0 ? "+" : ""}{CLP(data.diferencia)}
                       </p>
-                      <p className="text-xs text-slate-400 mt-1">vs {CLP(data.abonosBanco)} banco</p>
+                      <p className="text-xs text-slate-400 mt-1">vs {CLP(data.abonosBanco)} cuenta bancaria</p>
                     </>
                   )}
                 </div>
@@ -483,7 +485,7 @@ export default function PageDashboard() {
                         approx={data.datosExactos.pct < 100} />
                       <WaterfallRow label="Costos de envío" amount={data.egresos.costosEnvio.monto} total={ventasBrutas} variant="expense" indent />
                       <WaterfallRow label="Comisión de pago" amount={data.egresos.comisionPago.monto} total={ventasBrutas} variant="expense" indent
-                        annotation={data.egresos.comisionPago.monto === 0 ? "pendiente sincronización" : undefined} />
+                        annotation={data.egresos.comisionPago.monto === 0 ? "MercadoPago aún no confirmó el pago" : undefined} />
                       <WaterfallRow label="Devoluciones confirmadas"
                         amount={data.egresos.reembolsos.monto} total={ventasBrutas} variant="expense" indent
                         annotation={data.egresos.reembolsos.conNotaCredito.total > 0
@@ -495,10 +497,10 @@ export default function PageDashboard() {
                         approx={data.datosExactos.pct < 100} />
 
                       <div className="border-t border-dashed border-slate-100 my-2" />
-                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Banco</p>
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Cuenta bancaria</p>
                       {data.abonosBanco === 0 ? (
                         <p className="text-xs text-slate-300 italic py-1.5">
-                          Sin movimientos de banco — conéctalo en Configuración para ver la diferencia real.
+                          Sin movimientos de tu cuenta bancaria real todavía — MercadoPago es solo el primer destino del dinero, no tu banco. Esta conexión está pendiente.
                         </p>
                       ) : (
                         <>

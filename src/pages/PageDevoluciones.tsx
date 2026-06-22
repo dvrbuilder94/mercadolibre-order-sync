@@ -134,8 +134,10 @@ export default function PageDevoluciones() {
     for (const c of rows) {
       if (c.status === "opened") opened++;
       if (c.status === "closed") closed++;
+      // "Confirmado" excluye in_mediation a propósito: una mediación todavía está
+      // en disputa, no es una pérdida confirmada (mismo criterio que usa Resumen).
       const r = c.order_id ? refunds.get(c.order_id) : null;
-      if (r) { refundedAmount += r.net_received_amount || 0; refundedCount++; }
+      if (r && r.status !== "in_mediation") { refundedAmount += r.net_received_amount || 0; refundedCount++; }
     }
     return { total: rows.length, opened, closed, refundedAmount, refundedCount };
   }, [rows, refunds]);
@@ -245,11 +247,13 @@ export default function PageDevoluciones() {
             <p className="text-xs text-slate-400 mt-1">proceso finalizado</p>
           </div>
           <div className="bg-white rounded-xl border shadow-card p-4">
-            <p className="text-xs text-slate-400 mb-1">Plata devuelta (real MP)</p>
+            <p className="text-xs text-slate-400 mb-1" title="Mismo monto que 'Devoluciones confirmadas' en Resumen — reembolsos y contracargos que MercadoPago ya confirmó.">
+              Devoluciones confirmadas
+            </p>
             <p className="text-xl font-bold text-red-600 tabular-nums">{clp(kpis.refundedAmount)}</p>
             <p className="text-xs text-slate-400 mt-1">
               {kpis.refundedCount > 0
-                ? `${kpis.refundedCount} con pago refunded/charged_back confirmado`
+                ? `${kpis.refundedCount} confirmadas por MercadoPago`
                 : "sin confirmación de MercadoPago todavía"}
             </p>
           </div>
