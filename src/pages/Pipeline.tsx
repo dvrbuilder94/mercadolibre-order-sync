@@ -7,6 +7,7 @@ import { es } from "date-fns/locale";
 import {
   ChevronLeft, ChevronRight, RefreshCw, GitMerge, Loader2,
   UserCheck, ArrowRight, Download, Sparkles, Banknote,
+  History, CheckCircle2, XCircle, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { RawApiExtractor } from "@/components/RawApiExtractor";
 import { chileMonthUnixRange } from "@/lib/chileDate";
@@ -23,6 +24,56 @@ interface Stats {
   unmatched: number;
   pendingPayments: number; // órdenes sin has_exact_data (necesitan sync pagos)
 }
+
+interface PipelineRun {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  period: string | null;
+  step: string;
+  status: "running" | "ok" | "error";
+  detail: any;
+}
+
+const STEP_LABELS: Record<string, string> = {
+  sync_meli_orders: "Sync MeLi",
+  sync_payments: "Sync pagos",
+  sync_bsale: "Sync Bsale",
+  enrich_ruts: "RUTs",
+  reconcile: "Conciliar",
+};
+
+const runDuration = (run: PipelineRun): string => {
+  if (!run.finished_at) return "—";
+  const ms = new Date(run.finished_at).getTime() - new Date(run.started_at).getTime();
+  if (ms < 1000) return "<1s";
+  if (ms < 60000) return `${Math.round(ms / 1000)}s`;
+  return `${Math.round(ms / 60000)}min`;
+};
+
+const summarizeRun = (run: PipelineRun): string => {
+  if (run.status === "error") return run.detail?.error || "Error desconocido";
+  if (run.status === "running") return "En curso...";
+  const d = run.detail || {};
+  switch (run.step) {
+    case "sync_meli_orders":
+      return `${d.totalSynced ?? 0} órdenes${d.partial ? " (parcial)" : ""}`;
+    case "sync_payments":
+      return `${d.totalLinked ?? 0} pagos vinculados${d.remaining ? ` · ${d.remaining} pendientes` : ""}`;
+    case "sync_bsale":
+      return `${d.totalUpserted ?? 0} documentos${d.resumePending ? " (parcial)" : ""}`;
+    case "enrich_ruts":
+      return `${d.totalEnriched ?? 0} RUTs${d.remaining ? ` · ${d.remaining} pendientes` : ""}`;
+    case "reconcile": {
+      const s3 = d?.stage3_order_taxdoc || {};
+      const nuevas = (s3.hard_linked ?? 0) + (s3.hard_linked_pack_id_orders ?? 0)
+        + (s3.auto_consolidated_orders ?? s3.auto_consolidated ?? 0) + (s3.auto_linked ?? 0);
+      return `+${nuevas} vínculos nuevos${s3.ambiguous ? ` · ${s3.ambiguous} ambiguas` : ""}`;
+    }
+    default:
+      return "";
+  }
+};
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -60,6 +111,9 @@ export default function Pipeline() {
     exact: number; pack: number; consolidated: number; auto: number;
   } | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [timelineRuns, setTimelineRuns] = useState<PipelineRun[] | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -142,6 +196,29 @@ export default function Pipeline() {
   }, [period]);
 
   useEffect(() => { fetchStats(); }, [fetchStats]);
+
+  const fetchTimeline = async () => {
+    setTimelineLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("pipeline_sync_runs")
+        .select("id, started_at, finished_at, period, step, status, detail")
+        .order("started_at", { ascending: false })
+        .limit(40);
+      if (error) throw error;
+      setTimelineRuns((data || []) as PipelineRun[]);
+    } catch (e: any) {
+      addLog(`❌ Historial: ${e?.message || "error desconocido"}`);
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
+  const toggleTimeline = () => {
+    const next = !showTimeline;
+    setShowTimeline(next);
+    if (next && !timelineRuns) fetchTimeline();
+  };
 
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
@@ -603,6 +680,61 @@ export default function Pipeline() {
             ↺ Limpiar y reprocesar {periodLabel(period)} desde cero
             <span className="text-slate-300 no-underline ml-2">(borra los vínculos con respaldo y rehace el match — no borra documentos)</span>
           </button>
+        </div>
+
+        {/* Historial automático (cron) */}
+        <div className="bg-white border rounded-lg mb-8">
+          <button onClick={toggleTimeline}
+            className="w-full flex items-center justify-between p-4 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+            <span className="flex items-center gap-2">
+              <History className="h-4 w-4 text-slate-400" />
+              Historial automático (cron)
+            </span>
+            {showTimeline ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+          </button>
+
+          {showTimeline && (
+            <div className="border-t p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs text-slate-400">
+                  Últimas corridas del cron que ejecuta los 5 pasos automáticamente (mes actual + anterior, cada pocas horas).
+                </p>
+                <button onClick={fetchTimeline} disabled={timelineLoading}
+                  className="p-1 hover:bg-slate-100 rounded text-slate-400 disabled:opacity-40 shrink-0">
+                  <RefreshCw className={`h-3.5 w-3.5 ${timelineLoading ? "animate-spin" : ""}`} />
+                </button>
+              </div>
+
+              {timelineLoading && !timelineRuns && (
+                <p className="text-sm text-slate-400 flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Cargando...
+                </p>
+              )}
+
+              {timelineRuns && timelineRuns.length === 0 && (
+                <p className="text-sm text-slate-400">Todavía no hay corridas registradas.</p>
+              )}
+
+              {timelineRuns && timelineRuns.length > 0 && (
+                <div className="space-y-1 max-h-80 overflow-y-auto">
+                  {timelineRuns.map((run) => (
+                    <div key={run.id} className="flex items-center gap-3 text-sm py-1.5 border-b border-slate-50 last:border-0">
+                      {run.status === "ok" && <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />}
+                      {run.status === "error" && <XCircle className="h-4 w-4 text-red-500 shrink-0" />}
+                      {run.status === "running" && <Loader2 className="h-4 w-4 text-slate-400 animate-spin shrink-0" />}
+                      <span className="font-medium text-slate-700 w-24 shrink-0">{STEP_LABELS[run.step] || run.step}</span>
+                      <span className="text-slate-400 w-16 shrink-0">{run.period || "—"}</span>
+                      <span className="text-slate-400 w-32 shrink-0">{format(new Date(run.started_at), "dd/MM HH:mm:ss")}</span>
+                      <span className="text-slate-400 w-12 shrink-0">{runDuration(run)}</span>
+                      <span className={`truncate ${run.status === "error" ? "text-red-500" : "text-slate-500"}`}>
+                        {summarizeRun(run)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Raw API extractor */}
