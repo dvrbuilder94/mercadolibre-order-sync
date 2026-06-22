@@ -93,18 +93,11 @@ function inferChannel(detected: string | null, rawData: any): string | null {
   return null;
 }
 
-type Tab = "ordenes" | "docs";
-
 const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
 export default function PageVentas() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
-  const { pathname } = useLocation();
-  const [tab, setTab] = useState<Tab>(pathname.startsWith("/documentos") ? "docs" : "ordenes");
-  useEffect(() => {
-    setTab(pathname.startsWith("/documentos") ? "docs" : "ordenes");
-  }, [pathname]);
   const [channelFilter, setChannelFilter] = useState<string>("todos");
 
   // Orders tab
