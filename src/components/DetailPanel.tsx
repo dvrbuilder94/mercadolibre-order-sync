@@ -143,7 +143,7 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
   const raw = data.raw_data as any;
   const buyer = raw?.buyer || {};
   const billing = buyer.billing_info || {};
-  const payment = raw?.payments?.[0] || {};
+  const payments: any[] = raw?.payments || [];
   const items = raw?.order_items || [];
   const shipping = raw?.shipping || {};
 
@@ -184,14 +184,33 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
                 <Row label="monto neto"      value={CLP(data.net_amount)}           highlight />
                 <Row label="settlement"      value={CLP(data.settlement_amount)} />
                 <Row label="pago estimado"   value={data.money_release_date?.slice(0, 10)} />
+                {Number(data.net_amount) > Number(data.gross_amount) && (
+                  <div className="flex items-center gap-1.5 mt-1.5 text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 w-fit">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider">
+                      ⚠ neto mayor que bruto — revisar pagos abajo
+                    </span>
+                  </div>
+                )}
               </Section>
 
-              <Section title="Pago">
+              {/* Cada intento de pago de la orden, no solo el primero: un intento
+                  "rejected" puede convivir con otro aprobado más abajo en el array,
+                  que es el que realmente compone el monto neto de arriba. */}
+              <Section title={`Pago${payments.length > 1 ? ` (${payments.length} intentos)` : ""}`}>
                 <Row label="método"          value={data.payment_method} />
-                <Row label="payment_id"      value={payment.id} />
-                <Row label="estado pago"     value={payment.status} />
-                <Row label="aprobado"        value={payment.date_approved?.slice(0, 10)} />
-                <Row label="money_release"   value={payment.money_release_date?.slice(0, 10)} />
+                {payments.length === 0 ? (
+                  <Row label="payment_id" value={null} />
+                ) : (
+                  payments.map((p: any, i: number) => (
+                    <div key={p.id ?? i} className="pl-2 border-l border-slate-100 mb-1.5 mt-1">
+                      <Row label="payment_id"    value={p.id} />
+                      <Row label="estado"        value={p.status}
+                        highlight={p.status === "approved"} />
+                      <Row label="aprobado"      value={p.date_approved?.slice(0, 10)} />
+                      <Row label="money_release" value={p.money_release_date?.slice(0, 10)} />
+                    </div>
+                  ))
+                )}
               </Section>
 
               <Section title="Comprador">
