@@ -31,11 +31,19 @@ const PAGE_SIZE = 50;
 
 type StatusFilter = "all" | "pendiente" | "liberado";
 
+// Eje temporal del período. MercadoPago deposita ~14 días después de la venta,
+// así que el mismo mes mirado "por pago" y "por venta" son cohortes distintas:
+// - "pago":  cuándo MercadoPago depositó (payment_date). Sirve para cuadrar
+//            contra el extracto bancario / saldo MP.
+// - "venta": a qué venta corresponde el pago (orders.order_date). Es la MISMA
+//            cohorte que ve el módulo Ventas, para poder cruzar venta↔payout.
+type DateBasis = "pago" | "venta";
+
 // Fila cruda: un pago real de MercadoPago (payments) con las órdenes que
 // cubre (payment_sales → orders) y si cada una ya tiene documento tributario.
 interface PaySaleOrder {
   id: string; order_id: string; channel: string | null; product_title: string | null;
-  gross_amount: number | null; money_release_date: string | null;
+  gross_amount: number | null; money_release_date: string | null; order_date: string | null;
   order_tax_documents: { id: string; tax_documents: { status: string | null } | null }[] | null;
 }
 interface PaymentRow {
@@ -150,6 +158,7 @@ export default function PageLiquidaciones() {
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [grouped, setGrouped] = useState(true);
+  const [dateBasis, setDateBasis] = useState<DateBasis>("pago");
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<PaymentRow[]>([]);
   const [page, setPage] = useState(0);
@@ -179,30 +188,65 @@ export default function PageLiquidaciones() {
     setLoading(true);
     try {
       const { from, to } = range;
-      const PAGE = 1000;
-      let offset = 0;
+      const f = from + "T00:00:00", t = to + "T23:59:59";
+      const EMBED = `
+        id, external_payment_id, payment_date, net_amount, fees_amount, gross_amount, raw_data,
+        payment_sales (
+          allocated_amount,
+          orders ( id, order_id, channel, product_title, gross_amount, order_date, money_release_date,
+                   order_tax_documents ( id, tax_documents ( status ) ) )
+        )
+      `;
       const acc: PaymentRow[] = [];
-      while (true) {
-        const { data, error } = await supabase
-          .from("payments")
-          .select(`
-            id, external_payment_id, payment_date, net_amount, fees_amount, gross_amount, raw_data,
-            payment_sales (
-              allocated_amount,
-              orders ( id, order_id, channel, product_title, gross_amount, money_release_date,
-                       order_tax_documents ( id, tax_documents ( status ) ) )
-            )
-          `)
-          .eq("payment_provider", "MERCADOPAGO")
-          .gte("payment_date", from + "T00:00:00")
-          .lte("payment_date", to + "T23:59:59")
-          .order("payment_date", { ascending: false })
-          .range(offset, offset + PAGE - 1);
-        if (error) throw error;
-        const batch = (data || []) as unknown as PaymentRow[];
-        acc.push(...batch.filter(isRealMpPayment));
-        if (batch.length < PAGE) break;
-        offset += PAGE;
+
+      if (dateBasis === "venta") {
+        // Cohorte por fecha de venta = la misma que ve Ventas. Buscamos las
+        // órdenes del período y de ahí sus pagos, en vez de filtrar por la fecha
+        // en que MercadoPago depositó (que cae ~14 días después, en otro mes).
+        // Los pagos se traen con TODOS sus payment_sales (sin recortar), así el
+        // neto sigue siendo el del depósito completo y no se distorsiona.
+        const orderIds: string[] = [];
+        for (let p = 0; p < 20; p++) {
+          const { data } = await supabase.from("orders").select("id")
+            .gte("order_date", f).lte("order_date", t)
+            .range(p * 1000, p * 1000 + 999);
+          if (!data || data.length === 0) break;
+          orderIds.push(...data.map((o: any) => o.id));
+          if (data.length < 1000) break;
+        }
+
+        const paymentIds = new Set<string>();
+        for (let i = 0; i < orderIds.length; i += 200) {
+          const { data } = await supabase.from("payment_sales")
+            .select("payment_id").in("sale_id", orderIds.slice(i, i + 200));
+          for (const r of (data || []) as any[]) if (r.payment_id) paymentIds.add(r.payment_id);
+        }
+
+        const ids = Array.from(paymentIds);
+        for (let i = 0; i < ids.length; i += 200) {
+          const { data, error } = await supabase.from("payments").select(EMBED)
+            .eq("payment_provider", "MERCADOPAGO")
+            .in("id", ids.slice(i, i + 200));
+          if (error) throw error;
+          acc.push(...((data || []) as unknown as PaymentRow[]).filter(isRealMpPayment));
+        }
+        acc.sort((a, b) => (b.payment_date || "").localeCompare(a.payment_date || ""));
+      } else {
+        // Cohorte por fecha de pago (cuándo MercadoPago depositó).
+        const PAGE = 1000;
+        let offset = 0;
+        while (true) {
+          const { data, error } = await supabase.from("payments").select(EMBED)
+            .eq("payment_provider", "MERCADOPAGO")
+            .gte("payment_date", f).lte("payment_date", t)
+            .order("payment_date", { ascending: false })
+            .range(offset, offset + PAGE - 1);
+          if (error) throw error;
+          const batch = (data || []) as unknown as PaymentRow[];
+          acc.push(...batch.filter(isRealMpPayment));
+          if (batch.length < PAGE) break;
+          offset += PAGE;
+        }
       }
       setRows(acc);
     } catch (e) {
@@ -211,12 +255,12 @@ export default function PageLiquidaciones() {
     } finally {
       setLoading(false);
     }
-  }, [range]);
+  }, [range, dateBasis]);
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
   useEffect(() => {
     setPage(0); setExpanded(null); setAuditResult(null); setAuditOpen(false);
-  }, [range.from, range.to, statusFilter, grouped]);
+  }, [range.from, range.to, statusFilter, grouped, dateBasis]);
 
   const liquidaciones = useMemo(() => rows.map(toLiquidacion), [rows]);
 
@@ -352,7 +396,24 @@ export default function PageLiquidaciones() {
               {label}
             </button>
           ))}
-          <label className="ml-auto flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
+
+          {/* Eje temporal: la misma plata cae en meses distintos según se mire
+              por fecha de pago (banco/saldo MP) o de venta (cruce con Ventas). */}
+          <div className="ml-auto flex items-center gap-1 rounded-full border border-slate-200 p-0.5"
+            title="MercadoPago deposita ~14 días después de la venta: el mismo mes 'por pago' y 'por venta' agrupan liquidaciones distintas.">
+            {([
+              ["pago", "Por fecha de pago"], ["venta", "Por fecha de venta"],
+            ] as [DateBasis, string][]).map(([val, label]) => (
+              <button key={val} onClick={() => setDateBasis(val)}
+                className={`px-2.5 py-0.5 text-xs font-medium rounded-full transition-colors ${
+                  dateBasis === val ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-700"
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
             <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)}
               className="rounded border-slate-300" />
             Agrupar por fecha de liberación
@@ -535,7 +596,10 @@ export default function PageLiquidaciones() {
 
         <p className="text-xs text-slate-400 mt-3">
           Cada fila es un pago real aprobado por MercadoPago, con la(s) venta(s) que cubre. El monto es el neto
-          que efectivamente te depositaron (ya descontada la comisión) — no una estimación.
+          que efectivamente te depositaron (ya descontada la comisión) — no una estimación.{" "}
+          {dateBasis === "venta"
+            ? "Estás viendo los pagos de las ventas de este mes (la misma cohorte que Ventas), aunque el depósito haya caído en otro mes."
+            : "Estás viendo los pagos depositados este mes; muchos corresponden a ventas del mes anterior (MercadoPago paga ~14 días después)."}
         </p>
 
         {/* Auditoría: esta es la única vista que le pregunta directo a MercadoPago
