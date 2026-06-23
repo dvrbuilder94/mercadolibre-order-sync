@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getMeliAccount } from '../_shared/meli-account.ts';
+import { getMeliAccount, getFreshAccessToken } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -70,38 +70,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    let accessToken = meliAccount.access_token;
-    if (meliAccount.expires_at && new Date(meliAccount.expires_at) < new Date()) {
-      const refreshResponse = await fetch('https://api.mercadolibre.com/oauth/token', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: meliAccount.client_id,
-          client_secret: meliAccount.client_secret,
-          refresh_token: meliAccount.refresh_token,
-        }),
-      });
-
-      if (refreshResponse.ok) {
-        const refreshData = await refreshResponse.json();
-        accessToken = refreshData.access_token;
-        const expiresAt = new Date(Date.now() + refreshData.expires_in * 1000);
-        await supabaseClient
-          .from('meli_accounts')
-          .update({
-            access_token: refreshData.access_token,
-            refresh_token: refreshData.refresh_token,
-            expires_at: expiresAt.toISOString(),
-          })
-          .eq('id', meliAccount.id);
-      } else {
-        throw new Error('Failed to refresh token');
-      }
-    }
+    // Refresh se centraliza en cron-refresh-meli-tokens (MELI rota el
+    // refresh_token en cada uso; refrescar aquí también generaría una carrera).
+    const accessToken = await getFreshAccessToken(supabaseClient, meliAccount);
 
     const sellerId = meliAccount.seller_id;
     const LIMIT = 50;

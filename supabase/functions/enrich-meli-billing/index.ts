@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getMeliAccount } from '../_shared/meli-account.ts';
+import { getMeliAccount, getFreshAccessToken } from '../_shared/meli-account.ts';
 import { resolveUserId } from '../_shared/auth.ts';
 
 const corsHeaders = {
@@ -73,47 +73,17 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Check if token is expired and refresh if needed
-    let accessToken = meliAccount.access_token;
-    if (meliAccount.expires_at && new Date(meliAccount.expires_at) < new Date()) {
-      console.log('Token expired, refreshing...');
-      const refreshResponse = await fetch('https://api.mercadolibre.com/oauth/token', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: meliAccount.client_id,
-          client_secret: meliAccount.client_secret,
-          refresh_token: meliAccount.refresh_token,
-        }),
-      });
-
-      if (refreshResponse.ok) {
-        const refreshData = await refreshResponse.json();
-        accessToken = refreshData.access_token;
-        
-        const expiresAt = new Date(Date.now() + refreshData.expires_in * 1000);
-        await supabaseClient
-          .from('meli_accounts')
-          .update({
-            access_token: refreshData.access_token,
-            refresh_token: refreshData.refresh_token,
-            expires_at: expiresAt.toISOString(),
-          })
-          .eq('id', meliAccount.id);
-        
-        console.log('Token refreshed successfully');
-      } else {
-        const errorText = await refreshResponse.text();
-        console.error('Token refresh failed:', errorText);
-        return new Response(
-          JSON.stringify({ error: 'Token refresh failed. Please reconnect MercadoLibre.' }),
-          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
+    // Get access token — refresh is centralized in cron-refresh-meli-tokens
+    // (MELI rotates refresh_token on every use, so refreshing here too would race it)
+    let accessToken: string;
+    try {
+      accessToken = await getFreshAccessToken(supabaseClient, meliAccount);
+    } catch (e: any) {
+      console.error('Token refresh failed:', e?.message);
+      return new Response(
+        JSON.stringify({ error: 'Token refresh failed. Please reconnect MercadoLibre.' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     // Get orders without customer_tax_id that need enrichment

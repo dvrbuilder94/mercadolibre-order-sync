@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { refreshMeliAccountToken } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -42,45 +43,9 @@ Deno.serve(async (req) => {
     }
 
     try {
-      const resp = await fetch('https://api.mercadolibre.com/oauth/token', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: acc.client_id,
-          client_secret: acc.client_secret,
-          refresh_token: acc.refresh_token,
-        }),
-      });
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        console.error(`[cron-refresh-meli] ${acc.id} failed:`, resp.status, errText);
-        results.push({ account_id: acc.id, ok: false, error: `${resp.status} ${errText}` });
-        continue;
-      }
-
-      const data = await resp.json();
-      const expiresAt = new Date(Date.now() + data.expires_in * 1000).toISOString();
-
-      const { error: updateErr } = await supabase
-        .from('meli_accounts')
-        .update({
-          access_token: data.access_token,
-          refresh_token: data.refresh_token,
-          expires_at: expiresAt,
-        })
-        .eq('id', acc.id);
-
-      if (updateErr) {
-        results.push({ account_id: acc.id, ok: false, error: updateErr.message });
-      } else {
-        console.log(`[cron-refresh-meli] ${acc.id} refreshed, new expiry ${expiresAt}`);
-        results.push({ account_id: acc.id, ok: true });
-      }
+      const { expires_at } = await refreshMeliAccountToken(supabase, acc);
+      console.log(`[cron-refresh-meli] ${acc.id} refreshed, new expiry ${expires_at}`);
+      results.push({ account_id: acc.id, ok: true });
     } catch (e: any) {
       console.error(`[cron-refresh-meli] ${acc.id} threw:`, e);
       results.push({ account_id: acc.id, ok: false, error: e?.message ?? String(e) });

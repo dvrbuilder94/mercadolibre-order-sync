@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.74.0';
-import { getMeliAccount } from '../_shared/meli-account.ts';
+import { getMeliAccount, getFreshAccessToken } from '../_shared/meli-account.ts';
 import { resolveUserId } from '../_shared/auth.ts';
 
 // CORS configuration - MUST be present on ALL responses
@@ -74,38 +74,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 2. Check/refresh token
-    let accessToken = meliAccount.access_token;
-    const now = new Date();
-    const expiresAt = new Date(meliAccount.expires_at);
-
-    if (expiresAt <= now) {
-      console.log('Access token expired, refreshing...');
-      
-      const refreshResponse = await fetch('https://api.mercadolibre.com/oauth/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: meliAccount.client_id,
-          client_secret: meliAccount.client_secret,
-          refresh_token: meliAccount.refresh_token,
-        }),
-      });
-
-      if (!refreshResponse.ok) {
-        throw new Error('Failed to refresh token');
-      }
-
-      const refreshData = await refreshResponse.json();
-      accessToken = refreshData.access_token;
-
-      await supabase.from('meli_accounts').update({
-        access_token: refreshData.access_token,
-        refresh_token: refreshData.refresh_token,
-        expires_at: new Date(Date.now() + refreshData.expires_in * 1000).toISOString(),
-      }).eq('id', meliAccount.id);
-    }
+    // 2. Get access token — refresh is centralized in cron-refresh-meli-tokens
+    // (MELI rotates refresh_token on every use, so refreshing here too would race it)
+    const accessToken = await getFreshAccessToken(supabase, meliAccount);
 
     // 3. Get orders without exact data (most recent first; self-chains until none remain)
     let ordersQuery = supabase

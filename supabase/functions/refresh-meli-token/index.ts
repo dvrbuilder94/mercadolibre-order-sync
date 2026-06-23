@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getMeliAccount } from '../_shared/meli-account.ts';
+import { getMeliAccount, refreshMeliAccountToken } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -44,45 +44,13 @@ Deno.serve(async (req) => {
       );
     }
 
-    const refreshResponse = await fetch('https://api.mercadolibre.com/oauth/token', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: meliAccount.client_id,
-        client_secret: meliAccount.client_secret,
-        refresh_token: meliAccount.refresh_token,
-      }),
-    });
-
-    if (!refreshResponse.ok) {
-      const errorData = await refreshResponse.json();
-      console.error('Error refreshing token:', errorData);
+    try {
+      await refreshMeliAccountToken(supabaseClient, meliAccount);
+    } catch (refreshError: any) {
+      console.error('Error refreshing token:', refreshError);
       return new Response(
         JSON.stringify({ error: 'Failed to refresh token' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const tokenData = await refreshResponse.json();
-    const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
-
-    const { error: updateError } = await supabaseClient
-      .from('meli_accounts')
-      .update({
-        access_token: tokenData.access_token,
-        refresh_token: tokenData.refresh_token,
-        expires_at: expiresAt.toISOString(),
-      })
-      .eq('id', meliAccount.id);
-
-    if (updateError) {
-      return new Response(
-        JSON.stringify({ error: 'Failed to save refreshed token' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 

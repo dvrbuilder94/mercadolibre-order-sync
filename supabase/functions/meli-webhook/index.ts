@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { mapMeliOrderStatus } from '../_shared/order-status.ts';
+import { getFreshAccessToken } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -57,49 +58,19 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Verificar si el token está expirado
-    const now = new Date();
-    const expiresAt = new Date(meliAccount.expires_at);
-    
-    let accessToken = meliAccount.access_token;
-
-    if (now >= expiresAt) {
-      console.log('Token expired, refreshing...');
-      
-      const refreshResponse = await fetch('https://api.mercadolibre.com/oauth/token', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: meliAccount.client_id,
-          client_secret: meliAccount.client_secret,
-          refresh_token: meliAccount.refresh_token,
-        }),
-      });
-
-      if (!refreshResponse.ok) {
-        console.error('Failed to refresh token');
-        return new Response(
-          JSON.stringify({ error: 'Failed to refresh token' }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-
-      const tokenData = await refreshResponse.json();
-      accessToken = tokenData.access_token;
-      const newExpiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
-
-      await supabaseClient
-        .from('meli_accounts')
-        .update({
-          access_token: tokenData.access_token,
-          refresh_token: tokenData.refresh_token,
-          expires_at: newExpiresAt.toISOString(),
-        })
-        .eq('id', meliAccount.id);
+    // Obtener access token — el refresh se centraliza en cron-refresh-meli-tokens
+    // (MELI rota el refresh_token en cada uso, refrescar aquí también generaría una carrera).
+    // Se acusa recibo (200) en vez de 500 para que MELI no reintente el webhook
+    // mientras el token está vencido: el cron lo va a renovar de todos modos.
+    let accessToken: string;
+    try {
+      accessToken = await getFreshAccessToken(supabaseClient, meliAccount);
+    } catch (e: any) {
+      console.error('Failed to refresh token:', e?.message);
+      return new Response(
+        JSON.stringify({ message: 'Acknowledged - token pending refresh' }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     // Obtener detalles de la orden actualizada

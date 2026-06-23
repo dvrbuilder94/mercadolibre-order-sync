@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getMeliAccount } from '../_shared/meli-account.ts';
+import { getMeliAccount, getFreshAccessToken } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -9,30 +9,6 @@ const corsHeaders = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const TIME_BUDGET_MS = 180_000;
-
-async function refreshMeliToken(admin: any, account: any): Promise<string> {
-  if (account.expires_at && new Date(account.expires_at) > new Date(Date.now() + 60_000)) {
-    return account.access_token;
-  }
-  const r = await fetch('https://api.mercadolibre.com/oauth/token', {
-    method: 'POST',
-    headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      client_id: account.client_id,
-      client_secret: account.client_secret,
-      refresh_token: account.refresh_token,
-    }),
-  });
-  if (!r.ok) return account.access_token;
-  const d = await r.json();
-  await admin.from('meli_accounts').update({
-    access_token: d.access_token,
-    refresh_token: d.refresh_token,
-    expires_at: new Date(Date.now() + d.expires_in * 1000).toISOString(),
-  }).eq('id', account.id);
-  return d.access_token;
-}
 
 async function meliFetch(url: string, token: string, retries = 2): Promise<any> {
   for (let i = 0; i <= retries; i++) {
@@ -84,7 +60,9 @@ async function processJob(jobId: string, admin: any) {
     if (accErr || !account) throw new Error('Cuenta MercadoLibre no encontrada');
     if (!account.access_token || !account.seller_id) throw new Error('Cuenta ML sin token o seller_id');
 
-    const token = await refreshMeliToken(admin, account);
+    // Refresh se centraliza en cron-refresh-meli-tokens (MELI rota el
+    // refresh_token en cada uso; refrescar aquí también generaría una carrera).
+    const token = await getFreshAccessToken(admin, account);
     const sellerId = account.seller_id;
 
     const [y, m] = job.period.split('-').map(Number);

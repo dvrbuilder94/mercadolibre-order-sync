@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getMeliAccount } from '../_shared/meli-account.ts';
+import { getMeliAccount, getFreshAccessToken } from '../_shared/meli-account.ts';
 import { resolveUserId } from '../_shared/auth.ts';
 import { mapMeliOrderStatus } from '../_shared/order-status.ts';
 
@@ -86,39 +86,16 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Check if token is expired
-    let accessToken = meliAccount.access_token;
-    if (meliAccount.expires_at && new Date(meliAccount.expires_at) < new Date()) {
-      // Token expired, refresh it
-      const refreshResponse = await fetch('https://api.mercadolibre.com/oauth/token', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: meliAccount.client_id,
-          client_secret: meliAccount.client_secret,
-          refresh_token: meliAccount.refresh_token,
-        }),
-      });
-
-      if (refreshResponse.ok) {
-        const refreshData = await refreshResponse.json();
-        accessToken = refreshData.access_token;
-
-        // Update token in database
-        const expiresAt = new Date(Date.now() + refreshData.expires_in * 1000);
-        await supabaseClient
-          .from('meli_accounts')
-          .update({
-            access_token: refreshData.access_token,
-            refresh_token: refreshData.refresh_token,
-            expires_at: expiresAt.toISOString(),
-          })
-          .eq('id', meliAccount.id);
-      }
+    // Token refresh is centralized in cron-refresh-meli-tokens (MELI rotates
+    // refresh_token on every use, so refreshing here too would race it).
+    let accessToken: string;
+    try {
+      accessToken = await getFreshAccessToken(supabaseClient, meliAccount);
+    } catch (e: any) {
+      return new Response(
+        JSON.stringify({ error: e?.message ?? 'Failed to refresh token' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     // Fetch recent orders from Mercado Libre with pagination
