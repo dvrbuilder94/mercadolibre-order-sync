@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 import { orderHasDoc } from "@/lib/taxDocs";
+import { DetailPanel } from "@/components/DetailPanel";
+import { fetchOrderDetail } from "@/lib/orderDetail";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -152,6 +154,13 @@ export default function PageLiquidaciones() {
   const [rows, setRows] = useState<PaymentRow[]>([]);
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Detalle de orden — mismo panel de cadena que PageVentas/PageConciliacion,
+  // traído on-demand (esta tabla embebe la orden vía payment_sales y no trae
+  // los campos completos que el panel necesita).
+  const [detailOrder, setDetailOrder] = useState<any | null>(null);
+  const openOrderDetail = useCallback(async (id: string) => {
+    try { setDetailOrder(await fetchOrderDetail(id)); } catch { /* ignore */ }
+  }, []);
 
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
@@ -412,7 +421,15 @@ export default function PageLiquidaciones() {
                                   <td className="py-1 font-mono text-slate-500">{l.externalPaymentId || "—"}</td>
                                   <td className="py-1 text-slate-600">{l.channels.map((c) => CHANNEL_LABEL[c] ?? c).join(", ") || "—"}</td>
                                   <td className="py-1 text-slate-700 truncate max-w-[220px]">
-                                    {l.orders.map((o) => o.title || o.orderId).join(", ") || "—"}
+                                    {l.orders.length === 0 ? "—" : l.orders.map((o, i) => (
+                                      <span key={o.id}>
+                                        {i > 0 && ", "}
+                                        <span className="cursor-pointer hover:text-blue-600 hover:underline"
+                                          onClick={() => openOrderDetail(o.id)}>
+                                          {o.title || o.orderId}
+                                        </span>
+                                      </span>
+                                    ))}
                                   </td>
                                   <td className="py-1 text-right tabular-nums">{clp(l.net)}</td>
                                   <td className="py-1">{docBadge(l.docsOk, l.orders.length)}</td>
@@ -439,7 +456,8 @@ export default function PageLiquidaciones() {
                       <td className="px-4 py-2">
                         <div className="space-y-1">
                           {l.orders.slice(0, multi ? 1 : undefined).map((o) => (
-                            <div key={o.id} className="flex items-center justify-between gap-3">
+                            <div key={o.id} className="flex items-center justify-between gap-3 cursor-pointer hover:text-blue-600"
+                              onClick={(e) => { e.stopPropagation(); openOrderDetail(o.id); }}>
                               <span className="truncate max-w-[200px] text-slate-700">{o.title || o.orderId}</span>
                               {!multi && <span className="tabular-nums text-xs text-slate-400 shrink-0">{clp(o.amount)}</span>}
                             </div>
@@ -473,7 +491,8 @@ export default function PageLiquidaciones() {
                             </thead>
                             <tbody>
                               {l.orders.map((o) => (
-                                <tr key={o.id} className="border-b last:border-0">
+                                <tr key={o.id} className="border-b last:border-0 cursor-pointer hover:bg-slate-100"
+                                  onClick={() => openOrderDetail(o.id)}>
                                   <td className="py-1 text-slate-700">{o.title || o.orderId} <span className="font-mono text-slate-400">({o.orderId})</span></td>
                                   <td className="py-1 text-right tabular-nums">{clp(o.amount)}</td>
                                   <td className="py-1">
@@ -585,6 +604,10 @@ export default function PageLiquidaciones() {
           )}
         </div>
       </main>
+
+      {detailOrder && (
+        <DetailPanel title={`Orden · ${detailOrder.order_id}`} data={detailOrder} onClose={() => setDetailOrder(null)} />
+      )}
     </div>
   );
 }

@@ -7,6 +7,8 @@ import { es } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
 import { SCORE_OK, CHANNEL_LABEL, CHANNEL_COLOR, HARD_MATCH_SOURCES as HARD_SOURCES } from "@/lib/constants";
 import { NON_SALE_STATUSES_PG } from "@/lib/orderStatus";
+import { DetailPanel } from "@/components/DetailPanel";
+import { fetchOrderDetail } from "@/lib/orderDetail";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -207,6 +209,12 @@ export default function PageConciliacion() {
   const [page, setPage] = useState(0);
   const [maxDocDate, setMaxDocDate] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  // Detalle de orden — mismo panel de cadena (Venta→Documento→Liquidación→Banco)
+  // que usa PageVentas, traído on-demand para no cargar raw_data en cada fila.
+  const [detailOrder, setDetailOrder] = useState<any | null>(null);
+  const openOrderDetail = useCallback(async (id: string) => {
+    try { setDetailOrder(await fetchOrderDetail(id)); } catch { /* ignore */ }
+  }, []);
   const [candidates, setCandidates] = useState<CandidateRow[]>([]);
   const [candLoading, setCandLoading] = useState(true);
   const [actingKey, setActingKey] = useState<string | null>(null);
@@ -823,7 +831,8 @@ export default function PageConciliacion() {
                   const o = u.order;
                   const venta = o.gross_amount ?? o.amount;
                   return (
-                    <tr key={u.key} className="border-b last:border-0 hover:bg-slate-50">
+                    <tr key={u.key} className="border-b last:border-0 hover:bg-slate-50 cursor-pointer"
+                      onClick={() => openOrderDetail(o.id)}>
                       <td className="px-4 py-2">
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[o.channel || ""] || "bg-slate-100 text-slate-600"}`}>
                           {CHANNEL_LABEL[o.channel || ""] ?? o.channel ?? "—"}
@@ -847,7 +856,7 @@ export default function PageConciliacion() {
                             </a>
                           ) : (
                             <button
-                              onClick={retryReconcile}
+                              onClick={(e) => { e.stopPropagation(); retryReconcile(); }}
                               disabled={retrying}
                               className="text-[10px] text-blue-500 underline w-fit disabled:opacity-40"
                             >
@@ -903,7 +912,8 @@ export default function PageConciliacion() {
                     <td className="px-4 py-2">
                       <div className="space-y-1">
                         {u.orders.map((o) => (
-                          <div key={o.id} className="flex items-center justify-between gap-3">
+                          <div key={o.id} className="flex items-center justify-between gap-3 cursor-pointer hover:text-slate-900"
+                            onClick={(e) => { e.stopPropagation(); openOrderDetail(o.id); }}>
                             <span className="truncate max-w-[200px] text-slate-700">
                               {o.product_title || o.order_id}
                               {!o.inPeriod && <span className="text-[10px] text-slate-400"> · otro mes</span>}
@@ -1016,6 +1026,10 @@ export default function PageConciliacion() {
           cuadra en plata. Las ventas sin documento se listan aparte como excepción.
         </p>
       </main>
+
+      {detailOrder && (
+        <DetailPanel title={`Orden · ${detailOrder.order_id}`} data={detailOrder} onClose={() => setDetailOrder(null)} />
+      )}
     </div>
   );
 }

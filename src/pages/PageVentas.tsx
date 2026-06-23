@@ -13,6 +13,7 @@ import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 import { linkIsVigente } from "@/lib/taxDocs";
 import { NON_SALE_STATUSES, NON_SALE_STATUSES_PG } from "@/lib/orderStatus";
 import { isLiquidacionStuck, daysSince } from "@/lib/liquidacion";
+import { ORDER_DETAIL_SELECT } from "@/lib/orderDetail";
 
 const PAGE_SIZE = 50;
 
@@ -181,14 +182,7 @@ export default function PageVentas() {
       } else {
         const { data: full } = await supabase
           .from("orders")
-          .select(`
-            id, order_id, order_date, status, channel, customer_name, customer_tax_id,
-            customer_tax_id_dv, product_title, gross_amount, net_amount, payment_method,
-            installments, money_release_date, payment_approved_at, has_exact_data, raw_data,
-            discount_amount, shipping_cost, commission_percentage, commission_amount,
-            settlement_amount, currency_id,
-            order_tax_documents(id, tax_documents(document_number, document_type, external_url, status))
-          `)
+          .select(ORDER_DETAIL_SELECT)
           .in("id", pageIds);
         const byId = new Map((full || []).map((o: any) => [o.id, o]));
         setOrders(pageIds.map((id) => byId.get(id)).filter((o: any) => o !== undefined));
