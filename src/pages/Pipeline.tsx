@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { RawApiExtractor } from "@/components/RawApiExtractor";
 import { chileMonthUnixRange } from "@/lib/chileDate";
+import { orderHasDoc } from "@/lib/taxDocs";
 
 interface Stats {
   orders: number;
@@ -148,7 +149,7 @@ export default function Pipeline() {
       while (true) {
         const { data, error: ordersErr } = await supabase
           .from("orders")
-          .select("id, status, has_exact_data, order_tax_documents(id)")
+          .select("id, status, has_exact_data, order_tax_documents(id, tax_documents(status))")
           .gte("order_date", from + "T00:00:00")
           .lte("order_date", to   + "T23:59:59")
           .order("id", { ascending: true })
@@ -174,7 +175,7 @@ export default function Pipeline() {
       ]);
 
       const vigentes = orders.filter(o => o.status !== "cancelled");
-      const matched  = vigentes.filter(o => (o.order_tax_documents as any[])?.length > 0);
+      const matched  = vigentes.filter(o => orderHasDoc(o.order_tax_documents as any[]));
 
       setStats({
         orders:          vigentes.length,

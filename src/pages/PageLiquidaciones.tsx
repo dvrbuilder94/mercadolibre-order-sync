@@ -8,6 +8,7 @@ import {
   ChevronLeft, ChevronRight, RefreshCw, Loader2, ShieldCheck, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
+import { orderHasDoc } from "@/lib/taxDocs";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -33,7 +34,7 @@ type StatusFilter = "all" | "pendiente" | "liberado";
 interface PaySaleOrder {
   id: string; order_id: string; channel: string | null; product_title: string | null;
   gross_amount: number | null; money_release_date: string | null;
-  order_tax_documents: { id: string }[] | null;
+  order_tax_documents: { id: string; tax_documents: { status: string | null } | null }[] | null;
 }
 interface PaymentRow {
   id: string;
@@ -79,7 +80,7 @@ const toLiquidacion = (p: PaymentRow): Liquidacion => {
     .filter((l) => l.orders)
     .map((l) => ({
       id: l.orders!.id, orderId: l.orders!.order_id, title: l.orders!.product_title,
-      amount: l.allocated_amount, hasDoc: (l.orders!.order_tax_documents || []).length > 0,
+      amount: l.allocated_amount, hasDoc: orderHasDoc(l.orders!.order_tax_documents),
     }));
   const channels = Array.from(new Set(links.map((l) => l.orders?.channel).filter(Boolean) as string[]));
   const releaseDates = links.map((l) => l.orders?.money_release_date).filter(Boolean) as string[];
@@ -180,7 +181,7 @@ export default function PageLiquidaciones() {
             payment_sales (
               allocated_amount,
               orders ( id, order_id, channel, product_title, gross_amount, money_release_date,
-                       order_tax_documents ( id ) )
+                       order_tax_documents ( id, tax_documents ( status ) ) )
             )
           `)
           .eq("payment_provider", "MERCADOPAGO")

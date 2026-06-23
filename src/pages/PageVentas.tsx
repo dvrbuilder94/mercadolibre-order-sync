@@ -10,6 +10,7 @@ import {
   CheckCircle2, AlertCircle, FileText, ShoppingBag, ExternalLink,
 } from "lucide-react";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
+import { linkIsVigente } from "@/lib/taxDocs";
 
 const PAGE_SIZE = 50;
 
@@ -120,13 +121,17 @@ export default function PageVentas() {
         if (data.length < 1000) break;
       }
 
+      // Solo cuenta como "con documento" un vínculo a un DTE vigente (no anulado),
+      // igual que el resto de la app (ver src/lib/taxDocs). Por eso traemos el
+      // status del documento embebido y filtramos con linkIsVigente.
       const linkedIds = new Set<string>();
       for (let page = 0; page < 50; page++) {
-        const { data } = await supabase.from("order_tax_documents").select("order_id")
+        const { data } = await supabase.from("order_tax_documents")
+          .select("order_id, tax_documents(status)")
           .order("id", { ascending: true })
           .range(page * 1000, page * 1000 + 999);
         if (!data || data.length === 0) break;
-        for (const r of data as any[]) linkedIds.add(r.order_id);
+        for (const r of data as any[]) if (linkIsVigente(r)) linkedIds.add(r.order_id);
         if (data.length < 1000) break;
       }
 
@@ -153,7 +158,7 @@ export default function PageVentas() {
             id, order_id, order_date, status, channel, customer_name, customer_tax_id,
             customer_tax_id_dv, product_title, gross_amount, net_amount, payment_method,
             installments, money_release_date, payment_approved_at, has_exact_data, raw_data,
-            order_tax_documents(id, tax_documents(document_number, document_type, external_url))
+            order_tax_documents(id, tax_documents(document_number, document_type, external_url, status))
           `)
           .in("id", pageIds);
         const byId = new Map((full || []).map((o: any) => [o.id, o]));
@@ -192,11 +197,13 @@ export default function PageVentas() {
     } finally { setOrderSyncing(false); }
   };
 
-  // Linked doc helper
+  // Linked doc helper — muestra el primer DTE vigente (no anulado), consistente
+  // con el conteo "con/sin documento" de los KPIs.
   const getLinkedDoc = (o: any) => {
     const links = (o.order_tax_documents as any[]) ?? [];
-    if (links.length === 0) return null;
-    const td = links[0]?.tax_documents;
+    const link = links.find(linkIsVigente);
+    if (!link) return null;
+    const td = link.tax_documents;
     return Array.isArray(td) ? td[0] : td;
   };
 

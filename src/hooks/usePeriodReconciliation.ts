@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import type { PeriodReconciliation } from '@/types/reconciliation';
 import { SCORE_OK, HARD_MATCH_SOURCES } from '@/lib/constants';
+import { orderHasDoc } from '@/lib/taxDocs';
 
 const CHANNEL_LABEL: Record<string, string> = {
   meli: 'MercadoLibre', falabella: 'Falabella', paris: 'Paris',
@@ -128,13 +129,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           porCanalMap.set(ch, cur);
         }
 
-        const conDteCount = rows.filter(r => {
-          const links = (r.order_tax_documents as any[]) ?? [];
-          return links.some(l => {
-            const td = Array.isArray(l.tax_documents) ? l.tax_documents[0] : l.tax_documents;
-            return td != null && td.status !== 'voided';
-          });
-        }).length;
+        const conDteCount = rows.filter(r => orderHasDoc(r.order_tax_documents as any[])).length;
         const conDte = {
           pct:    rows.length > 0 ? Math.round((conDteCount / rows.length) * 100) : 0,
           faltan: rows.length - conDteCount,
