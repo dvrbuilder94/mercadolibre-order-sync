@@ -175,6 +175,8 @@ export default function PageVentas() {
             id, order_id, order_date, status, channel, customer_name, customer_tax_id,
             customer_tax_id_dv, product_title, gross_amount, net_amount, payment_method,
             installments, money_release_date, payment_approved_at, has_exact_data, raw_data,
+            discount_amount, shipping_cost, commission_percentage, commission_amount,
+            settlement_amount, currency_id,
             order_tax_documents(id, tax_documents(document_number, document_type, external_url, status))
           `)
           .in("id", pageIds);

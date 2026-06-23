@@ -1,3 +1,6 @@
+import { linkIsVigente } from "@/lib/taxDocs";
+import { isRealSale } from "@/lib/orderStatus";
+
 interface LinkedSale {
   order_id: string;
   order_date?: string | null;
@@ -31,6 +34,16 @@ const channelName = (c: string | null | undefined) => (c ? CHANNEL_LABEL[c] ?? c
 const PCT = (n: number | null | undefined) =>
   n == null ? "—" : `${n}%`;
 
+const DOC_SHORT: Record<string, string> = {
+  boleta: "Boleta", factura: "Factura", nota_credito: "N. Créd.",
+  nota_debito: "N. Déb.", factura_exenta: "Fact. Ex.",
+};
+const DOC_LABEL: Record<string, string> = {
+  boleta: "Boleta electrónica", factura: "Factura electrónica",
+  nota_credito: "Nota de crédito", nota_debito: "Nota de débito",
+  factura_exenta: "Factura exenta",
+};
+
 function Row({ label, value, highlight }: { label: string; value: any; highlight?: boolean }) {
   const empty = value === null || value === undefined || value === "";
   return (
@@ -48,6 +61,47 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     <div>
       <p className="text-slate-400 uppercase tracking-wider text-[10px] font-medium mb-1.5">{title}</p>
       <div className="space-y-0.5">{children}</div>
+    </div>
+  );
+}
+
+// DTE vigente (no anulado) vinculado a la orden, usando el mismo criterio que
+// el resto de la app (src/lib/taxDocs). Soporta la forma to-one de PostgREST
+// (objeto o arreglo de un elemento).
+function getLinkedDocFromOrder(data: Record<string, any>) {
+  const links = (data.order_tax_documents as any[]) ?? [];
+  const link = links.find(linkIsVigente);
+  if (!link) return null;
+  const td = link.tax_documents;
+  return Array.isArray(td) ? td[0] : td;
+}
+
+type ChainState = "ok" | "warn" | "off" | "na";
+const CHAIN_DOT: Record<ChainState, string> = {
+  ok: "bg-emerald-500", warn: "bg-amber-400", off: "bg-red-400", na: "bg-slate-300",
+};
+const CHAIN_TEXT: Record<ChainState, string> = {
+  ok: "text-emerald-700", warn: "text-amber-700", off: "text-red-600", na: "text-slate-400",
+};
+
+// Cadena de la orden: Venta → Documento (SII) → Liquidación (MP) → Banco.
+// Cada paso refleja el dato real que ya trae la orden; "Banco" queda en n/d
+// porque esa etapa (Fintoc) todavía no está conectada.
+function ChainStrip({ steps }: { steps: { label: string; state: ChainState; note?: string }[] }) {
+  return (
+    <div className="flex items-stretch gap-1">
+      {steps.map((s, i) => (
+        <div key={s.label} className="flex items-center gap-1 flex-1 min-w-0">
+          <div className="flex-1 min-w-0 rounded border border-slate-100 bg-slate-50 px-2 py-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${CHAIN_DOT[s.state]}`} />
+              <span className="text-[10px] uppercase tracking-wider text-slate-500 truncate">{s.label}</span>
+            </div>
+            <p className={`text-[10px] mt-0.5 truncate ${CHAIN_TEXT[s.state]}`}>{s.note ?? "—"}</p>
+          </div>
+          {i < steps.length - 1 && <span className="text-slate-300 text-xs shrink-0">→</span>}
+        </div>
+      ))}
     </div>
   );
 }
@@ -151,6 +205,31 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
   const refs = raw?.references?.items || [];
   const isBsale = !!data.document_type;
 
+  // ── Cadena de la orden (solo vista de orden ML) ───────────────────────────
+  const linkedDoc = isBsale ? null : getLinkedDocFromOrder(data);
+  const hasDoc = !!linkedDoc;
+  const exact = data.has_exact_data === true;       // neto real confirmado por MercadoPago
+  const released = data.money_release_date ? new Date(data.money_release_date) <= new Date() : false;
+
+  const chainSteps: { label: string; state: ChainState; note?: string }[] = [
+    {
+      label: "Venta",
+      state: isRealSale(data.status) ? "ok" : "off",
+      note: isRealSale(data.status) ? "registrada" : (data.status ?? "descartada"),
+    },
+    {
+      label: "Documento",
+      state: hasDoc ? "ok" : "off",
+      note: hasDoc ? (DOC_SHORT[linkedDoc?.document_type] ?? "emitido") : "sin DTE",
+    },
+    {
+      label: "Liquidación",
+      state: exact ? "ok" : "warn",
+      note: exact ? (released ? "neto liberado" : "neto exacto") : "estimado",
+    },
+    { label: "Banco", state: "na", note: "Fintoc pausado" },
+  ];
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
@@ -167,6 +246,9 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
           {/* ── ML ORDER ─────────────────────────────── */}
           {!isBsale && (
             <>
+              {/* Cadena de la orden de punta a punta */}
+              <ChainStrip steps={chainSteps} />
+
               <Section title="Venta">
                 <Row label="order_id"        value={data.order_id} />
                 <Row label="fecha"           value={data.order_date?.slice(0, 10)} />
@@ -175,7 +257,31 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
                 <Row label="cuotas"          value={data.installments} />
               </Section>
 
-              <Section title="Financiero">
+              {/* ── DOCUMENTO TRIBUTARIO (SII) — leg 1 de la cadena ──────── */}
+              <Section title="Documento tributario (SII)">
+                {hasDoc ? (
+                  <>
+                    <Row label="tipo"   value={DOC_LABEL[linkedDoc?.document_type] ?? linkedDoc?.document_type ?? "—"} highlight />
+                    <Row label="número" value={linkedDoc?.document_number} />
+                    <Row label="estado" value={linkedDoc?.status} />
+                    {linkedDoc?.external_url && <RowLink label="ver en Bsale" href={linkedDoc.external_url} />}
+                  </>
+                ) : (
+                  <div className="flex items-center gap-1.5 text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 w-fit">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider">
+                      Sin DTE vigente vinculado
+                    </span>
+                  </div>
+                )}
+              </Section>
+
+              {/* ── LIQUIDACIÓN (MercadoPago) — leg 2 de la cadena ────────── */}
+              <Section title="Liquidación (MercadoPago)">
+                <div className={`flex items-center gap-1.5 mb-1.5 rounded px-2 py-1 w-fit border ${exact ? "text-emerald-700 bg-emerald-50 border-emerald-200" : "text-amber-700 bg-amber-50 border-amber-200"}`}>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider">
+                    {exact ? "Neto exacto (confirmado por MercadoPago)" : "Neto estimado (aún sin pago confirmado)"}
+                  </span>
+                </div>
                 <Row label="monto bruto"     value={CLP(data.gross_amount)}         highlight />
                 <Row label="descuento"       value={CLP(data.discount_amount)} />
                 <Row label="envío"           value={CLP(data.shipping_cost)} />
@@ -183,7 +289,7 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
                 <Row label="comisión $"      value={CLP(data.commission_amount)} />
                 <Row label="monto neto"      value={CLP(data.net_amount)}           highlight />
                 <Row label="settlement"      value={CLP(data.settlement_amount)} />
-                <Row label="pago estimado"   value={data.money_release_date?.slice(0, 10)} />
+                <Row label="liberación"      value={data.money_release_date?.slice(0, 10)} />
                 {Number(data.net_amount) > Number(data.gross_amount) && (
                   <div className="flex items-center gap-1.5 mt-1.5 text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 w-fit">
                     <span className="text-[10px] font-semibold uppercase tracking-wider">
