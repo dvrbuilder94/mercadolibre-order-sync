@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Home, ShoppingBag, GitMerge, Activity, Settings, LogOut,
-  Sparkles, Wrench, Landmark, FileText, Undo2,
+  Sparkles, Wrench, Landmark, FileText, Undo2, Radio,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,8 +20,9 @@ const primary = [
 ];
 
 const advanced = [
-  { to: "/pipeline",   label: "Sincronización", icon: Activity },
-  { to: "/asistente",  label: "Asistente AI",   icon: Sparkles },
+  { to: "/pipeline",     label: "Sincronización", icon: Activity },
+  { to: "/arquitectura", label: "Mapa del sistema", icon: Radio },
+  { to: "/asistente",    label: "Asistente AI",   icon: Sparkles },
 ];
 
 export function Nav() {

@@ -20,6 +20,7 @@ import PageAsistente         from "./pages/PageAsistente";
 import PageLiquidaciones     from "./pages/PageLiquidaciones";
 import PageDevoluciones      from "./pages/PageDevoluciones";
 import PageDocumentos        from "./pages/PageDocumentos";
+import PageArquitectura      from "./pages/PageArquitectura";
 
 const queryClient = new QueryClient();
 
@@ -42,6 +43,7 @@ const App = () => (
           <Route path="/liquidaciones" element={<PageLiquidaciones />} />
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
           <Route path="/pipeline"     element={<Pipeline />} />
+          <Route path="/arquitectura" element={<PageArquitectura />} />
           <Route path="/asistente"    element={<PageAsistente />} />
           <Route path="/config"       element={<ConfigNew />} />
 
