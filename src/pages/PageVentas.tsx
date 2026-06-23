@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 import { linkIsVigente } from "@/lib/taxDocs";
+import { NON_SALE_STATUSES, NON_SALE_STATUSES_PG } from "@/lib/orderStatus";
 
 const PAGE_SIZE = 50;
 
@@ -69,6 +70,9 @@ export default function PageVentas() {
   const [ordersWithoutDoc, setOrdersWithoutDoc] = useState(0);
   const [ordersSum, setOrdersSum] = useState<number | null>(null);
   const [ordersListTotal, setOrdersListTotal] = useState(0);
+  // Ventas descartadas (canceladas/rechazadas/inválidas): visibles pero fuera de los totales.
+  const [discardedCount, setDiscardedCount] = useState(0);
+  const [discardedSum, setDiscardedSum] = useState<number | null>(null);
   const [orderPage, setOrderPage] = useState(0);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [orderSyncing, setOrderSyncing] = useState(false);
@@ -101,8 +105,10 @@ export default function PageVentas() {
         if (!term) return q;
         return q.or(`order_id.ilike.%${term}%,customer_name.ilike.%${term}%,product_title.ilike.%${term}%,customer_tax_id.ilike.%${term}%`);
       };
+      // Las ventas descartadas (canceladas, rechazadas, inválidas) no entran a
+      // ningún total — la plata nunca entró. Se cuentan aparte para la tarjeta.
       const applyBase = (q: any) =>
-        applySearch(applyChannel(q.gte("order_date", f).lte("order_date", t).neq("status", "cancelled")));
+        applySearch(applyChannel(q.gte("order_date", f).lte("order_date", t).not("status", "in", NON_SALE_STATUSES_PG)));
 
       // Don't use !left(id) + is-null as an anti-join here: in PostgREST that
       // filter only restricts which NESTED rows show up, not which top-level
@@ -142,6 +148,17 @@ export default function PageVentas() {
       const rawSum = (sumRows as any)?.[0];
       const parsedSum = rawSum != null ? Number(rawSum?.sum ?? rawSum?.gross_amount) : NaN;
       setOrdersSum(Number.isFinite(parsedSum) ? parsedSum : null);
+
+      // Descartadas del período (mismo canal, sin filtro de búsqueda/documento):
+      // se muestran como contexto pero no suman a ningún total.
+      let discQ = supabase.from("orders")
+        .select("gross_amount", { count: "exact" })
+        .gte("order_date", f).lte("order_date", t)
+        .in("status", NON_SALE_STATUSES as unknown as string[]);
+      if (channelFilter !== "todos") discQ = discQ.eq("channel", channelFilter);
+      const { data: discRows, count: discCount } = await discQ;
+      setDiscardedCount(discCount ?? 0);
+      setDiscardedSum((discRows ?? []).reduce((s: number, r: any) => s + (r.gross_amount ?? 0), 0));
 
       const filteredIds = scopeRows
         .filter(o => docStatusFilter === "con" ? linkedIds.has(o.id) : docStatusFilter === "sin" ? !linkedIds.has(o.id) : true)
@@ -252,13 +269,16 @@ export default function PageVentas() {
 
         <>
           <div className="flex items-center justify-between mb-4">
-              <div className="grid grid-cols-4 gap-3 flex-1 mr-4">
+              <div className="grid grid-cols-5 gap-3 flex-1 mr-4">
                 {[
-                  { label: "Órdenes",       value: ordersLoading ? "—" : ordersTotal,                                              sub: "no canceladas" },
+                  { label: "Órdenes",       value: ordersLoading ? "—" : ordersTotal,                                              sub: "ventas reales" },
                   { label: "Total ventas",  value: ordersLoading || ordersSum === null ? "—" : CLP(ordersSum),                    sub: "bruto mensual" },
                   { label: "Con documento", value: ordersLoading ? "—" : Math.max(ordersTotal - ordersWithoutDoc, 0),             sub: "con boleta/factura", color: "text-emerald-600" },
                   { label: "Sin documento", value: ordersLoading ? "—" : ordersWithoutDoc,                                        sub: "sin DTE",
                     color: ordersWithoutDoc > 0 ? "text-red-600" : "text-emerald-600" },
+                  { label: "Descartadas",   value: ordersLoading ? "—" : discardedCount,
+                    sub: discardedSum && discardedSum > 0 ? `${CLP(discardedSum)} · no suma al total` : "canceladas/rechazadas",
+                    color: discardedCount > 0 ? "text-slate-500" : "text-slate-800" },
                 ].map(({ label, value, sub, color }) => (
                   <div key={label} className="bg-white border rounded-lg p-3">
                     <p className="text-xs text-slate-400 mb-0.5">{label}</p>

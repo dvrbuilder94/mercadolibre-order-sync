@@ -1,6 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getMeliAccount } from '../_shared/meli-account.ts';
 import { resolveUserId } from '../_shared/auth.ts';
+import { mapMeliOrderStatus } from '../_shared/order-status.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -163,12 +164,8 @@ Deno.serve(async (req) => {
       const rawRut = billingInfo.doc_number || billingInfo.docNumber || null;
       const { body: customerTaxId, dv: customerTaxIdDv } = splitRut(rawRut);
 
-      // Map Mercado Libre status to our status
-      let status = 'pending';
-      if (order.status === 'paid') status = 'confirmed';
-      if (order.status === 'cancelled') status = 'cancelled';
-      if (order.shipping?.status === 'shipped') status = 'shipped';
-      if (order.shipping?.status === 'delivered') status = 'delivered';
+      // Estado normalizado (mismo mapeo que usa meli-webhook, ver _shared/order-status.ts)
+      const status = mapMeliOrderStatus(order);
 
       // Extract payment data for commission calculation
       const payment = order.payments?.[0];

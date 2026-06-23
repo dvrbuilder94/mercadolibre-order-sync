@@ -12,6 +12,7 @@ import {
 import { RawApiExtractor } from "@/components/RawApiExtractor";
 import { chileMonthUnixRange } from "@/lib/chileDate";
 import { orderHasDoc } from "@/lib/taxDocs";
+import { isRealSale } from "@/lib/orderStatus";
 
 interface Stats {
   orders: number;
@@ -174,7 +175,8 @@ export default function Pipeline() {
         docBase().eq("document_type", "nota_credito"),
       ]);
 
-      const vigentes = orders.filter(o => o.status !== "cancelled");
+      // vigentes = ventas reales (excluye canceladas, rechazadas e inválidas).
+      const vigentes = orders.filter(o => isRealSale(o.status));
       const matched  = vigentes.filter(o => orderHasDoc(o.order_tax_documents as any[]));
 
       setStats({
@@ -584,7 +586,7 @@ export default function Pipeline() {
           {[
             { label: "Órdenes ML", value: stats.total, color: "text-slate-800",
               caption: stats.total > 0
-                ? `${stats.orders} activas · ${stats.cancelled} canceladas (${Math.round(stats.cancelled / Math.max(stats.total, 1) * 100)}%)`
+                ? `${stats.orders} ventas reales · ${stats.cancelled} descartadas (${Math.round(stats.cancelled / Math.max(stats.total, 1) * 100)}%)`
                 : null, progress: null as number | null },
             { label: "Documentos Bsale", value: stats.docs, color: "text-slate-800",
               caption: stats.docs > 0

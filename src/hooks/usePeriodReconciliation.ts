@@ -3,6 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import type { PeriodReconciliation } from '@/types/reconciliation';
 import { SCORE_OK, HARD_MATCH_SOURCES } from '@/lib/constants';
 import { orderHasDoc } from '@/lib/taxDocs';
+import { NON_SALE_STATUSES_PG } from '@/lib/orderStatus';
 
 const CHANNEL_LABEL: Record<string, string> = {
   meli: 'MercadoLibre', falabella: 'Falabella', paris: 'Paris',
@@ -51,7 +52,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               `)
               .gte('order_date', from)
               .lte('order_date', to)
-              .neq('status', 'cancelled');
+              .not('status', 'in', NON_SALE_STATUSES_PG);
             if (canalId !== 'todos') q = q.eq('channel', canalId as any);
             // .range() pagination needs a deterministic sort, otherwise Postgres
             // doesn't guarantee stable ordering across pages and rows can be
@@ -78,7 +79,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               .select('channel, gross_amount')
               .gte('order_date', from)
               .lte('order_date', to)
-              .neq('status', 'cancelled')
+              .not('status', 'in', NON_SALE_STATUSES_PG)
               .order('order_date', { ascending: false })
               .order('id', { ascending: true })
               .range(offset, offset + PAGE - 1);

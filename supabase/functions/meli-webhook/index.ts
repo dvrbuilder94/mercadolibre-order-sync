@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { mapMeliOrderStatus } from '../_shared/order-status.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -129,7 +130,9 @@ Deno.serve(async (req) => {
         meli_account_id: meliAccount.id,
         customer_name: order.buyer?.nickname || 'Desconocido',
         customer_email: order.buyer?.email || null,
-        status: order.status,
+        // Mismo mapeo que sync-meli-orders — antes acá se guardaba el status
+        // crudo de ML, lo que dejaba el vocabulario inconsistente entre ambos.
+        status: mapMeliOrderStatus(order),
         order_date: order.date_created,
         amount: order.total_amount,
         items: order.order_items?.length || 0,

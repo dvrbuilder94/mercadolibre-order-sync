@@ -6,6 +6,7 @@ import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
 import { SCORE_OK, CHANNEL_LABEL, CHANNEL_COLOR, HARD_MATCH_SOURCES as HARD_SOURCES } from "@/lib/constants";
+import { NON_SALE_STATUSES_PG } from "@/lib/orderStatus";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -250,7 +251,7 @@ export default function PageConciliacion() {
           `)
           .gte("order_date", from + "T00:00:00")
           .lte("order_date", to + "T23:59:59")
-          .neq("status", "cancelled")
+          .not("status", "in", NON_SALE_STATUSES_PG)
           .order("order_date", { ascending: false })
           .range(offset, offset + PAGE - 1);
         if (error) throw error;
