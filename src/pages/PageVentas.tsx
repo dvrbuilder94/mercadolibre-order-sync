@@ -7,9 +7,8 @@ import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import {
   ChevronLeft, ChevronRight, RefreshCw, Loader2, Info,
-  CheckCircle2, AlertCircle, FileText, ShoppingBag, ExternalLink, Package,
+  CheckCircle2, AlertCircle, FileText, ShoppingBag, ExternalLink,
 } from "lucide-react";
-import { chileMonthUnixRange } from "@/lib/chileDate";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 
 const PAGE_SIZE = 50;
@@ -49,49 +48,12 @@ const DOC_LABEL: Record<string, string> = {
   boleta: "Boleta", factura: "Factura", nota_credito: "N. Créd.",
   nota_debito: "N. Déb.", factura_exenta: "Fact. Ex.",
 };
-const DOC_COLOR: Record<string, string> = {
-  boleta: "bg-slate-100 text-slate-700", factura: "bg-blue-100 text-blue-700",
-  nota_credito: "bg-red-100 text-red-700",
-};
 
 // Just digits — DV lives in DB but adds visual noise in dense tables.
 const formatRut = (body: string | null) => {
   if (!body) return "—";
   return body.replace(/[^0-9Kk]/g, "") || "—";
 };
-
-// Client-side channel detection from reference text — mirrors sync-bsale-docs logic.
-// Used when detected_channel is null (doc synced before detection was added to sync).
-function detectChannelFromText(text: string | null): string | null {
-  if (!text) return null;
-  const u = text.toUpperCase();
-  if (u.includes('MERCADO LIBRE') || u.includes('MERCADOLIBRE') ||
-      u.includes('MERCADO PAGO') || u.includes('MERCADOPAGO')) return 'meli';
-  if (u.includes('FALABELLA') || u.includes('CMR')) return 'falabella';
-  if (u.includes('PARIS') || u.includes('CENCOSUD')) return 'paris';
-  if (u.includes('RIPLEY')) return 'ripley';
-  if (u.includes('AMAZON')) return 'amazon';
-  if (u.includes('SHOPIFY')) return 'shopify';
-  if (u.includes('LINIO')) return 'linio';
-  if (u.includes('RAPPI')) return 'rappi';
-  if (u.includes('WALMART') || u.includes('LIDER') || u.includes('LÍDER')) return 'walmart';
-  return null;
-}
-
-function inferChannel(detected: string | null, rawData: any): string | null {
-  if (detected) return detected;
-  // Fall back to text detection from stored reference_reason
-  const hit = detectChannelFromText(rawData?.reference_reason)
-    ?? detectChannelFromText(rawData?.payment_method_name);
-  if (hit) return hit;
-  // Check all references items
-  const refs: any[] = rawData?.references?.items ?? [];
-  for (const ref of refs) {
-    const h = detectChannelFromText(ref.reason) ?? detectChannelFromText(String(ref.number ?? ''));
-    if (h) return h;
-  }
-  return null;
-}
 
 const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
@@ -119,55 +81,6 @@ export default function PageVentas() {
     const t = setTimeout(() => setOrderSearch(orderSearchInput.trim()), 300);
     return () => clearTimeout(t);
   }, [orderSearchInput]);
-
-  // Docs tab
-  const [docs, setDocs] = useState<any[]>([]);
-  const [docsTotal, setDocsTotal] = useState(0);
-  const [docsMeliCount, setDocsMeliCount] = useState(0);
-  const [docsSum, setDocsSum] = useState<number | null>(null);
-  const [docFilteredTotal, setDocFilteredTotal] = useState<number | null>(null);
-  const [docPage, setDocPage] = useState(0);
-  const [docsLoading, setDocsLoading] = useState(true);
-  const [docSyncing, setDocSyncing] = useState(false);
-  const [docSyncMsg, setDocSyncMsg] = useState("");
-  const [selectedDoc, setSelectedDoc] = useState<any | null>(null);
-  const [selectedDocSales, setSelectedDocSales] = useState<any[] | null>(null);
-
-  // Load the sales associated to the selected document (handles packs: 1 doc ↔ N ventas).
-  // Two-step fetch (links, then orders) instead of a nested embed — embeds across
-  // order_tax_documents → orders have proven unreliable here (RLS + FK edge cases).
-  useEffect(() => {
-    if (!selectedDoc) { setSelectedDocSales(null); return; }
-    let cancelled = false;
-    setSelectedDocSales(null);
-    (async () => {
-      const { data: links, error: linksError } = await supabase
-        .from("order_tax_documents")
-        .select("order_id, allocated_amount, match_source")
-        .eq("tax_document_id", selectedDoc.id);
-      if (cancelled) return;
-      if (linksError || !links || links.length === 0) {
-        setSelectedDocSales([]);
-        return;
-      }
-      const orderIds = links.map((l: any) => l.order_id);
-      const { data: ordersData } = await supabase
-        .from("orders")
-        .select("id, order_id, order_date, gross_amount, customer_name, product_title, channel, status")
-        .in("id", orderIds);
-      if (cancelled) return;
-      const byId = new Map((ordersData ?? []).map((o: any) => [o.id, o]));
-      const sales = links
-        .map((l: any) => {
-          const o = byId.get(l.order_id);
-          if (!o) return null;
-          return { ...o, allocated_amount: l.allocated_amount, match_source: l.match_source };
-        })
-        .filter((s: any) => s !== null);
-      setSelectedDocSales(sales);
-    })();
-    return () => { cancelled = true; };
-  }, [selectedDoc]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -251,90 +164,10 @@ export default function PageVentas() {
     }
   }, [period, channelFilter, docStatusFilter, orderSearch]);
 
-  // ── Docs fetch ─────────────────────────────────────────────────────────────
-  const fetchDocs = useCallback(async (p: number) => {
-    setDocsLoading(true);
-    try {
-      const { from, to } = periodRange(period);
-
-      const [{ count }, { data: sumRows }] = await Promise.all([
-        supabase.from("tax_documents").select("*", { count: "exact", head: true })
-          .gte("document_date", from).lte("document_date", to),
-        supabase.from("tax_documents").select("total_amount.sum()")
-          .gte("document_date", from).lte("document_date", to).eq("status", "issued"),
-      ]);
-      setDocsTotal(count || 0);
-      setDocsSum((sumRows as any)?.[0]?.sum ?? null);
-
-      // order_tax_documents!inner(id) counts JOINED ROWS, not distinct docs — a
-      // pack doc linked to 3 orders inflated the count by 3. Fetch the docs in
-      // scope with their link arrays instead and count those with >=1 link.
-      const docLinkRows: { order_tax_documents: { id: string }[] }[] = [];
-      for (let page = 0; page < 20; page++) {
-        const { data } = await supabase
-          .from("tax_documents")
-          .select("order_tax_documents(id)")
-          .gte("document_date", from).lte("document_date", to)
-          .order("document_date", { ascending: false })
-          .order("id", { ascending: true })
-          .range(page * 1000, page * 1000 + 999);
-        if (!data || data.length === 0) break;
-        docLinkRows.push(...(data as any));
-        if (data.length < 1000) break;
-      }
-      setDocsMeliCount(docLinkRows.filter(d => (d.order_tax_documents?.length ?? 0) > 0).length);
-
-      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)";
-
-      if (channelFilter === "todos") {
-        setDocFilteredTotal(null);
-        // raw_data contains reference_reason and references.items from Bsale — used
-        // client-side to infer channel when detected_channel is null in DB.
-        const { data } = await supabase
-          .from("tax_documents")
-          .select(FULL_COLS)
-          .gte("document_date", from).lte("document_date", to)
-          .order("document_date", { ascending: false })
-          .order("id", { ascending: false })
-          .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
-
-        setDocs(data || []);
-      } else {
-        // Channel filter must consider every doc in the period (not just the
-        // current page), so first scan a light projection to find matching ids,
-        // then fetch full rows only for the page being shown.
-        const { data: light } = await (supabase
-          .from("tax_documents") as any)
-          .select("id, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references")
-          .gte("document_date", from).lte("document_date", to)
-          .order("document_date", { ascending: false })
-          .order("id", { ascending: false });
-
-        const matchedIds = (light || [])
-          .filter((d: any) => inferChannel(d.detected_channel, { reference_reason: d.reference_reason, references: d.references }) === channelFilter)
-          .map((d: any) => d.id);
-
-        setDocFilteredTotal(matchedIds.length);
-
-        const pageIds = matchedIds.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE);
-        if (pageIds.length === 0) {
-          setDocs([]);
-        } else {
-          const { data: full } = await supabase.from("tax_documents").select(FULL_COLS).in("id", pageIds);
-          const byId = new Map((full || []).map((d: any) => [d.id, d]));
-          setDocs(pageIds.map((id: string) => byId.get(id)).filter((d: any) => d !== undefined));
-        }
-      }
-    } finally {
-      setDocsLoading(false);
-    }
-  }, [period, channelFilter]);
-
-  useEffect(() => { setOrderPage(0); setDocPage(0); setSelectedOrder(null); setSelectedDoc(null); setChannelFilter("todos"); setDocStatusFilter("todos"); setOrderSearchInput(""); }, [period]);
-  useEffect(() => { setOrderPage(0); setSelectedOrder(null); setDocPage(0); setSelectedDoc(null); }, [channelFilter]);
+  useEffect(() => { setOrderPage(0); setSelectedOrder(null); setChannelFilter("todos"); setDocStatusFilter("todos"); setOrderSearchInput(""); }, [period]);
+  useEffect(() => { setOrderPage(0); setSelectedOrder(null); }, [channelFilter]);
   useEffect(() => { setOrderPage(0); setSelectedOrder(null); }, [docStatusFilter, orderSearch]);
   useEffect(() => { fetchOrders(orderPage); }, [fetchOrders, orderPage]);
-  useEffect(() => { fetchDocs(docPage); }, [fetchDocs, docPage]);
 
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
@@ -359,24 +192,6 @@ export default function PageVentas() {
     } finally { setOrderSyncing(false); }
   };
 
-  const syncDocs = async () => {
-    setDocSyncing(true); setDocSyncMsg("Sincronizando...");
-    try {
-      // Sync the period currently being viewed — days_back:90 ignored the
-      // period selector and always pulled the last 90 days from today.
-      const { from: dateFrom, to: dateTo } = chileMonthUnixRange(period);
-      const { data, error } = await supabase.functions.invoke("sync-bsale-docs", {
-        body: { date_from: dateFrom, date_to: dateTo, max_pages: 20 },
-      });
-      if (error) throw error;
-      const tot = data?.summary?.total_upserted ?? 0;
-      setDocSyncMsg(`✅ ${tot} documentos`);
-      fetchDocs(docPage);
-    } catch (e: any) {
-      setDocSyncMsg(`❌ ${e?.message || "Error"}`);
-    } finally { setDocSyncing(false); }
-  };
-
   // Linked doc helper
   const getLinkedDoc = (o: any) => {
     const links = (o.order_tax_documents as any[]) ?? [];
@@ -386,8 +201,6 @@ export default function PageVentas() {
   };
 
   const orderTotalPages = Math.ceil(ordersListTotal / PAGE_SIZE);
-  const docListTotal    = channelFilter !== "todos" ? (docFilteredTotal ?? 0) : docsTotal;
-  const docTotalPages   = Math.ceil(docListTotal / PAGE_SIZE);
 
   return (
     <div className="flex min-h-screen bg-slate-50">
@@ -611,14 +424,6 @@ export default function PageVentas() {
 
       {selectedOrder && (
         <DetailPanel title={`Orden · ${selectedOrder.order_id}`} data={selectedOrder} onClose={() => setSelectedOrder(null)} />
-      )}
-      {selectedDoc && (
-        <DetailPanel
-          title={`Bsale · ${DOC_LABEL[selectedDoc.document_type] || selectedDoc.document_type} #${selectedDoc.document_number}`}
-          data={selectedDoc}
-          linkedSales={selectedDocSales}
-          onClose={() => setSelectedDoc(null)}
-        />
       )}
     </div>
   );
