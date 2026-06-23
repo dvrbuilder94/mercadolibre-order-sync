@@ -12,6 +12,7 @@ import {
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 import { linkIsVigente } from "@/lib/taxDocs";
 import { NON_SALE_STATUSES, NON_SALE_STATUSES_PG } from "@/lib/orderStatus";
+import { isLiquidacionStuck, daysSince } from "@/lib/liquidacion";
 
 const PAGE_SIZE = 50;
 
@@ -73,6 +74,11 @@ export default function PageVentas() {
   // Ventas descartadas (canceladas/rechazadas/inválidas): visibles pero fuera de los totales.
   const [discardedCount, setDiscardedCount] = useState(0);
   const [discardedSum, setDiscardedSum] = useState<number | null>(null);
+  // Ventas reales cuyo pago nunca llegó a confirmarse en MercadoPago (ver
+  // src/lib/liquidacion): la plata puede estar perdida y nadie lo nota porque
+  // queda mostrada igual que un "estimado" normal.
+  const [stuckCount, setStuckCount] = useState(0);
+  const [stuckSum, setStuckSum] = useState<number | null>(null);
   const [orderPage, setOrderPage] = useState(0);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [orderSyncing, setOrderSyncing] = useState(false);
@@ -116,9 +122,9 @@ export default function PageVentas() {
       // of doc-link status (confirmed: "Sin documento" showed the full total).
       // Instead, fetch ids in scope and the full linked-order-id set as two
       // plain queries, then compute con/sin client-side — slower but correct.
-      const scopeRows: { id: string; order_date: string }[] = [];
+      const scopeRows: { id: string; order_date: string; has_exact_data: boolean | null; money_release_date: string | null; gross_amount: number | null }[] = [];
       for (let page = 0; page < 20; page++) {
-        const { data } = await applyBase(supabase.from("orders").select("id, order_date"))
+        const { data } = await applyBase(supabase.from("orders").select("id, order_date, has_exact_data, money_release_date, gross_amount"))
           .order("order_date", { ascending: false })
           .order("id", { ascending: true })
           .range(page * 1000, page * 1000 + 999);
@@ -143,6 +149,10 @@ export default function PageVentas() {
 
       setOrdersTotal(scopeRows.length);
       setOrdersWithoutDoc(scopeRows.filter(o => !linkedIds.has(o.id)).length);
+
+      const stuckRows = scopeRows.filter(isLiquidacionStuck);
+      setStuckCount(stuckRows.length);
+      setStuckSum(stuckRows.reduce((s, r) => s + (r.gross_amount ?? 0), 0));
 
       const { data: sumRows } = await applyBase(supabase.from("orders").select("gross_amount.sum()"));
       const rawSum = (sumRows as any)?.[0];
@@ -271,13 +281,16 @@ export default function PageVentas() {
 
         <>
           <div className="flex items-center justify-between mb-4">
-              <div className="grid grid-cols-5 gap-3 flex-1 mr-4">
+              <div className="grid grid-cols-6 gap-3 flex-1 mr-4">
                 {[
                   { label: "Órdenes",       value: ordersLoading ? "—" : ordersTotal,                                              sub: "ventas reales" },
                   { label: "Total ventas",  value: ordersLoading || ordersSum === null ? "—" : CLP(ordersSum),                    sub: "bruto mensual" },
                   { label: "Con documento", value: ordersLoading ? "—" : Math.max(ordersTotal - ordersWithoutDoc, 0),             sub: "con boleta/factura", color: "text-emerald-600" },
                   { label: "Sin documento", value: ordersLoading ? "—" : ordersWithoutDoc,                                        sub: "sin DTE",
                     color: ordersWithoutDoc > 0 ? "text-red-600" : "text-emerald-600" },
+                  { label: "Liq. colgada",  value: ordersLoading ? "—" : stuckCount,
+                    sub: stuckSum && stuckSum > 0 ? `${CLP(stuckSum)} · pago sin confirmar` : "todo confirmado",
+                    color: stuckCount > 0 ? "text-red-600" : "text-emerald-600" },
                   { label: "Descartadas",   value: ordersLoading ? "—" : discardedCount,
                     sub: discardedSum && discardedSum > 0 ? `${CLP(discardedSum)} · no suma al total` : "canceladas/rechazadas",
                     color: discardedCount > 0 ? "text-slate-500" : "text-slate-800" },
@@ -395,6 +408,11 @@ export default function PageVentas() {
                           {o.payment_approved_at && (
                             <span className="text-[10px] text-slate-400 block mt-0.5">
                               Cobrado {format(new Date(o.payment_approved_at), "dd/MM", { locale: es })}
+                            </span>
+                          )}
+                          {isLiquidacionStuck(o) && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded font-medium w-fit block mt-0.5 bg-red-100 text-red-700">
+                              ⚠ colgada {(() => { const d = daysSince(o.money_release_date || o.order_date); return d != null ? `hace ${d}d` : ""; })()}
                             </span>
                           )}
                         </td>

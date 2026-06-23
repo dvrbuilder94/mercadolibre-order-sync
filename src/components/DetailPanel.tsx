@@ -1,5 +1,6 @@
 import { linkIsVigente } from "@/lib/taxDocs";
 import { isRealSale } from "@/lib/orderStatus";
+import { isLiquidacionStuck, daysSince } from "@/lib/liquidacion";
 
 interface LinkedSale {
   order_id: string;
@@ -210,6 +211,7 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
   const hasDoc = !!linkedDoc;
   const exact = data.has_exact_data === true;       // neto real confirmado por MercadoPago
   const released = data.money_release_date ? new Date(data.money_release_date) <= new Date() : false;
+  const stuck = !isBsale && isLiquidacionStuck(data);
 
   const chainSteps: { label: string; state: ChainState; note?: string }[] = [
     {
@@ -224,8 +226,8 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
     },
     {
       label: "Liquidación",
-      state: exact ? "ok" : "warn",
-      note: exact ? (released ? "neto liberado" : "neto exacto") : "estimado",
+      state: exact ? "ok" : stuck ? "off" : "warn",
+      note: exact ? (released ? "neto liberado" : "neto exacto") : stuck ? "colgada" : "estimado",
     },
     { label: "Banco", state: "na", note: "Fintoc pausado" },
   ];
@@ -277,9 +279,17 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
 
               {/* ── LIQUIDACIÓN (MercadoPago) — leg 2 de la cadena ────────── */}
               <Section title="Liquidación (MercadoPago)">
-                <div className={`flex items-center gap-1.5 mb-1.5 rounded px-2 py-1 w-fit border ${exact ? "text-emerald-700 bg-emerald-50 border-emerald-200" : "text-amber-700 bg-amber-50 border-amber-200"}`}>
+                <div className={`flex items-center gap-1.5 mb-1.5 rounded px-2 py-1 w-fit border ${
+                  exact ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+                  : stuck ? "text-red-700 bg-red-50 border-red-200"
+                  : "text-amber-700 bg-amber-50 border-amber-200"
+                }`}>
                   <span className="text-[10px] font-semibold uppercase tracking-wider">
-                    {exact ? "Neto exacto (confirmado por MercadoPago)" : "Neto estimado (aún sin pago confirmado)"}
+                    {exact
+                      ? "Neto exacto (confirmado por MercadoPago)"
+                      : stuck
+                        ? `⚠ Colgada — sin confirmar hace ${daysSince(data.money_release_date || data.order_date) ?? "?"} días`
+                        : "Neto estimado (aún sin pago confirmado)"}
                   </span>
                 </div>
                 <Row label="monto bruto"     value={CLP(data.gross_amount)}         highlight />
