@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Fragment } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
@@ -6,7 +6,7 @@ import { DetailPanel } from "@/components/DetailPanel";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import {
-  ChevronLeft, ChevronRight, RefreshCw, Loader2, Info,
+  ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Loader2, Info,
   CheckCircle2, FileText, Package,
 } from "lucide-react";
 import { chileMonthUnixRange } from "@/lib/chileDate";
@@ -24,6 +24,12 @@ const periodRange = (p: string) => {
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
   return format(new Date(y, m - 1, 1), "MMMM yyyy", { locale: es });
+};
+// Fecha corta para liberaciones: "14 jun"
+const fmtDay = (d: string | null | undefined) => {
+  if (!d) return "";
+  const dt = new Date(d);
+  return isNaN(dt.getTime()) ? "" : format(dt, "d MMM", { locale: es });
 };
 
 const DOC_LABEL: Record<string, string> = {
@@ -71,6 +77,35 @@ function inferChannel(detected: string | null, rawData: any): string | null {
 
 const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
+// Estado consolidado de liberación de pago para las ventas (orders) de un documento.
+// "Liberado" sólo cuando TODAS las ventas tienen dato exacto de MercadoPago
+// (has_exact_data=true). "Parcial" cuando algunas sí y otras no — ese es el caso
+// que importa al contador: boleta emitida con parte del pago aún sin liberar.
+type ReleaseInfo = { state: 'liberado' | 'parcial' | 'pendiente' | 'sin_venta'; label: string; dot: string; text: string };
+function releaseInfo(orders: any[] | undefined): ReleaseInfo {
+  if (!orders || orders.length === 0)
+    return { state: 'sin_venta', label: 'Sin venta asociada', dot: 'bg-slate-300', text: 'text-slate-400' };
+  const confirmed = orders.filter(o => o?.has_exact_data === true);
+  if (confirmed.length === orders.length) {
+    const latest = confirmed.map(o => o.money_release_date).filter(Boolean).sort().pop();
+    return { state: 'liberado', label: latest ? `Liberado · ${fmtDay(latest)}` : 'Liberado', dot: 'bg-emerald-500', text: 'text-emerald-600' };
+  }
+  if (confirmed.length === 0)
+    return { state: 'pendiente', label: 'Pendiente', dot: 'bg-slate-300', text: 'text-slate-400' };
+  return { state: 'parcial', label: `Parcial · ${confirmed.length} de ${orders.length}`, dot: 'bg-amber-500', text: 'text-amber-600' };
+}
+
+// Suma de comisiones reales de las ventas de un documento. allReal=false marca
+// que al menos una venta usa comisión estimada (pago aún no liberado).
+function commissionOf(orders: any[] | undefined): { total: number; allReal: boolean; hasAny: boolean } {
+  if (!orders || orders.length === 0) return { total: 0, allReal: false, hasAny: false };
+  const total = orders.reduce((s, o) => s + Math.abs(o?.commission_amount ?? 0), 0);
+  const allReal = orders.every(o => o?.has_exact_data === true);
+  return { total, allReal, hasAny: true };
+}
+
+const FINANCIAL_COLS = "id, order_id, order_date, gross_amount, net_amount, commission_amount, money_release_date, has_exact_data";
+
 export default function PageDocumentos() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
@@ -80,6 +115,9 @@ export default function PageDocumentos() {
   const [docsTotal, setDocsTotal] = useState(0);
   const [docsMeliCount, setDocsMeliCount] = useState(0);
   const [docsSum, setDocsSum] = useState<number | null>(null);
+  const [docsIva, setDocsIva] = useState<number | null>(null);
+  const [comisionTotal, setComisionTotal] = useState<number | null>(null);
+  const [pendingRelease, setPendingRelease] = useState<number | null>(null);
   const [docFilteredTotal, setDocFilteredTotal] = useState<number | null>(null);
   const [docPage, setDocPage] = useState(0);
   const [docsLoading, setDocsLoading] = useState(true);
@@ -87,6 +125,14 @@ export default function PageDocumentos() {
   const [docSyncMsg, setDocSyncMsg] = useState("");
   const [selectedDoc, setSelectedDoc] = useState<any | null>(null);
   const [selectedDocSales, setSelectedDocSales] = useState<any[] | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (id: string) =>
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -124,25 +170,57 @@ export default function PageDocumentos() {
     return () => { cancelled = true; };
   }, [selectedDoc]);
 
+  // Trae los datos financieros (venta/comisión/liberación) de las órdenes
+  // vinculadas a una página de documentos y los adjunta como _linkedOrders.
+  // Se hace en dos pasos (links → orders por id) en vez de un embed anidado,
+  // que es el patrón ya probado en este archivo para el panel de detalle.
+  const attachOrders = useCallback(async (docsArr: any[]): Promise<any[]> => {
+    const ids: string[] = [];
+    for (const d of docsArr)
+      for (const l of (d.order_tax_documents ?? []))
+        if (l.order_id) ids.push(l.order_id);
+    if (ids.length === 0) return docsArr.map(d => ({ ...d, _linkedOrders: [] }));
+    const ordMap = new Map<string, any>();
+    const uniq = [...new Set(ids)];
+    for (let i = 0; i < uniq.length; i += 300) {
+      const { data: ords } = await supabase
+        .from("orders").select(FINANCIAL_COLS)
+        .in("id", uniq.slice(i, i + 300));
+      for (const o of ords ?? []) ordMap.set(o.id, o);
+    }
+    return docsArr.map(d => ({
+      ...d,
+      _linkedOrders: (d.order_tax_documents ?? [])
+        .map((l: any) => ordMap.get(l.order_id))
+        .filter(Boolean),
+    }));
+  }, []);
+
   const fetchDocs = useCallback(async (p: number) => {
     setDocsLoading(true);
     try {
       const { from, to } = periodRange(period);
 
-      const [{ count }, { data: sumRows }] = await Promise.all([
+      const [{ count }, { data: sumRows }, { data: ivaRows }] = await Promise.all([
         supabase.from("tax_documents").select("*", { count: "exact", head: true })
           .gte("document_date", from).lte("document_date", to),
         supabase.from("tax_documents").select("total_amount.sum()")
           .gte("document_date", from).lte("document_date", to).eq("status", "issued"),
+        supabase.from("tax_documents").select("tax_amount.sum()")
+          .gte("document_date", from).lte("document_date", to).eq("status", "issued"),
       ]);
       setDocsTotal(count || 0);
       setDocsSum((sumRows as any)?.[0]?.sum ?? null);
+      setDocsIva((ivaRows as any)?.[0]?.sum ?? null);
 
-      const docLinkRows: { order_tax_documents: { id: string }[] }[] = [];
+      // Recorre todos los documentos del período una vez para: (a) contar
+      // vinculados a MeLi y (b) juntar los order_id vinculados, con los que
+      // luego calculamos comisión total real y liberaciones pendientes.
+      const docLinkRows: { order_tax_documents: { order_id: string }[] }[] = [];
       for (let page = 0; page < 20; page++) {
         const { data } = await supabase
           .from("tax_documents")
-          .select("order_tax_documents(id)")
+          .select("order_tax_documents(order_id)")
           .gte("document_date", from).lte("document_date", to)
           .order("document_date", { ascending: false })
           .order("id", { ascending: true })
@@ -153,7 +231,23 @@ export default function PageDocumentos() {
       }
       setDocsMeliCount(docLinkRows.filter(d => (d.order_tax_documents?.length ?? 0) > 0).length);
 
-      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id)";
+      const linkedOrderIds = [...new Set(
+        docLinkRows.flatMap(d => (d.order_tax_documents ?? []).map(l => l.order_id)).filter(Boolean)
+      )];
+      let comTotal = 0, pending = 0;
+      for (let i = 0; i < linkedOrderIds.length; i += 300) {
+        const { data: ords } = await supabase
+          .from("orders").select("commission_amount, has_exact_data")
+          .in("id", linkedOrderIds.slice(i, i + 300));
+        for (const o of (ords ?? []) as any[]) {
+          comTotal += Math.abs(o.commission_amount ?? 0);
+          if (o.has_exact_data !== true) pending++;
+        }
+      }
+      setComisionTotal(linkedOrderIds.length ? comTotal : null);
+      setPendingRelease(pending);
+
+      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id, order_id)";
 
       if (channelFilter === "todos") {
         setDocFilteredTotal(null);
@@ -164,7 +258,7 @@ export default function PageDocumentos() {
           .order("document_date", { ascending: false })
           .order("id", { ascending: false })
           .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
-        setDocs(data || []);
+        setDocs(await attachOrders(data || []));
       } else {
         const { data: light } = await (supabase
           .from("tax_documents") as any)
@@ -185,16 +279,17 @@ export default function PageDocumentos() {
         } else {
           const { data: full } = await supabase.from("tax_documents").select(FULL_COLS).in("id", pageIds);
           const byId = new Map((full || []).map((d: any) => [d.id, d]));
-          setDocs(pageIds.map((id: string) => byId.get(id)).filter((d: any) => d !== undefined));
+          const ordered = pageIds.map((id: string) => byId.get(id)).filter((d: any) => d !== undefined);
+          setDocs(await attachOrders(ordered));
         }
       }
     } finally {
       setDocsLoading(false);
     }
-  }, [period, channelFilter]);
+  }, [period, channelFilter, attachOrders]);
 
-  useEffect(() => { setDocPage(0); setSelectedDoc(null); setChannelFilter("todos"); }, [period]);
-  useEffect(() => { setDocPage(0); setSelectedDoc(null); }, [channelFilter]);
+  useEffect(() => { setDocPage(0); setSelectedDoc(null); setChannelFilter("todos"); setExpanded(new Set()); }, [period]);
+  useEffect(() => { setDocPage(0); setSelectedDoc(null); setExpanded(new Set()); }, [channelFilter]);
   useEffect(() => { fetchDocs(docPage); }, [fetchDocs, docPage]);
 
   const changePeriod = (delta: number) => {
@@ -221,10 +316,19 @@ export default function PageDocumentos() {
   const docListTotal  = channelFilter !== "todos" ? (docFilteredTotal ?? 0) : docsTotal;
   const docTotalPages = Math.ceil(docListTotal / PAGE_SIZE);
 
+  const kpis = [
+    { label: "Documentos",       value: docsLoading ? "—" : docsTotal.toLocaleString("es-CL"),                 sub: "en el período" },
+    { label: "Total facturado",  value: docsLoading || docsSum === null ? "—" : CLP(docsSum),                  sub: "documentos emitidos" },
+    { label: "IVA del período",  value: docsLoading || docsIva === null ? "—" : CLP(docsIva),                  sub: "débito fiscal" },
+    { label: "Comisiones",       value: docsLoading || comisionTotal === null ? "—" : CLP(comisionTotal),      sub: "real + estimado", color: "text-slate-700" },
+    { label: "Vinculados MeLi",  value: docsLoading ? "—" : docsMeliCount,                                     sub: "con venta + pago", color: "text-emerald-600" },
+    { label: "Liberación pend.", value: docsLoading || pendingRelease === null ? "—" : pendingRelease,         sub: "ventas sin liberar", color: "text-amber-600" },
+  ];
+
   return (
     <div className="flex min-h-screen bg-slate-50">
       <Nav />
-      <main className="flex-1 p-8 max-w-6xl">
+      <main className="flex-1 p-8 max-w-7xl">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <FileText className="h-5 w-5 text-slate-400" />
@@ -259,14 +363,9 @@ export default function PageDocumentos() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between mb-4">
-          <div className="grid grid-cols-4 gap-3 flex-1 mr-4">
-            {[
-              { label: "Documentos",       value: docsLoading ? "—" : docsTotal,                                             sub: "en el período" },
-              { label: "Total facturado",  value: docsLoading || docsSum === null ? "—" : CLP(docsSum),                     sub: "documentos emitidos" },
-              { label: "Vinculados MeLi",  value: docsLoading ? "—" : docsMeliCount,                                        sub: "con orden ML", color: "text-emerald-600" },
-              { label: "Otros canales",    value: docsLoading ? "—" : Math.max(docsTotal - docsMeliCount, 0),               sub: "tienda física / web", color: "text-slate-700" },
-            ].map(({ label, value, sub, color }) => (
+        <div className="flex items-start justify-between mb-4 gap-4">
+          <div className="grid grid-cols-6 gap-3 flex-1">
+            {kpis.map(({ label, value, sub, color }) => (
               <div key={label} className="bg-white border rounded-lg p-3">
                 <p className="text-xs text-slate-400 mb-0.5">{label}</p>
                 <p className={`text-xl font-bold ${color || "text-slate-800"}`}>{value}</p>
@@ -274,7 +373,7 @@ export default function PageDocumentos() {
               </div>
             ))}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0 pt-1">
             {docSyncMsg && <span className={`text-xs ${docSyncMsg.includes("❌") ? "text-red-500" : "text-green-600"}`}>{docSyncMsg}</span>}
             <button onClick={syncDocs} disabled={docSyncing || docsLoading}
               className="flex items-center gap-2 px-3 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white font-medium rounded-lg text-sm">
@@ -288,79 +387,138 @@ export default function PageDocumentos() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-slate-50 text-xs text-slate-500">
-                <th className="text-left px-4 py-3 font-medium">Tipo</th>
-                <th className="text-left px-4 py-3 font-medium">Número</th>
-                <th className="text-left px-4 py-3 font-medium">Fecha</th>
-                <th className="text-left px-4 py-3 font-medium">Canal</th>
-                <th className="text-right px-4 py-3 font-medium">Monto</th>
-                <th className="text-left px-4 py-3 font-medium">RUT cliente</th>
-                <th className="text-left px-4 py-3 font-medium">Orden vinculada</th>
+                <th className="text-left px-4 py-3 font-medium">Documento</th>
+                <th className="text-left px-4 py-3 font-medium">Fecha doc</th>
+                <th className="text-right px-4 py-3 font-medium">Neto</th>
+                <th className="text-right px-4 py-3 font-medium">IVA</th>
+                <th className="text-right px-4 py-3 font-medium">Total</th>
+                <th className="text-left px-4 py-3 font-medium">Ventas</th>
+                <th className="text-right px-4 py-3 font-medium">Comisión</th>
+                <th className="text-left px-4 py-3 font-medium">Liberación</th>
                 <th className="w-8 px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               {docsLoading ? (
-                <tr><td colSpan={8} className="text-center py-12 text-slate-400">
+                <tr><td colSpan={9} className="text-center py-12 text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...
                 </td></tr>
               ) : docs.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
+                <tr><td colSpan={9} className="text-center py-12 text-slate-400 text-sm">
                   {channelFilter === "todos"
                     ? "Sin documentos. Prueba Sync Bsale."
                     : `Sin documentos de ${CHANNEL_LABEL[channelFilter] ?? channelFilter} en este período.`}
                 </td></tr>
               ) : docs.map(d => {
-                const linkCount = (d.order_tax_documents as any[])?.length ?? 0;
-                const isLinked = linkCount > 0;
+                const linkedOrders: any[] = d._linkedOrders ?? [];
+                const linkCount = linkedOrders.length;
                 const isPack = linkCount > 1;
                 const isVoided = d.status === "voided";
                 const isSelected = selectedDoc?.id === d.id;
+                const isOpen = expanded.has(d.id);
                 const effectiveChannel = inferChannel(d.detected_channel, d.raw_data);
+                const rel = releaseInfo(linkedOrders);
+                const com = commissionOf(linkedOrders);
+
                 return (
-                  <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${isVoided ? "opacity-40" : ""} ${isSelected ? "bg-slate-100" : ""}`}>
-                    <td className="px-4 py-2.5">
-                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>
-                        {DOC_LABEL[d.document_type] || d.document_type}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{d.document_number}</td>
-                    <td className="px-4 py-2.5 text-xs text-slate-500">{d.document_date}</td>
-                    <td className="px-4 py-2.5">
-                      {effectiveChannel
-                        ? <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[effectiveChannel] || "bg-slate-100 text-slate-600"}`}>
-                            {CHANNEL_LABEL[effectiveChannel] || effectiveChannel}
+                  <Fragment key={d.id}>
+                    <tr className={`border-b last:border-0 hover:bg-slate-50 ${isVoided ? "opacity-40" : ""} ${isSelected ? "bg-slate-100" : ""}`}>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-1.5">
+                          {isPack ? (
+                            <button onClick={() => toggleExpand(d.id)} className="text-slate-400 hover:text-slate-600">
+                              {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                            </button>
+                          ) : <span className="w-3.5 inline-block" />}
+                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>
+                            {DOC_LABEL[d.document_type] || d.document_type}
                           </span>
-                        : <span className="text-xs text-slate-300">—</span>
-                      }
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-mono text-xs">{CLP(d.total_amount)}</td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-slate-500">
-                      {formatRut(d.client_tax_id)}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {isVoided
-                        ? <span className="text-xs text-slate-300">Anulado</span>
-                        : isPack
-                          ? <span className="inline-flex items-center gap-1 text-violet-700 bg-violet-50 border border-violet-200 px-1.5 py-0.5 rounded text-[11px] font-medium">
-                              <Package className="h-3.5 w-3.5" />Pack · {linkCount} ventas
+                          <span className="font-mono text-xs text-slate-500">{d.document_number}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5 pl-5">
+                          <span className="text-[11px] text-slate-400 font-mono">{formatRut(d.client_tax_id)}</span>
+                          {d.client_name && <span className="text-[11px] text-slate-400 truncate max-w-[140px]">· {d.client_name}</span>}
+                          {effectiveChannel && (
+                            <span className={`text-[10px] px-1 py-0 rounded font-medium ${CHANNEL_COLOR[effectiveChannel] || "bg-slate-100 text-slate-500"}`}>
+                              {CHANNEL_LABEL[effectiveChannel] || effectiveChannel}
                             </span>
-                          : isLinked
-                            ? <span className="flex items-center gap-1 text-emerald-600 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />Vinculada</span>
-                            : <span className="flex items-center gap-1 text-slate-300 text-xs">Sin vincular</span>
-                      }
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <button onClick={() => setSelectedDoc(isSelected ? null : d)}
-                        className={`${isSelected ? "text-slate-600" : "text-slate-300 hover:text-slate-500"}`}>
-                        <Info className="h-3.5 w-3.5" />
-                      </button>
-                    </td>
-                  </tr>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-slate-500">{d.document_date}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.net_amount)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.tax_amount)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-xs font-semibold">{CLP(d.total_amount)}</td>
+                      <td className="px-4 py-2.5">
+                        {isVoided ? (
+                          <span className="text-xs text-slate-300">Anulado</span>
+                        ) : isPack ? (
+                          <button onClick={() => toggleExpand(d.id)}
+                            className="inline-flex items-center gap-1 text-violet-700 bg-violet-50 border border-violet-200 px-1.5 py-0.5 rounded text-[11px] font-medium hover:bg-violet-100">
+                            <Package className="h-3.5 w-3.5" />Pack · {linkCount} ventas
+                          </button>
+                        ) : linkCount === 1 ? (
+                          <span className="flex items-center gap-1 text-emerald-600 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />1 venta</span>
+                        ) : (
+                          <span className="text-xs text-slate-300">Sin vincular</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono text-xs">
+                        {com.hasAny
+                          ? <span className={com.allReal ? "text-slate-700" : "text-slate-400 italic"}>{CLP(com.total)}</span>
+                          : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className="inline-flex items-center gap-1.5 text-xs">
+                          <span className={`w-1.5 h-1.5 rounded-full ${rel.dot}`} />
+                          <span className={rel.text}>{rel.label}</span>
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <button onClick={() => setSelectedDoc(isSelected ? null : d)}
+                          className={`${isSelected ? "text-slate-600" : "text-slate-300 hover:text-slate-500"}`}>
+                          <Info className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+
+                    {isPack && isOpen && linkedOrders.map((o: any) => {
+                      const orel = releaseInfo([o]);
+                      return (
+                        <tr key={`${d.id}-${o.id}`} className="border-b last:border-0 bg-slate-50/60">
+                          <td className="px-4 py-2 pl-14">
+                            <span className="text-slate-300 font-mono mr-2">└─</span>
+                            <span className="font-mono text-[11px] text-slate-500">venta #{o.order_id}</span>
+                            <span className="text-[11px] text-slate-400 ml-2">{o.order_date ? format(new Date(o.order_date), "yyyy-MM-dd") : ""}</span>
+                          </td>
+                          <td></td>
+                          <td></td>
+                          <td></td>
+                          <td className="px-4 py-2 text-right font-mono text-xs text-slate-500">{CLP(o.gross_amount)}</td>
+                          <td></td>
+                          <td className="px-4 py-2 text-right font-mono text-xs">
+                            <span className={o.has_exact_data ? "text-slate-600" : "text-slate-400 italic"}>{CLP(Math.abs(o.commission_amount ?? 0))}</span>
+                          </td>
+                          <td className="px-4 py-2">
+                            <span className="inline-flex items-center gap-1.5 text-xs">
+                              <span className={`w-1.5 h-1.5 rounded-full ${orel.dot}`} />
+                              <span className={orel.text}>{orel.label}</span>
+                            </span>
+                          </td>
+                          <td></td>
+                        </tr>
+                      );
+                    })}
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
+
+        <p className="text-[11px] text-slate-400 mt-2">
+          Comisión y liberación en <span className="italic text-slate-400">gris cursiva</span> = estimado (pago aún no liberado por MercadoPago). En negro = dato real confirmado.
+        </p>
 
         {docTotalPages > 1 && (
           <div className="flex items-center justify-between mt-3">
