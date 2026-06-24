@@ -119,7 +119,7 @@ function RowLink({ label, href }: { label: string; href: string }) {
   );
 }
 
-function LinkedSalesSection({ sales, docTotal }: { sales?: LinkedSale[] | null; docTotal?: number | null }) {
+function LinkedSalesSection({ sales, docTotal, cancelledOrder }: { sales?: LinkedSale[] | null; docTotal?: number | null; cancelledOrder?: any }) {
   // undefined = caller doesn't supply linked sales → render nothing.
   if (sales === undefined) return null;
 
@@ -128,6 +128,23 @@ function LinkedSalesSection({ sales, docTotal }: { sales?: LinkedSale[] | null; 
     return (
       <Section title="Ventas asociadas">
         <p className="text-xs text-slate-300 italic">Cargando…</p>
+      </Section>
+    );
+  }
+
+  // No linked sales, pero existe una orden cancelada que calza por order_id/pack_id:
+  // el documento sigue "issued" en el SII sin venta real detrás — distinto de
+  // "nunca se sincronizó nada", y normalmente requiere Nota de Crédito.
+  if (sales.length === 0 && cancelledOrder) {
+    return (
+      <Section title="Ventas asociadas">
+        <div className="flex items-center gap-1.5 mb-1 text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1 w-fit">
+          <span className="text-[10px] font-semibold uppercase tracking-wider">Venta cancelada · revisar Nota de Crédito</span>
+        </div>
+        <p className="text-[10px] text-slate-400">
+          venta #{cancelledOrder.order_id}
+          {cancelledOrder.raw_data?.pack_id && <> · pack #{cancelledOrder.raw_data.pack_id}</>}
+        </p>
       </Section>
     );
   }
@@ -409,7 +426,7 @@ export function DetailPanel({ title, data, onClose, linkedSales }: Props) {
               )}
 
               {/* Ventas asociadas — soporta packs (1 documento ↔ N ventas) */}
-              <LinkedSalesSection sales={linkedSales} docTotal={data.total_amount} />
+              <LinkedSalesSection sales={linkedSales} docTotal={data.total_amount} cancelledOrder={data._cancelledMatch} />
             </>
           )}
 

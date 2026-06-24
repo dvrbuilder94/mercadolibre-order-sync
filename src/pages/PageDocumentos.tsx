@@ -75,10 +75,13 @@ const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 // "Liberado" sólo cuando TODAS las ventas tienen dato exacto de MercadoPago
 // (has_exact_data=true). "Parcial" cuando algunas sí y otras no — ese es el caso
 // que importa al contador: boleta emitida con parte del pago aún sin liberar.
-type ReleaseInfo = { state: 'liberado' | 'parcial' | 'pendiente' | 'sin_venta'; label: string; dot: string; text: string };
-function releaseInfo(orders: any[] | undefined): ReleaseInfo {
-  if (!orders || orders.length === 0)
+type ReleaseInfo = { state: 'liberado' | 'parcial' | 'pendiente' | 'sin_venta' | 'cancelada'; label: string; dot: string; text: string };
+function releaseInfo(orders: any[] | undefined, cancelledMatch?: any): ReleaseInfo {
+  if (!orders || orders.length === 0) {
+    if (cancelledMatch)
+      return { state: 'cancelada', label: 'Venta cancelada · revisar NC', dot: 'bg-red-400', text: 'text-red-500' };
     return { state: 'sin_venta', label: 'Sin venta asociada', dot: 'bg-slate-300', text: 'text-slate-400' };
+  }
   const confirmed = orders.filter(o => o?.has_exact_data === true);
   if (confirmed.length === orders.length) {
     const latest = confirmed.map(o => o.money_release_date).filter(Boolean).sort().pop();
@@ -182,21 +185,54 @@ export default function PageDocumentos() {
     for (const d of docsArr)
       for (const l of (d.order_tax_documents ?? []))
         if (l.order_id) ids.push(l.order_id);
-    if (ids.length === 0) return docsArr.map(d => ({ ...d, _linkedOrders: [] }));
     const ordMap = new Map<string, any>();
-    const uniq = [...new Set(ids)];
-    for (let i = 0; i < uniq.length; i += 300) {
-      const { data: ords } = await supabase
-        .from("orders").select(FINANCIAL_COLS)
-        .in("id", uniq.slice(i, i + 300));
-      for (const o of ords ?? []) ordMap.set(o.id, o);
+    if (ids.length > 0) {
+      const uniq = [...new Set(ids)];
+      for (let i = 0; i < uniq.length; i += 300) {
+        const { data: ords } = await supabase
+          .from("orders").select(FINANCIAL_COLS)
+          .in("id", uniq.slice(i, i + 300));
+        for (const o of ords ?? []) ordMap.set(o.id, o);
+      }
     }
-    return docsArr.map(d => ({
+    const withOrders = docsArr.map(d => ({
       ...d,
       _linkedOrders: (d.order_tax_documents ?? [])
         .map((l: any) => ordMap.get(l.order_id))
         .filter(Boolean),
     }));
+
+    // Para documentos sin ninguna venta vinculada, busca si existe una orden
+    // cancelada que calce por order_id o pack_id (external_order_id). Distingue
+    // "la venta se canceló" (suele necesitar Nota de Crédito) de "nunca se
+    // sincronizó nada" — sin esto ambos casos se veían igual ("sin vincular").
+    const unlinkedWithRef = withOrders.filter(d => d._linkedOrders.length === 0 && d.external_order_id);
+    if (unlinkedWithRef.length > 0) {
+      const eois = [...new Set(unlinkedWithRef.map(d => String(d.external_order_id)))];
+      const cancelledByKey = new Map<string, any>();
+      for (let i = 0; i < eois.length; i += 100) {
+        const batch = eois.slice(i, i + 100);
+        const orFilter = batch.flatMap(eoi => [`order_id.eq.${eoi}`, `raw_data->>pack_id.eq.${eoi}`]).join(",");
+        const { data: cancelled } = await supabase
+          .from("orders")
+          .select("id, order_id, raw_data, status")
+          .eq("status", "cancelled")
+          .or(orFilter);
+        for (const o of cancelled ?? []) {
+          cancelledByKey.set(String(o.order_id), o);
+          const packId = (o.raw_data as any)?.pack_id;
+          if (packId) cancelledByKey.set(String(packId), o);
+        }
+      }
+      for (const d of withOrders) {
+        if (d._linkedOrders.length === 0 && d.external_order_id) {
+          const match = cancelledByKey.get(String(d.external_order_id));
+          if (match) d._cancelledMatch = match;
+        }
+      }
+    }
+
+    return withOrders;
   }, []);
 
   const fetchDocs = useCallback(async (p: number) => {
@@ -254,7 +290,7 @@ export default function PageDocumentos() {
       setComisionTotal(linkedOrderIds.length ? comReal : null);
       setPendingRelease(pending);
 
-      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id, order_id)";
+      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, external_order_id, raw_data, order_tax_documents(id, order_id)";
       const pageIds = filtered.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE).map(d => d.id);
       if (pageIds.length === 0) {
         setDocs([]);
@@ -377,7 +413,7 @@ export default function PageDocumentos() {
                 <th className="text-right px-4 py-3 font-medium">Total</th>
                 <th className="text-left px-4 py-3 font-medium">Ventas</th>
                 <th className="text-left px-4 py-3 font-medium">Liberación</th>
-                <th className="text-left px-4 py-3 font-medium">Dónde se liberó</th>
+                <th className="text-left px-4 py-3 font-medium">Vía de liberación</th>
                 <th className="w-8 px-4 py-3"></th>
               </tr>
             </thead>
@@ -400,7 +436,7 @@ export default function PageDocumentos() {
                 const isSelected = selectedDoc?.id === d.id;
                 const isOpen = expanded.has(d.id);
                 const effectiveChannel = inferChannel(d.detected_channel, d.raw_data);
-                const rel = releaseInfo(linkedOrders);
+                const rel = releaseInfo(linkedOrders, d._cancelledMatch);
                 const com = commissionOf(linkedOrders);
 
                 return (
@@ -440,6 +476,8 @@ export default function PageDocumentos() {
                           <span className="text-xs text-slate-300">Anulado</span>
                         ) : linkCount > 0 ? (
                           <span className="text-xs text-slate-600">{linkCount} {linkCount === 1 ? "venta" : "ventas"}</span>
+                        ) : d._cancelledMatch ? (
+                          <span className="text-xs text-red-500 font-medium">Venta cancelada</span>
                         ) : (
                           <span className="text-xs text-slate-300">Sin vincular</span>
                         )}
