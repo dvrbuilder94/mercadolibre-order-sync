@@ -6,8 +6,7 @@ import { DetailPanel } from "@/components/DetailPanel";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import {
-  ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Loader2, Info,
-  CheckCircle2, FileText, Package,
+  ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Loader2, Info, FileText,
 } from "lucide-react";
 import { chileMonthUnixRange } from "@/lib/chileDate";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
@@ -39,11 +38,6 @@ const DOC_LABEL: Record<string, string> = {
 const DOC_COLOR: Record<string, string> = {
   boleta: "bg-slate-100 text-slate-700", factura: "bg-blue-100 text-blue-700",
   nota_credito: "bg-red-100 text-red-700",
-};
-
-const formatRut = (body: string | null) => {
-  if (!body) return "—";
-  return body.replace(/[^0-9Kk]/g, "") || "—";
 };
 
 function detectChannelFromText(text: string | null): string | null {
@@ -95,6 +89,16 @@ function releaseInfo(orders: any[] | undefined): ReleaseInfo {
   return { state: 'parcial', label: `Parcial · ${confirmed.length} de ${orders.length}`, dot: 'bg-amber-500', text: 'text-amber-600' };
 }
 
+// Dónde quedó la plata liberada. has_exact_data sólo lo marca en true
+// sync-meli-payment-details, así que un true real significa que MercadoPago
+// confirmó el dato — no inventamos un destino para canales sin esa integración.
+function releaseLocation(orders: any[] | undefined): string {
+  const rel = releaseInfo(orders);
+  if (rel.state === 'liberado') return 'MercadoPago';
+  if (rel.state === 'parcial') return 'MercadoPago · parcial';
+  return '—';
+}
+
 // Suma de comisiones reales de las ventas de un documento. allReal=false marca
 // que al menos una venta usa comisión estimada (pago aún no liberado).
 function commissionOf(orders: any[] | undefined): { total: number; allReal: boolean; hasAny: boolean } {
@@ -118,7 +122,6 @@ export default function PageDocumentos() {
   const [docsIva, setDocsIva] = useState<number | null>(null);
   const [comisionTotal, setComisionTotal] = useState<number | null>(null);
   const [pendingRelease, setPendingRelease] = useState<number | null>(null);
-  const [docFilteredTotal, setDocFilteredTotal] = useState<number | null>(null);
   const [docPage, setDocPage] = useState(0);
   const [docsLoading, setDocsLoading] = useState(true);
   const [docSyncing, setDocSyncing] = useState(false);
@@ -201,87 +204,65 @@ export default function PageDocumentos() {
     try {
       const { from, to } = periodRange(period);
 
-      const [{ count }, { data: sumRows }, { data: ivaRows }] = await Promise.all([
-        supabase.from("tax_documents").select("*", { count: "exact", head: true })
-          .gte("document_date", from).lte("document_date", to),
-        supabase.from("tax_documents").select("total_amount.sum()")
-          .gte("document_date", from).lte("document_date", to).eq("status", "issued"),
-        supabase.from("tax_documents").select("tax_amount.sum()")
-          .gte("document_date", from).lte("document_date", to).eq("status", "issued"),
-      ]);
-      setDocsTotal(count || 0);
-      setDocsSum((sumRows as any)?.[0]?.sum ?? null);
-      setDocsIva((ivaRows as any)?.[0]?.sum ?? null);
-
-      // Recorre todos los documentos del período una vez para: (a) contar
-      // vinculados a MeLi y (b) juntar los order_id vinculados, con los que
-      // luego calculamos comisión total real y liberaciones pendientes.
-      const docLinkRows: { order_tax_documents: { order_id: string }[] }[] = [];
+      // Trae todos los documentos del período con los campos livianos que
+      // hacen falta para: total facturado / IVA del período, conteo de
+      // vinculados, filtro por canal y los order_id vinculados (comisión real
+      // y liberaciones pendientes). El agregado .sum() de PostgREST no
+      // funciona en este proyecto (siempre vuelve null), así que se suma del
+      // lado del cliente — y de paso esto deja todos los KPIs consistentes
+      // con el filtro de canal activo, en vez de cubrir siempre el período
+      // completo sin importar el chip seleccionado.
+      const LIGHT_COLS = "id, document_date, total_amount, tax_amount, status, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references, order_tax_documents(order_id)";
+      const allDocs: any[] = [];
       for (let page = 0; page < 20; page++) {
-        const { data } = await supabase
-          .from("tax_documents")
-          .select("order_tax_documents(order_id)")
+        const { data } = await (supabase.from("tax_documents") as any)
+          .select(LIGHT_COLS)
           .gte("document_date", from).lte("document_date", to)
           .order("document_date", { ascending: false })
           .order("id", { ascending: true })
           .range(page * 1000, page * 1000 + 999);
         if (!data || data.length === 0) break;
-        docLinkRows.push(...(data as any));
+        allDocs.push(...data);
         if (data.length < 1000) break;
       }
-      setDocsMeliCount(docLinkRows.filter(d => (d.order_tax_documents?.length ?? 0) > 0).length);
+
+      const filtered = channelFilter === "todos"
+        ? allDocs
+        : allDocs.filter(d => inferChannel(d.detected_channel, { reference_reason: d.reference_reason, references: d.references }) === channelFilter);
+
+      setDocsTotal(filtered.length);
+      const issued = filtered.filter(d => d.status === "issued");
+      setDocsSum(issued.reduce((s, d) => s + (Number(d.total_amount) || 0), 0));
+      setDocsIva(issued.reduce((s, d) => s + (Number(d.tax_amount) || 0), 0));
+      setDocsMeliCount(filtered.filter(d => (d.order_tax_documents?.length ?? 0) > 0).length);
 
       const linkedOrderIds = [...new Set(
-        docLinkRows.flatMap(d => (d.order_tax_documents ?? []).map(l => l.order_id)).filter(Boolean)
+        filtered.flatMap(d => (d.order_tax_documents ?? []).map((l: any) => l.order_id)).filter(Boolean)
       )];
-      let comTotal = 0, pending = 0;
+      // Sólo se suma como comisión confirmada la de órdenes con has_exact_data=true;
+      // las estimadas no se mezclan en el KPI, sólo se cuentan como pendientes.
+      let comReal = 0, pending = 0;
       for (let i = 0; i < linkedOrderIds.length; i += 300) {
         const { data: ords } = await supabase
           .from("orders").select("commission_amount, has_exact_data")
           .in("id", linkedOrderIds.slice(i, i + 300));
         for (const o of (ords ?? []) as any[]) {
-          comTotal += Math.abs(o.commission_amount ?? 0);
-          if (o.has_exact_data !== true) pending++;
+          if (o.has_exact_data === true) comReal += Math.abs(o.commission_amount ?? 0);
+          else pending++;
         }
       }
-      setComisionTotal(linkedOrderIds.length ? comTotal : null);
+      setComisionTotal(linkedOrderIds.length ? comReal : null);
       setPendingRelease(pending);
 
       const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, raw_data, order_tax_documents(id, order_id)";
-
-      if (channelFilter === "todos") {
-        setDocFilteredTotal(null);
-        const { data } = await supabase
-          .from("tax_documents")
-          .select(FULL_COLS)
-          .gte("document_date", from).lte("document_date", to)
-          .order("document_date", { ascending: false })
-          .order("id", { ascending: false })
-          .range(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE - 1);
-        setDocs(await attachOrders(data || []));
+      const pageIds = filtered.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE).map(d => d.id);
+      if (pageIds.length === 0) {
+        setDocs([]);
       } else {
-        const { data: light } = await (supabase
-          .from("tax_documents") as any)
-          .select("id, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references")
-          .gte("document_date", from).lte("document_date", to)
-          .order("document_date", { ascending: false })
-          .order("id", { ascending: false });
-
-        const matchedIds = (light || [])
-          .filter((d: any) => inferChannel(d.detected_channel, { reference_reason: d.reference_reason, references: d.references }) === channelFilter)
-          .map((d: any) => d.id);
-
-        setDocFilteredTotal(matchedIds.length);
-
-        const pageIds = matchedIds.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE);
-        if (pageIds.length === 0) {
-          setDocs([]);
-        } else {
-          const { data: full } = await supabase.from("tax_documents").select(FULL_COLS).in("id", pageIds);
-          const byId = new Map((full || []).map((d: any) => [d.id, d]));
-          const ordered = pageIds.map((id: string) => byId.get(id)).filter((d: any) => d !== undefined);
-          setDocs(await attachOrders(ordered));
-        }
+        const { data: full } = await supabase.from("tax_documents").select(FULL_COLS).in("id", pageIds);
+        const byId = new Map((full || []).map((d: any) => [d.id, d]));
+        const ordered = pageIds.map((id: string) => byId.get(id)).filter((d: any) => d !== undefined);
+        setDocs(await attachOrders(ordered));
       }
     } finally {
       setDocsLoading(false);
@@ -313,16 +294,16 @@ export default function PageDocumentos() {
     } finally { setDocSyncing(false); }
   };
 
-  const docListTotal  = channelFilter !== "todos" ? (docFilteredTotal ?? 0) : docsTotal;
+  const docListTotal  = docsTotal;
   const docTotalPages = Math.ceil(docListTotal / PAGE_SIZE);
 
   const kpis = [
-    { label: "Documentos",       value: docsLoading ? "—" : docsTotal.toLocaleString("es-CL"),                 sub: "en el período" },
-    { label: "Total facturado",  value: docsLoading || docsSum === null ? "—" : CLP(docsSum),                  sub: "documentos emitidos" },
-    { label: "IVA del período",  value: docsLoading || docsIva === null ? "—" : CLP(docsIva),                  sub: "débito fiscal" },
-    { label: "Comisiones",       value: docsLoading || comisionTotal === null ? "—" : CLP(comisionTotal),      sub: "real + estimado", color: "text-slate-700" },
-    { label: "Vinculados MeLi",  value: docsLoading ? "—" : docsMeliCount,                                     sub: "con venta + pago", color: "text-emerald-600" },
-    { label: "Liberación pend.", value: docsLoading || pendingRelease === null ? "—" : pendingRelease,         sub: "ventas sin liberar", color: "text-amber-600" },
+    { label: "Documentos",          value: docsLoading ? "—" : docsTotal.toLocaleString("es-CL"),             sub: "en el período" },
+    { label: "Total facturado",     value: docsLoading || docsSum === null ? "—" : CLP(docsSum),              sub: "documentos emitidos" },
+    { label: "IVA del período",     value: docsLoading || docsIva === null ? "—" : CLP(docsIva),               sub: "débito fiscal" },
+    { label: "Comisión confirmada", value: docsLoading || comisionTotal === null ? "—" : CLP(comisionTotal),  sub: "cobrada, pago ya liberado", color: "text-slate-700" },
+    { label: "Documentos con venta",value: docsLoading ? "—" : docsMeliCount,                                  sub: "con al menos 1 venta vinculada", color: "text-emerald-600" },
+    { label: "Liberación pendiente",value: docsLoading || pendingRelease === null ? "—" : pendingRelease,     sub: "ventas con pago aún no liberado", color: "text-amber-600" },
   ];
 
   return (
@@ -388,23 +369,25 @@ export default function PageDocumentos() {
             <thead>
               <tr className="border-b bg-slate-50 text-xs text-slate-500">
                 <th className="text-left px-4 py-3 font-medium">Documento</th>
-                <th className="text-left px-4 py-3 font-medium">Fecha doc</th>
-                <th className="text-right px-4 py-3 font-medium">Neto</th>
+                <th className="text-left px-4 py-3 font-medium">Canal</th>
+                <th className="text-left px-4 py-3 font-medium">Fecha documento</th>
+                <th className="text-right px-4 py-3 font-medium">Monto venta</th>
+                <th className="text-right px-4 py-3 font-medium">Comisión</th>
                 <th className="text-right px-4 py-3 font-medium">IVA</th>
                 <th className="text-right px-4 py-3 font-medium">Total</th>
                 <th className="text-left px-4 py-3 font-medium">Ventas</th>
-                <th className="text-right px-4 py-3 font-medium">Comisión</th>
                 <th className="text-left px-4 py-3 font-medium">Liberación</th>
+                <th className="text-left px-4 py-3 font-medium">Dónde se liberó</th>
                 <th className="w-8 px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               {docsLoading ? (
-                <tr><td colSpan={9} className="text-center py-12 text-slate-400">
+                <tr><td colSpan={11} className="text-center py-12 text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...
                 </td></tr>
               ) : docs.length === 0 ? (
-                <tr><td colSpan={9} className="text-center py-12 text-slate-400 text-sm">
+                <tr><td colSpan={11} className="text-center py-12 text-slate-400 text-sm">
                   {channelFilter === "todos"
                     ? "Sin documentos. Prueba Sync Bsale."
                     : `Sin documentos de ${CHANNEL_LABEL[channelFilter] ?? channelFilter} en este período.`}
@@ -435,38 +418,31 @@ export default function PageDocumentos() {
                           </span>
                           <span className="font-mono text-xs text-slate-500">{d.document_number}</span>
                         </div>
-                        <div className="flex items-center gap-1.5 mt-0.5 pl-5">
-                          <span className="text-[11px] text-slate-400 font-mono">{formatRut(d.client_tax_id)}</span>
-                          {d.client_name && <span className="text-[11px] text-slate-400 truncate max-w-[140px]">· {d.client_name}</span>}
-                          {effectiveChannel && (
-                            <span className={`text-[10px] px-1 py-0 rounded font-medium ${CHANNEL_COLOR[effectiveChannel] || "bg-slate-100 text-slate-500"}`}>
-                              {CHANNEL_LABEL[effectiveChannel] || effectiveChannel}
-                            </span>
-                          )}
-                        </div>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {effectiveChannel ? (
+                          <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[effectiveChannel] || "bg-slate-100 text-slate-500"}`}>
+                            {CHANNEL_LABEL[effectiveChannel] || effectiveChannel}
+                          </span>
+                        ) : <span className="text-xs text-slate-300">—</span>}
                       </td>
                       <td className="px-4 py-2.5 text-xs text-slate-500">{d.document_date}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.net_amount)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-xs">
+                        {com.hasAny
+                          ? <span className={com.allReal ? "text-slate-700" : "text-slate-400 italic"}>{CLP(com.total)}</span>
+                          : <span className="text-slate-300">—</span>}
+                      </td>
                       <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.tax_amount)}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-xs font-semibold">{CLP(d.total_amount)}</td>
                       <td className="px-4 py-2.5">
                         {isVoided ? (
                           <span className="text-xs text-slate-300">Anulado</span>
-                        ) : isPack ? (
-                          <button onClick={() => toggleExpand(d.id)}
-                            className="inline-flex items-center gap-1 text-violet-700 bg-violet-50 border border-violet-200 px-1.5 py-0.5 rounded text-[11px] font-medium hover:bg-violet-100">
-                            <Package className="h-3.5 w-3.5" />Pack · {linkCount} ventas
-                          </button>
-                        ) : linkCount === 1 ? (
-                          <span className="flex items-center gap-1 text-emerald-600 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />1 venta</span>
+                        ) : linkCount > 0 ? (
+                          <span className="text-xs text-slate-600">{linkCount} {linkCount === 1 ? "venta" : "ventas"}</span>
                         ) : (
                           <span className="text-xs text-slate-300">Sin vincular</span>
                         )}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs">
-                        {com.hasAny
-                          ? <span className={com.allReal ? "text-slate-700" : "text-slate-400 italic"}>{CLP(com.total)}</span>
-                          : <span className="text-slate-300">—</span>}
                       </td>
                       <td className="px-4 py-2.5">
                         <span className="inline-flex items-center gap-1.5 text-xs">
@@ -474,6 +450,7 @@ export default function PageDocumentos() {
                           <span className={rel.text}>{rel.label}</span>
                         </span>
                       </td>
+                      <td className="px-4 py-2.5 text-xs text-slate-500">{releaseLocation(linkedOrders)}</td>
                       <td className="px-4 py-2.5">
                         <button onClick={() => setSelectedDoc(isSelected ? null : d)}
                           className={`${isSelected ? "text-slate-600" : "text-slate-300 hover:text-slate-500"}`}>
@@ -493,18 +470,20 @@ export default function PageDocumentos() {
                           </td>
                           <td></td>
                           <td></td>
-                          <td></td>
                           <td className="px-4 py-2 text-right font-mono text-xs text-slate-500">{CLP(o.gross_amount)}</td>
-                          <td></td>
                           <td className="px-4 py-2 text-right font-mono text-xs">
                             <span className={o.has_exact_data ? "text-slate-600" : "text-slate-400 italic"}>{CLP(Math.abs(o.commission_amount ?? 0))}</span>
                           </td>
+                          <td></td>
+                          <td></td>
+                          <td></td>
                           <td className="px-4 py-2">
                             <span className="inline-flex items-center gap-1.5 text-xs">
                               <span className={`w-1.5 h-1.5 rounded-full ${orel.dot}`} />
                               <span className={orel.text}>{orel.label}</span>
                             </span>
                           </td>
+                          <td className="px-4 py-2 text-xs text-slate-500">{releaseLocation([o])}</td>
                           <td></td>
                         </tr>
                       );
