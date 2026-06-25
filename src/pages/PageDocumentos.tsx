@@ -111,7 +111,7 @@ function commissionOf(orders: any[] | undefined): { total: number; allReal: bool
   return { total, allReal, hasAny: true };
 }
 
-const FINANCIAL_COLS = "id, order_id, order_date, gross_amount, net_amount, commission_amount, money_release_date, has_exact_data";
+const FINANCIAL_COLS = "id, order_id, order_date, gross_amount, net_amount, commission_amount, money_release_date, has_exact_data, status";
 
 export default function PageDocumentos() {
   const navigate = useNavigate();
@@ -248,7 +248,7 @@ export default function PageDocumentos() {
       // lado del cliente — y de paso esto deja todos los KPIs consistentes
       // con el filtro de canal activo, en vez de cubrir siempre el período
       // completo sin importar el chip seleccionado.
-      const LIGHT_COLS = "id, document_date, total_amount, tax_amount, status, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references, order_tax_documents(order_id)";
+      const LIGHT_COLS = "id, document_date, total_amount, tax_amount, status, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references, order_tax_documents(order_id, orders(status))";
       const allDocs: any[] = [];
       for (let page = 0; page < 20; page++) {
         const { data } = await (supabase.from("tax_documents") as any)
@@ -270,10 +270,13 @@ export default function PageDocumentos() {
       const issued = filtered.filter(d => d.status === "issued");
       setDocsSum(issued.reduce((s, d) => s + (Number(d.total_amount) || 0), 0));
       setDocsIva(issued.reduce((s, d) => s + (Number(d.tax_amount) || 0), 0));
-      setDocsMeliCount(filtered.filter(d => (d.order_tax_documents?.length ?? 0) > 0).length);
+      // Un link a una orden cancelada no cuenta como "venta vinculada": la boleta
+      // sigue emitida pero sin venta real detrás (ver Phase 0C/0D de auto-reconcile).
+      const isRealLink = (l: any) => l.orders?.status !== 'cancelled';
+      setDocsMeliCount(filtered.filter(d => (d.order_tax_documents ?? []).some(isRealLink)).length);
 
       const linkedOrderIds = [...new Set(
-        filtered.flatMap(d => (d.order_tax_documents ?? []).map((l: any) => l.order_id)).filter(Boolean)
+        filtered.flatMap(d => (d.order_tax_documents ?? []).filter(isRealLink).map((l: any) => l.order_id)).filter(Boolean)
       )];
       // Sólo se suma como comisión confirmada la de órdenes con has_exact_data=true;
       // las estimadas no se mezclan en el KPI, sólo se cuentan como pendientes.
@@ -430,14 +433,20 @@ export default function PageDocumentos() {
                 </td></tr>
               ) : docs.map(d => {
                 const linkedOrders: any[] = d._linkedOrders ?? [];
-                const linkCount = linkedOrders.length;
-                const isPack = linkCount > 1;
+                // Una orden cancelada vinculada (Phase 0C/0D de auto-reconcile) no es
+                // venta real: se separa para que ni el conteo ni la comisión/liberación
+                // la mezclen con ventas confirmadas.
+                const realOrders = linkedOrders.filter(o => o.status !== "cancelled");
+                const cancelledLinked = linkedOrders.filter(o => o.status === "cancelled");
+                const cancelledForDisplay = cancelledLinked[0] ?? d._cancelledMatch;
+                const linkCount = realOrders.length;
+                const isPack = linkedOrders.length > 1;
                 const isVoided = d.status === "voided";
                 const isSelected = selectedDoc?.id === d.id;
                 const isOpen = expanded.has(d.id);
                 const effectiveChannel = inferChannel(d.detected_channel, d.raw_data);
-                const rel = releaseInfo(linkedOrders, d._cancelledMatch);
-                const com = commissionOf(linkedOrders);
+                const rel = releaseInfo(realOrders, cancelledForDisplay);
+                const com = commissionOf(realOrders);
 
                 return (
                   <Fragment key={d.id}>
@@ -476,7 +485,7 @@ export default function PageDocumentos() {
                           <span className="text-xs text-slate-300">Anulado</span>
                         ) : linkCount > 0 ? (
                           <span className="text-xs text-slate-600">{linkCount} {linkCount === 1 ? "venta" : "ventas"}</span>
-                        ) : d._cancelledMatch ? (
+                        ) : cancelledForDisplay ? (
                           <span className="text-xs text-red-500 font-medium">Venta cancelada</span>
                         ) : (
                           <span className="text-xs text-slate-300">Sin vincular</span>
@@ -488,7 +497,7 @@ export default function PageDocumentos() {
                           <span className={rel.text}>{rel.label}</span>
                         </span>
                       </td>
-                      <td className="px-4 py-2.5 text-xs text-slate-500">{releaseLocation(linkedOrders)}</td>
+                      <td className="px-4 py-2.5 text-xs text-slate-500">{releaseLocation(realOrders)}</td>
                       <td className="px-4 py-2.5">
                         <button onClick={() => setSelectedDoc(isSelected ? null : d)}
                           className={`${isSelected ? "text-slate-600" : "text-slate-300 hover:text-slate-500"}`}>
@@ -498,19 +507,26 @@ export default function PageDocumentos() {
                     </tr>
 
                     {isPack && isOpen && linkedOrders.map((o: any) => {
-                      const orel = releaseInfo([o]);
+                      const oCancelled = o.status === "cancelled";
+                      const orel = oCancelled
+                        ? { dot: 'bg-red-400', text: 'text-red-500', label: 'Cancelada · revisar NC' }
+                        : releaseInfo([o]);
                       return (
                         <tr key={`${d.id}-${o.id}`} className="border-b last:border-0 bg-slate-50/60">
                           <td className="px-4 py-2 pl-14">
                             <span className="text-slate-300 font-mono mr-2">└─</span>
-                            <span className="font-mono text-[11px] text-slate-500">venta #{o.order_id}</span>
+                            <span className={`font-mono text-[11px] ${oCancelled ? "text-red-500 line-through" : "text-slate-500"}`}>venta #{o.order_id}</span>
                             <span className="text-[11px] text-slate-400 ml-2">{o.order_date ? format(new Date(o.order_date), "yyyy-MM-dd") : ""}</span>
                           </td>
                           <td></td>
                           <td></td>
                           <td className="px-4 py-2 text-right font-mono text-xs text-slate-500">{CLP(o.gross_amount)}</td>
                           <td className="px-4 py-2 text-right font-mono text-xs">
-                            <span className={o.has_exact_data ? "text-slate-600" : "text-slate-400 italic"}>{CLP(Math.abs(o.commission_amount ?? 0))}</span>
+                            {oCancelled ? (
+                              <span className="text-slate-300">—</span>
+                            ) : (
+                              <span className={o.has_exact_data ? "text-slate-600" : "text-slate-400 italic"}>{CLP(Math.abs(o.commission_amount ?? 0))}</span>
+                            )}
                           </td>
                           <td></td>
                           <td></td>
@@ -521,7 +537,7 @@ export default function PageDocumentos() {
                               <span className={orel.text}>{orel.label}</span>
                             </span>
                           </td>
-                          <td className="px-4 py-2 text-xs text-slate-500">{releaseLocation([o])}</td>
+                          <td className="px-4 py-2 text-xs text-slate-500">{oCancelled ? "—" : releaseLocation([o])}</td>
                           <td></td>
                         </tr>
                       );

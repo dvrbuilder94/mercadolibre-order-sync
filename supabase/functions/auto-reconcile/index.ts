@@ -910,6 +910,88 @@ Deno.serve(async (req) => {
     console.log(`Stage 3 Phase 0B (Hard match pack_id, 1:N): ${packLinkedDocsCount} docs, ${packLinkedOrdersCount} orders linked`);
 
     // ==========================================
+    // PHASE 0C/0D: HARD MATCH cancelled orders (order_id / pack_id, 1:N)
+    // ordersWithPayment (arriba) excluye status='cancelled' porque no son venta
+    // real. Pero la boleta de un pedido que se cancela DESPUÉS de emitida sigue
+    // "issued" ante el SII sin nada vinculado — indistinguible para el resto del
+    // sistema de un documento que nunca tuvo orden. Se vincula igual, con un
+    // match_source distinto, para que quede trazable (Igor necesita saber cuáles
+    // boletas requieren Nota de Crédito) sin contar como ingreso confirmado en
+    // ningún KPI que filtre por status de la orden.
+    // ==========================================
+    const cancelledOrders: any[] = [];
+    for (let page = 0; page < 20; page++) {
+      let ccq = supabaseAdmin
+        .from('orders')
+        .select(`*, order_tax_documents(id)`)
+        .eq('status', 'cancelled')
+        .order('order_date', { ascending: false })
+        .order('id', { ascending: true })
+        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+      if (bufferedFromISO && bufferedToISO) {
+        ccq = ccq.gte('order_date', bufferedFromISO).lte('order_date', bufferedToISO);
+      }
+      const { data: pageData, error: pageErr } = await ccq;
+      if (pageErr) throw new Error(`cancelled orders page fetch failed: ${pageErr.message}`);
+      if (!pageData || pageData.length === 0) break;
+      cancelledOrders.push(...pageData);
+      if (pageData.length < PAGE_SIZE) break;
+    }
+    const cancelledOrdersNeedingDocs = cancelledOrders.filter(order => {
+      const hasDocument = order.order_tax_documents && order.order_tax_documents.length > 0;
+      return !hasDocument;
+    });
+    console.log(`Fetched ${cancelledOrdersNeedingDocs.length} cancelled orders without a document link`);
+
+    let cancelledHardLinkedCount = 0;
+    const cancelledByOrderId = new Map<string, any>(
+      cancelledOrdersNeedingDocs.map(o => [String(o.order_id), o])
+    );
+    const cancelledByPackId = new Map<string, any[]>();
+    for (const o of cancelledOrdersNeedingDocs) {
+      const packId = o.raw_data?.pack_id;
+      if (!packId) continue;
+      const key = String(packId);
+      if (!cancelledByPackId.has(key)) cancelledByPackId.set(key, []);
+      cancelledByPackId.get(key)!.push(o);
+    }
+    const cancelledLinks: any[] = [];
+    for (const doc of unlinkedDocs) {
+      if (newlyLinkedDocIds.has(doc.id)) continue;
+      const eoi = (doc as any).external_order_id;
+      if (!eoi) continue;
+      const direct = cancelledByOrderId.get(String(eoi));
+      if (direct && !linkedOrderIds.has(direct.id) && !newlyLinkedOrderIds.has(direct.id)) {
+        cancelledLinks.push({
+          order_id: direct.id, tax_document_id: doc.id,
+          allocated_amount: direct.gross_amount || direct.amount,
+          created_by: user.id, match_source: 'AUTO_HARD_ORDER_ID_CANCELLED', match_score: 100
+        });
+        newlyLinkedOrderIds.add(direct.id);
+        newlyLinkedDocIds.add(doc.id);
+        cancelledHardLinkedCount++;
+        continue;
+      }
+      const packOrders = (cancelledByPackId.get(String(eoi)) || [])
+        .filter(o => !linkedOrderIds.has(o.id) && !newlyLinkedOrderIds.has(o.id));
+      if (packOrders.length === 0) continue;
+      for (const po of packOrders) {
+        cancelledLinks.push({
+          order_id: po.id, tax_document_id: doc.id,
+          allocated_amount: po.gross_amount || po.amount,
+          created_by: user.id, match_source: 'AUTO_HARD_PACK_ID_CANCELLED', match_score: 100
+        });
+        newlyLinkedOrderIds.add(po.id);
+        cancelledHardLinkedCount++;
+      }
+      newlyLinkedDocIds.add(doc.id);
+    }
+    if (cancelledLinks.length > 0) {
+      await supabaseAdmin.from('order_tax_documents').insert(cancelledLinks);
+    }
+    console.log(`Stage 3 Phase 0C/0D (Hard match cancelled orders): ${cancelledHardLinkedCount} linked`);
+
+    // ==========================================
     // PHASE A: CONSOLIDATED MATCHING (1:N) - NEW
     // ==========================================
     console.log('\n--- Stage 3A: Consolidated Matching (1:N) ---');
