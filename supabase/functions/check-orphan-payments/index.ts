@@ -114,13 +114,52 @@ Deno.serve(async (req) => {
     const unmatchedAmount = unmatched.reduce((s, p) => s + (p.amount ?? 0), 0);
     const payments = mpPayments.map(p => ({ ...p, matched: known.has(p.id) }));
 
+    // Clasificación: el solo hecho de no estar en meli_payment_details no dice
+    // POR QUÉ falta. external_reference (lo manda MercadoPago) suele llevar el
+    // order_id o pack_id de MELI — cruzarlo contra nuestras propias órdenes
+    // separa "no sabíamos que existía" de "ya la tenemos, falta sincronizar".
+    const refs = [...new Set(unmatched.map(p => p.external_reference).filter(Boolean) as string[])];
+    const orderByRef = new Map<string, { order_id: string; has_exact_data: boolean }>();
+    for (let i = 0; i < refs.length; i += 100) {
+      const batch = refs.slice(i, i + 100);
+      const orFilter = batch.flatMap(r => [`order_id.eq.${r}`, `raw_data->>pack_id.eq.${r}`]).join(',');
+      const { data: matchedOrders, error: ordersError } = await supabase
+        .from('orders')
+        .select('order_id, has_exact_data, raw_data')
+        .eq('channel', 'meli')
+        .eq('channel_account_id', meliAccount.id)
+        .or(orFilter);
+      if (ordersError) throw ordersError;
+      for (const o of matchedOrders ?? []) {
+        const entry = { order_id: o.order_id, has_exact_data: !!o.has_exact_data };
+        orderByRef.set(String(o.order_id), entry);
+        const packId = (o.raw_data as any)?.pack_id;
+        if (packId) orderByRef.set(String(packId), entry);
+      }
+    }
+
+    const classify = (p: { external_reference: string | null }) => {
+      if (!p.external_reference) {
+        return { reason: 'sin_referencia', label: 'MercadoPago no mandó external_reference — no se puede clasificar automáticamente' };
+      }
+      const match = orderByRef.get(p.external_reference);
+      if (!match) {
+        return { reason: 'sin_orden', label: 'No corresponde a ninguna orden tuya sincronizada — revisar si es venta de MeLi' };
+      }
+      if (match.has_exact_data) {
+        return { reason: 'orden_cerrada', label: `Orden ${match.order_id} ya está marcada con pago confirmado — este pago llegó aparte y no se vuelve a revisar solo` };
+      }
+      return { reason: 'falta_sync', label: `Orden ${match.order_id} existe en tu BD — falta correr "Sync pagos" para traerlo` };
+    };
+    const unmatchedClassified = unmatched.map(p => ({ ...p, ...classify(p) }));
+
     return new Response(
       JSON.stringify({
         success: true,
         totalChecked: mpPayments.length,
         unmatchedCount: unmatched.length,
         unmatchedAmount,
-        unmatched: unmatched.slice(0, 100),
+        unmatched: unmatchedClassified.slice(0, 100),
         payments: payments.slice(0, 500),
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

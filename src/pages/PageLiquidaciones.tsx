@@ -148,10 +148,29 @@ const groupByRelease = (items: Liquidacion[]): ReleaseGroup[] => {
   return Array.from(map.values()).sort((a, b) => (b.releaseDate ?? "").localeCompare(a.releaseDate ?? ""));
 };
 
+type OrphanReason = "sin_referencia" | "sin_orden" | "orden_cerrada" | "falta_sync";
 interface OrphanResult {
   totalChecked: number; unmatchedCount: number; unmatchedAmount: number;
-  unmatched: { id: string; amount: number; date_approved: string }[];
+  unmatched: {
+    id: string; amount: number; date_approved: string;
+    external_reference: string | null; reason: OrphanReason; label: string;
+  }[];
 }
+// Por qué un pago de MercadoPago no aparece en la tabla de liquidaciones — no
+// todos los casos son "plata perdida": falta_sync y orden_cerrada son brechas
+// de sincronización, sin_orden es el único caso realmente sin explicar.
+const REASON_BADGE: Record<OrphanReason, string> = {
+  sin_orden: "bg-red-100 text-red-700",
+  falta_sync: "bg-amber-100 text-amber-700",
+  orden_cerrada: "bg-blue-100 text-blue-700",
+  sin_referencia: "bg-slate-100 text-slate-500",
+};
+const REASON_SHORT: Record<OrphanReason, string> = {
+  sin_orden: "Sin orden",
+  falta_sync: "Falta sync",
+  orden_cerrada: "Orden cerrada",
+  sin_referencia: "Sin referencia",
+};
 
 export default function PageLiquidaciones() {
   const navigate = useNavigate();
@@ -629,41 +648,69 @@ export default function PageLiquidaciones() {
               {auditError && (
                 <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3 mb-3">{auditError}</div>
               )}
-              {auditResult && (
-                <div className="bg-white border rounded-lg p-4">
-                  <p className="text-sm mb-2">
-                    MercadoPago aprobó <b>{auditResult.totalChecked}</b> pagos este período.{" "}
-                    {auditResult.unmatchedCount === 0 ? (
-                      <span className="text-green-700">✓ Todos están reflejados arriba.</span>
-                    ) : (
-                      <span className="text-red-700">
-                        <b>{auditResult.unmatchedCount}</b> ({clp(auditResult.unmatchedAmount)}) no están en la tabla de
-                        liquidaciones — ninguna orden nuestra los referenció.
-                      </span>
+              {auditResult && (() => {
+                const byReason = auditResult.unmatched.reduce((acc, p) => {
+                  acc[p.reason] = (acc[p.reason] || 0) + 1;
+                  return acc;
+                }, {} as Record<OrphanReason, number>);
+                const sinOrdenCount = byReason.sin_orden || 0;
+                return (
+                  <div className="bg-white border rounded-lg p-4">
+                    <p className="text-sm mb-2">
+                      MercadoPago aprobó <b>{auditResult.totalChecked}</b> pagos este período.{" "}
+                      {auditResult.unmatchedCount === 0 ? (
+                        <span className="text-green-700">✓ Todos están reflejados arriba.</span>
+                      ) : (
+                        <span>
+                          <b>{auditResult.unmatchedCount}</b> ({clp(auditResult.unmatchedAmount)}) no están en la tabla de
+                          liquidaciones, pero no todos son plata sin explicar —{" "}
+                          {sinOrdenCount > 0 ? (
+                            <span className="text-red-700 font-medium">{sinOrdenCount} sin ninguna orden asociada</span>
+                          ) : (
+                            <span className="text-green-700 font-medium">ninguno está realmente sin explicar</span>
+                          )}, el resto son brechas de sincronización (ver detalle abajo).
+                        </span>
+                      )}
+                    </p>
+                    {auditResult.unmatched.length > 0 && (
+                      <>
+                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                          {(Object.keys(REASON_SHORT) as OrphanReason[]).filter((r) => byReason[r]).map((r) => (
+                            <span key={r} className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${REASON_BADGE[r]}`}>
+                              {REASON_SHORT[r]} · {byReason[r]}
+                            </span>
+                          ))}
+                        </div>
+                        <table className="w-full text-xs mt-2">
+                          <thead>
+                            <tr className="text-left text-slate-400 border-b">
+                              <th className="py-1 font-medium">Payment ID</th>
+                              <th className="py-1 font-medium text-right">Monto</th>
+                              <th className="py-1 font-medium">Fecha</th>
+                              <th className="py-1 font-medium">Motivo</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {auditResult.unmatched.map((p) => (
+                              <tr key={p.id} className="border-b last:border-0 align-top">
+                                <td className="py-1 font-mono text-slate-500">{p.id}</td>
+                                <td className="py-1 text-right tabular-nums">{clp(p.amount)}</td>
+                                <td className="py-1 text-slate-500">{p.date_approved?.slice(0, 10)}</td>
+                                <td className="py-1">
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${REASON_BADGE[p.reason]}`}>
+                                    {REASON_SHORT[p.reason]}
+                                  </span>
+                                  <div className="text-slate-400 mt-0.5">{p.label}</div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </>
                     )}
-                  </p>
-                  {auditResult.unmatched.length > 0 && (
-                    <table className="w-full text-xs mt-2">
-                      <thead>
-                        <tr className="text-left text-slate-400 border-b">
-                          <th className="py-1 font-medium">Payment ID</th>
-                          <th className="py-1 font-medium text-right">Monto</th>
-                          <th className="py-1 font-medium">Fecha</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {auditResult.unmatched.map((p) => (
-                          <tr key={p.id} className="border-b last:border-0">
-                            <td className="py-1 font-mono text-slate-500">{p.id}</td>
-                            <td className="py-1 text-right tabular-nums">{clp(p.amount)}</td>
-                            <td className="py-1 text-slate-500">{p.date_approved?.slice(0, 10)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              )}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
