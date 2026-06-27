@@ -166,7 +166,7 @@ export default function PageVentas() {
         .select("gross_amount", { count: "exact" })
         .gte("order_date", f).lte("order_date", t)
         .in("status", NON_SALE_STATUSES as unknown as string[]);
-      if (channelFilter !== "todos") discQ = discQ.eq("channel", channelFilter);
+      if (channelFilter !== "todos") discQ = discQ.eq("channel", channelFilter as any);
       const { data: discRows, count: discCount } = await discQ;
       setDiscardedCount(discCount ?? 0);
       setDiscardedSum((discRows ?? []).reduce((s: number, r: any) => s + (r.gross_amount ?? 0), 0));
