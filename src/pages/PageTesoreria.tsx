@@ -224,7 +224,11 @@ export default function PageTesoreria() {
       </main>
 
       {detailOrder && (
-        <DetailPanel order={detailOrder} onClose={() => setDetailOrder(null)} />
+        <DetailPanel
+          title={`Orden ${detailOrder.order_id ?? ""}`}
+          data={detailOrder}
+          onClose={() => setDetailOrder(null)}
+        />
       )}
     </div>
   );
