@@ -31,19 +31,24 @@ const PAGE_SIZE = 50;
 
 type StatusFilter = "all" | "pendiente" | "liberado";
 
-// Eje temporal del período. MercadoPago deposita ~14 días después de la venta,
-// así que el mismo mes mirado "por pago" y "por venta" son cohortes distintas:
-// - "pago":  cuándo MercadoPago depositó (payment_date). Sirve para cuadrar
-//            contra el extracto bancario / saldo MP.
-// - "venta": a qué venta corresponde el pago (orders.order_date). Es la MISMA
-//            cohorte que ve el módulo Ventas, para poder cruzar venta↔payout.
-type DateBasis = "pago" | "venta";
+// Eje temporal del período. En una liquidación conviven TRES fechas distintas y
+// mezclarlas es lo que hacía ambiguo el "junio" de arriba:
+//   - order_date          → cuándo VENDISTE
+//   - payment_date        → cuándo MercadoPago aprobó/procesó el pago
+//   - money_release_date  → cuándo la plata queda DISPONIBLE para retirar
+// Para una vista de tesorería el eje que importa es la liberación (cuándo la
+// plata es tuya). El payment_date pasa a ser un dato de la fila, no un eje.
+//   - "liberacion": plata cuya fecha de liberación cae en el mes. Verdad de caja.
+//   - "venta":      a qué venta corresponde (order_date) — misma cohorte que Ventas,
+//                   para poder cruzar venta↔payout aunque la plata caiga otro mes.
+type DateBasis = "liberacion" | "venta";
 
 // Fila cruda: un pago real de MercadoPago (payments) con las órdenes que
 // cubre (payment_sales → orders) y si cada una ya tiene documento tributario.
 interface PaySaleOrder {
   id: string; order_id: string; channel: string | null; product_title: string | null;
   gross_amount: number | null; money_release_date: string | null; order_date: string | null;
+  has_exact_data: boolean | null;
   order_tax_documents: { id: string; tax_documents: { status: string | null } | null }[] | null;
 }
 interface PaymentRow {
@@ -78,10 +83,14 @@ interface Liquidacion {
   fees: number;
   gross: number;
   channels: string[];
-  orders: { id: string; orderId: string; title: string | null; amount: number; hasDoc: boolean }[];
+  orders: { id: string; orderId: string; title: string | null; amount: number; hasDoc: boolean; hasExact: boolean }[];
   docsOk: number;
   liberado: boolean;
   latestRelease: string | null;
+  // money_release_date es exacto solo cuando MercadoPago lo confirmó
+  // (has_exact_data). Si alguna orden del pago no está confirmada, la fecha de
+  // liberación es una estimación (order_date + ~14d) y se marca como tal.
+  exactRelease: boolean;
 }
 
 const toLiquidacion = (p: PaymentRow): Liquidacion => {
@@ -91,6 +100,7 @@ const toLiquidacion = (p: PaymentRow): Liquidacion => {
     .map((l) => ({
       id: l.orders!.id, orderId: l.orders!.order_id, title: l.orders!.product_title,
       amount: l.allocated_amount, hasDoc: orderHasDoc(l.orders!.order_tax_documents),
+      hasExact: !!l.orders!.has_exact_data,
     }));
   const channels = Array.from(new Set(links.map((l) => l.orders?.channel).filter(Boolean) as string[]));
   const releaseDates = links.map((l) => l.orders?.money_release_date).filter(Boolean) as string[];
@@ -108,6 +118,7 @@ const toLiquidacion = (p: PaymentRow): Liquidacion => {
     docsOk: orders.filter((o) => o.hasDoc).length,
     liberado: latestRelease ? new Date(latestRelease) <= new Date() : true,
     latestRelease,
+    exactRelease: orders.length > 0 && orders.every((o) => o.hasExact),
   };
 };
 
@@ -176,8 +187,9 @@ export default function PageLiquidaciones() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [grouped, setGrouped] = useState(true);
-  const [dateBasis, setDateBasis] = useState<DateBasis>("pago");
+  const [channelFilter, setChannelFilter] = useState<string>("all");
+  const [grouped, setGrouped] = useState(false);
+  const [dateBasis, setDateBasis] = useState<DateBasis>("liberacion");
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<PaymentRow[]>([]);
   const [page, setPage] = useState(0);
@@ -212,61 +224,45 @@ export default function PageLiquidaciones() {
         id, external_payment_id, payment_date, net_amount, fees_amount, gross_amount, raw_data,
         payment_sales (
           allocated_amount,
-          orders ( id, order_id, channel, product_title, gross_amount, order_date, money_release_date,
+          orders ( id, order_id, channel, product_title, gross_amount, order_date, money_release_date, has_exact_data,
                    order_tax_documents ( id, tax_documents ( status ) ) )
         )
       `;
       const acc: PaymentRow[] = [];
 
-      if (dateBasis === "venta") {
-        // Cohorte por fecha de venta = la misma que ve Ventas. Buscamos las
-        // órdenes del período y de ahí sus pagos, en vez de filtrar por la fecha
-        // en que MercadoPago depositó (que cae ~14 días después, en otro mes).
-        // Los pagos se traen con TODOS sus payment_sales (sin recortar), así el
-        // neto sigue siendo el del depósito completo y no se distorsiona.
-        const orderIds: string[] = [];
-        for (let p = 0; p < 20; p++) {
-          const { data } = await supabase.from("orders").select("id")
-            .gte("order_date", f).lte("order_date", t)
-            .range(p * 1000, p * 1000 + 999);
-          if (!data || data.length === 0) break;
-          orderIds.push(...data.map((o: any) => o.id));
-          if (data.length < 1000) break;
-        }
+      // Ambos ejes parten de las órdenes del período y de ahí traen sus pagos
+      // (con TODOS sus payment_sales, sin recortar, para que el neto siga siendo
+      // el del depósito completo). Lo único que cambia es por qué fecha de la
+      // orden filtramos: money_release_date (caja) u order_date (venta).
+      const orderDateCol = dateBasis === "venta" ? "order_date" : "money_release_date";
 
-        const paymentIds = new Set<string>();
-        for (let i = 0; i < orderIds.length; i += 200) {
-          const { data } = await supabase.from("payment_sales")
-            .select("payment_id").in("sale_id", orderIds.slice(i, i + 200));
-          for (const r of (data || []) as any[]) if (r.payment_id) paymentIds.add(r.payment_id);
-        }
-
-        const ids = Array.from(paymentIds);
-        for (let i = 0; i < ids.length; i += 200) {
-          const { data, error } = await supabase.from("payments").select(EMBED)
-            .eq("payment_provider", "MERCADOPAGO")
-            .in("id", ids.slice(i, i + 200));
-          if (error) throw error;
-          acc.push(...((data || []) as unknown as PaymentRow[]).filter(isRealMpPayment));
-        }
-        acc.sort((a, b) => (b.payment_date || "").localeCompare(a.payment_date || ""));
-      } else {
-        // Cohorte por fecha de pago (cuándo MercadoPago depositó).
-        const PAGE = 1000;
-        let offset = 0;
-        while (true) {
-          const { data, error } = await supabase.from("payments").select(EMBED)
-            .eq("payment_provider", "MERCADOPAGO")
-            .gte("payment_date", f).lte("payment_date", t)
-            .order("payment_date", { ascending: false })
-            .range(offset, offset + PAGE - 1);
-          if (error) throw error;
-          const batch = (data || []) as unknown as PaymentRow[];
-          acc.push(...batch.filter(isRealMpPayment));
-          if (batch.length < PAGE) break;
-          offset += PAGE;
-        }
+      const orderIds: string[] = [];
+      for (let p = 0; p < 20; p++) {
+        const { data } = await supabase.from("orders").select("id")
+          .gte(orderDateCol, f).lte(orderDateCol, t)
+          .range(p * 1000, p * 1000 + 999);
+        if (!data || data.length === 0) break;
+        orderIds.push(...data.map((o: any) => o.id));
+        if (data.length < 1000) break;
       }
+
+      const paymentIds = new Set<string>();
+      for (let i = 0; i < orderIds.length; i += 200) {
+        const { data } = await supabase.from("payment_sales")
+          .select("payment_id").in("sale_id", orderIds.slice(i, i + 200));
+        for (const r of (data || []) as any[]) if (r.payment_id) paymentIds.add(r.payment_id);
+      }
+
+      const ids = Array.from(paymentIds);
+      for (let i = 0; i < ids.length; i += 200) {
+        const { data, error } = await supabase.from("payments").select(EMBED)
+          .eq("payment_provider", "MERCADOPAGO")
+          .in("id", ids.slice(i, i + 200));
+        if (error) throw error;
+        acc.push(...((data || []) as unknown as PaymentRow[]).filter(isRealMpPayment));
+      }
+      acc.sort((a, b) => (b.payment_date || "").localeCompare(a.payment_date || ""));
+
       setRows(acc);
     } catch (e) {
       console.error("Error cargando liquidaciones:", e);
@@ -279,30 +275,41 @@ export default function PageLiquidaciones() {
   useEffect(() => { fetchRows(); }, [fetchRows]);
   useEffect(() => {
     setPage(0); setExpanded(null); setAuditResult(null); setAuditOpen(false);
-  }, [range.from, range.to, statusFilter, grouped, dateBasis]);
+  }, [range.from, range.to, statusFilter, channelFilter, grouped, dateBasis]);
 
   const liquidaciones = useMemo(() => rows.map(toLiquidacion), [rows]);
 
+  // Canales presentes — base para el filtro y para dejar la vista lista para
+  // multicanal sin inventar canales que no existen (hoy solo MercadoLibre).
+  const channels = useMemo(
+    () => Array.from(new Set(liquidaciones.flatMap((l) => l.channels))).sort(),
+    [liquidaciones]
+  );
+
   const kpis = useMemo(() => {
-    let total = 0, liberado = 0, pendiente = 0, sinDocumento = 0;
+    let liberado = 0, pendiente = 0, comisiones = 0, sinDocumento = 0;
     for (const l of liquidaciones) {
-      total += l.net;
       if (l.liberado) liberado += l.net; else pendiente += l.net;
+      comisiones += l.fees;
       if (l.orders.length > 0 && l.docsOk < l.orders.length) sinDocumento++;
     }
-    return { total, liberado, pendiente, sinDocumento, count: liquidaciones.length };
+    return { liberado, pendiente, comisiones, sinDocumento, count: liquidaciones.length };
   }, [liquidaciones]);
 
   const filtered = useMemo(() => {
-    if (statusFilter === "all") return liquidaciones;
-    return liquidaciones.filter((l) => (statusFilter === "liberado" ? l.liberado : !l.liberado));
-  }, [liquidaciones, statusFilter]);
+    return liquidaciones.filter((l) => {
+      if (statusFilter !== "all" && (statusFilter === "liberado" ? !l.liberado : l.liberado)) return false;
+      if (channelFilter !== "all" && !l.channels.includes(channelFilter)) return false;
+      return true;
+    });
+  }, [liquidaciones, statusFilter, channelFilter]);
 
   const groups = useMemo(() => (grouped ? groupByRelease(filtered) : []), [grouped, filtered]);
   const displayCount = grouped ? groups.length : filtered.length;
   const totalPages = Math.max(1, Math.ceil(displayCount / PAGE_SIZE));
   const pageLiquidaciones = grouped ? [] : filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
   const pageGroups = grouped ? groups.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE) : [];
+  const COLS = grouped ? 8 : 11;
 
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
@@ -330,9 +337,9 @@ export default function PageLiquidaciones() {
     }
   };
 
-  const channelBadges = (channels: string[]) => (
+  const channelBadges = (chs: string[]) => (
     <div className="flex flex-col gap-1">
-      {channels.length > 0 ? channels.map((ch) => (
+      {chs.length > 0 ? chs.map((ch) => (
         <span key={ch} className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${CHANNEL_COLOR[ch] || "bg-slate-100 text-slate-600"}`}>
           {CHANNEL_LABEL[ch] ?? ch}
         </span>
@@ -352,18 +359,36 @@ export default function PageLiquidaciones() {
       {dateStr ? ` ${format(new Date(dateStr), "dd/MM", { locale: es })}` : ""}
     </span>
   );
+  // Fecha de liberación con marca de estimada (≈) cuando MercadoPago no la confirmó.
+  const releaseCell = (l: Liquidacion) => l.latestRelease ? (
+    <span>
+      {l.latestRelease.slice(0, 10)}
+      {!l.exactRelease && (
+        <span title="Fecha estimada (orden sin confirmación de MercadoPago, ~14 días)" className="text-amber-500"> ≈</span>
+      )}
+    </span>
+  ) : <span className="text-slate-300">—</span>;
 
   return (
     <div className="flex min-h-screen bg-slate-50">
       <Nav />
-      <main className="flex-1 p-8 max-w-5xl">
+      <main className="flex-1 p-8 max-w-6xl">
 
-        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+        <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Tesorería</p>
+            <h2 className="text-lg font-semibold text-slate-800">Liquidaciones</h2>
+          </div>
           <div className="flex items-center gap-3">
             <button onClick={() => changePeriod(-1)} className="p-1 hover:bg-slate-200 rounded">
               <ChevronLeft className="h-5 w-5" />
             </button>
-            <h1 className="text-xl font-semibold capitalize w-44 text-center">{periodLabel(period)}</h1>
+            <div className="w-52 text-center">
+              <h1 className="text-xl font-semibold capitalize leading-none">{periodLabel(period)}</h1>
+              <p className="text-[11px] text-slate-400 mt-1">
+                {dateBasis === "venta" ? "por fecha de venta" : "por fecha de liberación"}
+              </p>
+            </div>
             <button onClick={() => changePeriod(1)} className="p-1 hover:bg-slate-200 rounded">
               <ChevronRight className="h-5 w-5" />
             </button>
@@ -374,24 +399,24 @@ export default function PageLiquidaciones() {
           </div>
         </div>
 
-        {/* KPIs: lo que de verdad importa de una liquidación — cuánto, cuánto
-            ya está liberado, y si falta respaldo tributario. Siempre reflejan
-            todo el período, sin importar el filtro Pendientes/Liberadas. */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
+        {/* KPIs: lo que de verdad importa de la tesorería — cuánta plata ya está
+            disponible, cuánta falta liberar, cuánto te cobró el riel de pago, y
+            si falta respaldo tributario. Siempre reflejan todo el período. */}
+        <div className="grid grid-cols-4 gap-4 mb-6 mt-5">
           <div className="bg-white rounded-xl border shadow-card p-4">
-            <p className="text-xs text-slate-400 mb-1">Total liquidado</p>
-            <p className="text-xl font-bold text-slate-900 tabular-nums">{clp(kpis.total)}</p>
-            <p className="text-xs text-slate-400 mt-1">{kpis.count} liquidaciones</p>
-          </div>
-          <div className="bg-white rounded-xl border shadow-card p-4">
-            <p className="text-xs text-slate-400 mb-1">Liberado</p>
+            <p className="text-xs text-slate-400 mb-1">Neto liberado</p>
             <p className="text-xl font-bold text-green-600 tabular-nums">{clp(kpis.liberado)}</p>
-            <p className="text-xs text-slate-400 mt-1">Ya está en tu saldo MercadoPago</p>
+            <p className="text-xs text-slate-400 mt-1">Ya disponible · {kpis.count} pagos</p>
           </div>
           <div className="bg-white rounded-xl border shadow-card p-4">
             <p className="text-xs text-slate-400 mb-1">Pendiente de liberación</p>
             <p className="text-xl font-bold text-amber-600 tabular-nums">{clp(kpis.pendiente)}</p>
             <p className="text-xs text-slate-400 mt-1">Aprobado, aún no disponible</p>
+          </div>
+          <div className="bg-white rounded-xl border shadow-card p-4">
+            <p className="text-xs text-slate-400 mb-1">Comisiones</p>
+            <p className="text-xl font-bold text-slate-900 tabular-nums">{clp(kpis.comisiones)}</p>
+            <p className="text-xs text-slate-400 mt-1">Lo que te cobró MercadoPago</p>
           </div>
           <div className="bg-white rounded-xl border shadow-card p-4">
             <p className="text-xs text-slate-400 mb-1">Sin documento</p>
@@ -416,12 +441,23 @@ export default function PageLiquidaciones() {
             </button>
           ))}
 
+          {/* Filtro de canal: aparece solo cuando hay más de uno. Hoy la columna
+              "Canal" ya muestra el riel por fila; el filtro queda listo para
+              cuando entren Shopify u otros, sin simular canales inexistentes. */}
+          {channels.length > 1 && (
+            <select value={channelFilter} onChange={(e) => setChannelFilter(e.target.value)}
+              className="ml-auto text-xs border border-slate-200 rounded-full px-2.5 py-1 text-slate-600 bg-white">
+              <option value="all">Todos los canales</option>
+              {channels.map((ch) => <option key={ch} value={ch}>{CHANNEL_LABEL[ch] ?? ch}</option>)}
+            </select>
+          )}
+
           {/* Eje temporal: la misma plata cae en meses distintos según se mire
-              por fecha de pago (banco/saldo MP) o de venta (cruce con Ventas). */}
-          <div className="ml-auto flex items-center gap-1 rounded-full border border-slate-200 p-0.5"
-            title="MercadoPago deposita ~14 días después de la venta: el mismo mes 'por pago' y 'por venta' agrupan liquidaciones distintas.">
+              por fecha de liberación (caja) o de venta (cruce con Ventas). */}
+          <div className={`${channels.length > 1 ? "" : "ml-auto"} flex items-center gap-1 rounded-full border border-slate-200 p-0.5`}
+            title="MercadoPago libera la plata ~14 días después de la venta: el mismo mes 'por liberación' y 'por venta' agrupan liquidaciones distintas.">
             {([
-              ["pago", "Por fecha de pago"], ["venta", "Por fecha de venta"],
+              ["liberacion", "Por liberación"], ["venta", "Por venta"],
             ] as [DateBasis, string][]).map(([val, label]) => (
               <button key={val} onClick={() => setDateBasis(val)}
                 className={`px-2.5 py-0.5 text-xs font-medium rounded-full transition-colors ${
@@ -442,24 +478,40 @@ export default function PageLiquidaciones() {
         <div className="bg-white border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-xs text-slate-400 border-b">
-                <th className="px-4 py-2 font-medium">{grouped ? "Fecha liberación" : "Fecha"}</th>
-                <th className="px-4 py-2 font-medium">Canal</th>
-                <th className="px-4 py-2 font-medium">{grouped ? "Liquidaciones" : "Pago ID"}</th>
-                <th className="px-4 py-2 font-medium text-right">Monto neto</th>
-                <th className="px-4 py-2 font-medium">Venta(s)</th>
-                <th className="px-4 py-2 font-medium">Documento</th>
-                <th className="px-4 py-2 font-medium">Estado</th>
-                <th className="px-4 py-2 font-medium"></th>
-              </tr>
+              {grouped ? (
+                <tr className="text-left text-xs text-slate-400 border-b">
+                  <th className="px-4 py-2 font-medium">Fecha liberación</th>
+                  <th className="px-4 py-2 font-medium">Canal</th>
+                  <th className="px-4 py-2 font-medium">Liquidaciones</th>
+                  <th className="px-4 py-2 font-medium text-right">Monto neto</th>
+                  <th className="px-4 py-2 font-medium">Venta(s)</th>
+                  <th className="px-4 py-2 font-medium">Documento</th>
+                  <th className="px-4 py-2 font-medium">Estado</th>
+                  <th className="px-4 py-2 font-medium"></th>
+                </tr>
+              ) : (
+                <tr className="text-left text-xs text-slate-400 border-b">
+                  <th className="px-4 py-2 font-medium">Payment ID</th>
+                  <th className="px-4 py-2 font-medium">Canal</th>
+                  <th className="px-4 py-2 font-medium">F. pago</th>
+                  <th className="px-4 py-2 font-medium">F. liberación</th>
+                  <th className="px-4 py-2 font-medium text-right">Bruto</th>
+                  <th className="px-4 py-2 font-medium text-right">Comisión</th>
+                  <th className="px-4 py-2 font-medium text-right">Neto</th>
+                  <th className="px-4 py-2 font-medium">Venta(s)</th>
+                  <th className="px-4 py-2 font-medium">Documento</th>
+                  <th className="px-4 py-2 font-medium">Estado</th>
+                  <th className="px-4 py-2 font-medium"></th>
+                </tr>
+              )}
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">
+                <tr><td colSpan={COLS} className="px-4 py-10 text-center text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin inline" />
                 </td></tr>
               ) : displayCount === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">
+                <tr><td colSpan={COLS} className="px-4 py-10 text-center text-slate-400">
                   Sin liquidaciones de MercadoPago en este período. Corre <b>Sync pagos</b> en{" "}
                   <a href="/pipeline" className="text-blue-500 underline">Sincronización</a> si esperabas ver datos acá.
                 </td></tr>
@@ -529,9 +581,12 @@ export default function PageLiquidaciones() {
                   <Fragment key={l.key}>
                     <tr className="border-b last:border-0 hover:bg-slate-50 align-top cursor-pointer"
                       onClick={() => setExpanded(isOpen ? null : l.key)}>
-                      <td className="px-4 py-2 text-slate-500">{l.paymentDate.slice(0, 10)}</td>
-                      <td className="px-4 py-2">{channelBadges(l.channels)}</td>
                       <td className="px-4 py-2 font-mono text-xs text-slate-500">{l.externalPaymentId || "—"}</td>
+                      <td className="px-4 py-2">{channelBadges(l.channels)}</td>
+                      <td className="px-4 py-2 text-xs text-slate-500">{l.paymentDate.slice(0, 10)}</td>
+                      <td className="px-4 py-2 text-xs text-slate-500">{releaseCell(l)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-slate-500">{clp(l.gross)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-slate-500">{clp(l.fees)}</td>
                       <td className="px-4 py-2 text-right tabular-nums font-medium">{clp(l.net)}</td>
                       <td className="px-4 py-2">
                         <div className="space-y-1">
@@ -555,7 +610,7 @@ export default function PageLiquidaciones() {
                     </tr>
                     {isOpen && (
                       <tr className="border-b bg-slate-50">
-                        <td colSpan={8} className="px-4 py-3">
+                        <td colSpan={11} className="px-4 py-3">
                           <div className="grid grid-cols-3 gap-4 mb-3 text-xs">
                             <div><span className="text-slate-400">Bruto: </span><span className="tabular-nums">{clp(l.gross)}</span></div>
                             <div><span className="text-slate-400">Comisión MP: </span><span className="tabular-nums">{clp(l.fees)}</span></div>
@@ -614,11 +669,11 @@ export default function PageLiquidaciones() {
         )}
 
         <p className="text-xs text-slate-400 mt-3">
-          Cada fila es un pago real aprobado por MercadoPago, con la(s) venta(s) que cubre. El monto es el neto
+          Cada fila es un pago real aprobado por MercadoPago, con la(s) venta(s) que cubre. El monto neto es lo
           que efectivamente te depositaron (ya descontada la comisión) — no una estimación.{" "}
           {dateBasis === "venta"
-            ? "Estás viendo los pagos de las ventas de este mes (la misma cohorte que Ventas), aunque el depósito haya caído en otro mes."
-            : "Estás viendo los pagos depositados este mes; muchos corresponden a ventas del mes anterior (MercadoPago paga ~14 días después)."}
+            ? "Estás viendo los pagos de las ventas de este mes (la misma cohorte que Ventas), aunque la plata se libere en otro mes."
+            : "Estás viendo la plata que se libera este mes (cuándo queda disponible para retirar); muchas ventas son de meses anteriores, porque MercadoPago libera ~14 días después. La fecha marcada con ≈ es estimada."}
         </p>
 
         {/* Auditoría: esta es la única vista que le pregunta directo a MercadoPago
