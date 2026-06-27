@@ -22,14 +22,18 @@ const PIE_COLORS = ["#0ea5e9", "#14b8a6", "#f59e0b", "#a855f7", "#ef4444", "#647
 export function TesoreriaResumen({ payments, upcomingReleases, rangeIso, onJumpToDetail }: Props) {
   const kpis = useMemo(() => {
     let received = 0, releasedNet = 0, pendingNet = 0, matched = 0, orphanCount = 0, orphanAmount = 0;
+    let gross = 0, fees = 0;
     for (const p of payments) {
       received += p.net;
+      gross += p.gross;
+      fees += p.fees;
       if (p.liberado) releasedNet += p.net; else pendingNet += p.net;
       if (p.matchState === "matched") matched++;
       if (p.matchState === "orphan") { orphanCount++; orphanAmount += p.net; }
     }
     const matchedPct = payments.length > 0 ? Math.round((matched / payments.length) * 100) : 0;
-    return { received, releasedNet, pendingNet, matchedPct, orphanCount, orphanAmount, count: payments.length };
+    const feesPct = gross > 0 ? Math.round((fees / gross) * 100) : 0;
+    return { received, releasedNet, pendingNet, matchedPct, orphanCount, orphanAmount, count: payments.length, gross, fees, feesPct };
   }, [payments]);
 
   const dailySeries = useMemo(() => {
@@ -99,8 +103,14 @@ export function TesoreriaResumen({ payments, upcomingReleases, rangeIso, onJumpT
   return (
     <div className="space-y-6">
       {/* KPIs */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <Kpi title="Recibido en el período" value={clp(kpis.received)} hint={`${kpis.count} pagos`} />
+        <Kpi
+          title="Comisiones pasarela"
+          value={clp(kpis.fees)}
+          hint={kpis.gross > 0 ? `${kpis.feesPct}% sobre bruto (${clp(kpis.gross)})` : "Sin bruto en el período"}
+          tone="red"
+        />
         <Kpi title="Liberado" value={clp(kpis.releasedNet)} hint="Disponible en saldo" tone="green" />
         <Kpi title="Pendiente de liberar" value={clp(kpis.pendingNet)} hint="Aprobado, aún retenido" tone="amber" />
         <Kpi
