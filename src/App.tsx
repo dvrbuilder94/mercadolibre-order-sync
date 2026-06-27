@@ -17,7 +17,7 @@ import PageConciliacion      from "./pages/PageConciliacion";
 import ConfigNew             from "./pages/ConfigNew";
 import PageDashboard         from "./pages/PageDashboard";
 import PageAsistente         from "./pages/PageAsistente";
-import PageLiquidaciones     from "./pages/PageLiquidaciones";
+import PageTesoreria         from "./pages/PageTesoreria";
 import PageDevoluciones      from "./pages/PageDevoluciones";
 import PageDocumentos        from "./pages/PageDocumentos";
 import PageArquitectura      from "./pages/PageArquitectura";
@@ -40,7 +40,8 @@ const App = () => (
           <Route path="/ventas"       element={<PageVentas />} />
           <Route path="/documentos"   element={<PageDocumentos />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
-          <Route path="/liquidaciones" element={<PageLiquidaciones />} />
+          <Route path="/tesoreria"     element={<PageTesoreria />} />
+          <Route path="/liquidaciones" element={<Navigate to="/tesoreria" replace />} />
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
           <Route path="/pipeline"     element={<Pipeline />} />
           <Route path="/arquitectura" element={<PageArquitectura />} />
@@ -52,7 +53,7 @@ const App = () => (
 
           {/* Legacy redirects */}
           <Route path="/dashboard"        element={<Navigate to="/resumen" replace />} />
-          <Route path="/sandbox-mp"       element={<Navigate to="/liquidaciones" replace />} />
+          <Route path="/sandbox-mp"       element={<Navigate to="/tesoreria" replace />} />
           <Route path="/mercadolibre"     element={<Navigate to="/ventas" replace />} />
           <Route path="/bsale"            element={<Navigate to="/ventas" replace />} />
           <Route path="/flujo"            element={<Navigate to="/resumen" replace />} />
