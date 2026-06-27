@@ -13,7 +13,7 @@ const primary = [
   { to: "/resumen",       label: "Resumen",       icon: Home },
   { to: "/ventas",        label: "Ventas",        icon: ShoppingBag },
   { to: "/documentos",    label: "Documentos",    icon: FileText },
-  { to: "/liquidaciones", label: "Liquidaciones", icon: Landmark },
+  { to: "/tesoreria",     label: "Tesorería",     icon: Landmark },
   { to: "/devoluciones",  label: "Devoluciones",  icon: Undo2 },
   { to: "/conciliacion",  label: "Conciliación",  icon: GitMerge },
   { to: "/config",        label: "Conexiones",    icon: Settings },
