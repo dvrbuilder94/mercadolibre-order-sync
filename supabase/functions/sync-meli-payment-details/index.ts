@@ -155,6 +155,9 @@ Deno.serve(async (req) => {
         let totalNetReceived = 0;
         let totalFees = 0;
         let latestMoneyReleaseDate = null;
+        // Links a crear DESPUÉS del loop: el pago de un pack debe repartirse
+        // entre todas las órdenes del pack, no atribuirse entero a esta orden.
+        const paymentLinks: { paymentRowId: string; net: number }[] = [];
 
         // Process all payments for this order
         for (const payment of payments) {
@@ -293,20 +296,9 @@ Deno.serve(async (req) => {
                   console.error(`    ❌ Error upserting payment ledger row: ${paymentUpsertError.message}`);
                   errors++;
                 } else {
-                  const { error: linkError } = await supabase
-                    .from('payment_sales')
-                    .upsert({
-                      payment_id: paymentRow.id,
-                      sale_id: order.id,
-                      allocated_amount: netReceived,
-                    }, { onConflict: 'payment_id,sale_id' });
-
-                  if (linkError) {
-                    console.error(`    ❌ Error linking payment_sales: ${linkError.message}`);
-                    errors++;
-                  } else {
-                    paymentsLinked++;
-                  }
+                  // Diferir el linking: si esta orden es parte de un pack, el
+                  // pago se reparte entre todas sus órdenes más abajo.
+                  paymentLinks.push({ paymentRowId: paymentRow.id, net: netReceived });
                 }
               }
             } else {
@@ -322,40 +314,98 @@ Deno.serve(async (req) => {
           }
         }
 
-        // Update order with aggregated data from all payments
+        // Atribuir el/los pago(s) y escribir el dato exacto — consciente de packs.
         if (orderHasValidPayment) {
-          const commissionPercentage = order.amount > 0
-            ? (totalFees / order.amount * 100).toFixed(2)
-            : '0';
+          // Un pack de MercadoLibre agrupa varias órdenes bajo UN pago.
+          // MercadoPago adjunta ese pago solo al snapshot de una orden, así que
+          // las hermanas llegan acá con raw_data.payments vacío y se saltan —
+          // quedando sin pago mientras esta orden absorbe el pack completo.
+          // Repartimos el pago entre todas las órdenes (no canceladas) del pack,
+          // proporcional al bruto de cada una.
+          const packId = order.raw_data?.pack_id != null ? String(order.raw_data.pack_id) : null;
+          let targets: { id: string; gross: number; isPrimary: boolean }[] =
+            [{ id: order.id, gross: order.amount || 0, isPrimary: true }];
 
-          // Calculate exact settlement_amount
-          const shippingCost = order.raw_data?.shipping?.cost || 0;
-          const shippingMode = order.raw_data?.shipping?.shipping_mode || 'custom';
-          const shippingDeduction = shippingMode === 'me2' ? shippingCost : 0;
-          const settlementAmount = Math.round(
-            (totalNetReceived - shippingDeduction) * 100
-          ) / 100;
+          if (packId) {
+            const { data: siblings, error: sibErr } = await supabase
+              .from('orders')
+              .select('id, amount, gross_amount, status')
+              .eq('channel', 'meli')
+              .eq('channel_account_id', meliAccount.id)
+              .eq('raw_data->>pack_id', packId);
+            if (sibErr) {
+              console.error(`    ❌ Error fetching pack ${packId}: ${sibErr.message}`);
+            } else {
+              const real = (siblings || []).filter((s: any) => s.status !== 'cancelled');
+              if (real.length > 1) {
+                targets = real.map((s: any) => ({
+                  id: s.id,
+                  gross: (s.gross_amount ?? s.amount) || 0,
+                  isPrimary: s.id === order.id,
+                }));
+                console.log(`    📦 Pack ${packId}: repartiendo el pago entre ${targets.length} órdenes`);
+              }
+            }
+          }
 
-          const { error: updateError } = await supabase.from('orders').update({
-            gross_amount: order.amount,
-            net_amount: totalNetReceived,
-            commission_amount: totalFees,
-            commission_percentage: parseFloat(commissionPercentage),
-            expected_payment_date: latestMoneyReleaseDate,
-            money_release_date: latestMoneyReleaseDate,
-            settlement_date: latestMoneyReleaseDate,
-            settlement_amount: settlementAmount,
-            financing_fee: totalFees,
-            tax_amount: 0,
-            has_exact_data: true
-          }).eq('id', order.id);
+          const grossTotal = targets.reduce((s, t) => s + t.gross, 0);
+          const ratioOf = (t: { gross: number }) =>
+            grossTotal > 0 ? t.gross / grossTotal : 1 / targets.length;
 
-          if (updateError) {
-            console.error(`    ❌ Error updating order ${order.order_id}: ${updateError.message}`);
-            errors++;
-          } else {
-            updated++;
-            console.log(`    ✨ Updated order ${order.order_id} with exact data (${payments.length} payment(s), net: ${totalNetReceived})`);
+          // 1) Atribución: ligar cada pago real de MP a cada orden del pack,
+          //    repartido por bruto. Idempotente (upsert por payment_id,sale_id).
+          for (const link of paymentLinks) {
+            for (const t of targets) {
+              const allocated = Math.round(link.net * ratioOf(t) * 100) / 100;
+              const { error: linkError } = await supabase
+                .from('payment_sales')
+                .upsert(
+                  { payment_id: link.paymentRowId, sale_id: t.id, allocated_amount: allocated },
+                  { onConflict: 'payment_id,sale_id' },
+                );
+              if (linkError) {
+                console.error(`    ❌ Error linking payment_sales (orden ${t.id}): ${linkError.message}`);
+                errors++;
+              } else {
+                paymentsLinked++;
+              }
+            }
+          }
+
+          // 2) Dato exacto: cada orden del pack recibe su porción de neto/comisión.
+          for (const t of targets) {
+            const ratio = ratioOf(t);
+            const poNet = Math.round(totalNetReceived * ratio * 100) / 100;
+            const poFees = Math.round(totalFees * ratio * 100) / 100;
+            const poComm = t.gross > 0 ? (poFees / t.gross * 100).toFixed(2) : '0';
+            // El envío (me2) se cobra una vez por el pack: se descuenta solo de
+            // la orden que traía el dato de envío (la que procesamos).
+            const shippingCost = order.raw_data?.shipping?.cost || 0;
+            const shippingMode = order.raw_data?.shipping?.shipping_mode || 'custom';
+            const shippingDeduction = (t.isPrimary && shippingMode === 'me2') ? shippingCost : 0;
+            const settlementAmount = Math.round((poNet - shippingDeduction) * 100) / 100;
+
+            const { error: updateError } = await supabase.from('orders').update({
+              gross_amount: t.gross,
+              net_amount: poNet,
+              commission_amount: poFees,
+              commission_percentage: parseFloat(poComm),
+              expected_payment_date: latestMoneyReleaseDate,
+              money_release_date: latestMoneyReleaseDate,
+              settlement_date: latestMoneyReleaseDate,
+              settlement_amount: settlementAmount,
+              financing_fee: poFees,
+              tax_amount: 0,
+              has_exact_data: true,
+            }).eq('id', t.id);
+
+            if (updateError) {
+              console.error(`    ❌ Error updating order ${t.id}: ${updateError.message}`);
+              errors++;
+            } else if (t.isPrimary) {
+              updated++;
+              console.log(`    ✨ Orden ${order.order_id} actualizada${targets.length > 1 ? ` (pack de ${targets.length})` : ''} — neto: ${poNet}`);
+            }
           }
         }
 
