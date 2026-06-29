@@ -16,11 +16,10 @@ import PageVentas            from "./pages/PageVentas";
 import PageConciliacion      from "./pages/PageConciliacion";
 import ConfigNew             from "./pages/ConfigNew";
 import PageDashboard         from "./pages/PageDashboard";
-import PageAsistente         from "./pages/PageAsistente";
 import PageTesoreria         from "./pages/PageTesoreria";
 import PageDevoluciones      from "./pages/PageDevoluciones";
 import PageDocumentos        from "./pages/PageDocumentos";
-import PageArquitectura      from "./pages/PageArquitectura";
+import PageWorkflow          from "./pages/PageWorkflow";
 
 const queryClient = new QueryClient();
 
@@ -44,8 +43,9 @@ const App = () => (
           <Route path="/liquidaciones" element={<Navigate to="/tesoreria" replace />} />
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
           <Route path="/pipeline"     element={<Pipeline />} />
-          <Route path="/arquitectura" element={<PageArquitectura />} />
-          <Route path="/asistente"    element={<PageAsistente />} />
+          <Route path="/workflow"     element={<PageWorkflow />} />
+          <Route path="/arquitectura" element={<Navigate to="/workflow" replace />} />
+          <Route path="/asistente"    element={<Navigate to="/resumen" replace />} />
           <Route path="/config"       element={<ConfigNew />} />
 
           {/* OAuth callbacks — DO NOT TOUCH */}
