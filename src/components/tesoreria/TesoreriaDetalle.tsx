@@ -80,13 +80,15 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
   const exportCsv = () => {
     const headers = [
       "fecha_pago", "payment_id", "pasarela", "medio", "marca", "cuotas",
-      "canal", "bruto", "comision", "neto", "liberacion", "ventas", "estado_match",
+      "canal", "bruto", "comision", "neto", "liberacion", "liberacion_estimada", "ventas", "documentos", "estado_match",
     ];
     const rows = filtered.map((p) => [
       p.paymentDate, p.paymentId, p.provider, p.method, p.methodBrand || "",
       p.installments ?? "", p.channels.join("|"),
       p.gross, p.fees, p.net, p.releaseDate || "",
+      p.exactRelease ? "" : "estimada",
       p.sales.map((s) => s.orderId).join("|"),
+      `${p.docsOk}/${p.sales.length}`,
       p.matchState,
     ]);
     const csv = [headers, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -146,12 +148,13 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                 <th className="px-3 py-2.5 text-right">Neto</th>
                 <th className="px-3 py-2.5 text-left">Liberación</th>
                 <th className="px-3 py-2.5 text-left">Ventas</th>
+                <th className="px-3 py-2.5 text-left">Doc</th>
                 <th className="px-3 py-2.5 text-left">Match</th>
               </tr>
             </thead>
             <tbody>
               {slice.length === 0 && (
-                <tr><td colSpan={12} className="px-3 py-12 text-center text-slate-400 text-sm">Sin pagos para los filtros aplicados.</td></tr>
+                <tr><td colSpan={13} className="px-3 py-12 text-center text-slate-400 text-sm">Sin pagos para los filtros aplicados.</td></tr>
               )}
               {slice.map((p) => {
                 const isOpen = expanded.has(p.id);
@@ -200,7 +203,8 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                         {p.releaseDate
                           ? <span className={p.liberado ? "text-emerald-600" : "text-amber-600"}>
                               {format(new Date(p.releaseDate), "dd MMM", { locale: es })}
-                              <span className="block text-[10px] text-slate-400">{p.liberado ? "Liberado" : "Pendiente"}</span>
+                              {!p.exactRelease && <span title="Fecha estimada: MercadoPago no la confirmó (~14 días)" className="text-amber-500"> ≈</span>}
+                              <span className="block text-[10px] text-slate-400">{p.liberado ? "Liberado" : "Pendiente"}{!p.exactRelease ? " · estim." : ""}</span>
                             </span>
                           : <span className="text-slate-300">—</span>}
                       </td>
@@ -209,12 +213,19 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                           ? <span className="text-slate-300 text-xs">0</span>
                           : <span className="text-xs text-slate-600">{p.sales.length} {p.sales.length === 1 ? "venta" : "ventas"}</span>}
                       </td>
+                      <td className="px-3 py-2.5">
+                        {p.sales.length === 0
+                          ? <span className="text-slate-300 text-xs">—</span>
+                          : p.docsOk === p.sales.length
+                            ? <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-emerald-100 text-emerald-700">✓ {p.docsOk}/{p.sales.length}</span>
+                            : <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700">{p.docsOk}/{p.sales.length} · falta</span>}
+                      </td>
                       <td className="px-3 py-2.5">{matchBadge(p.matchState)}</td>
                     </tr>
                     {isOpen && (
                       <tr className="bg-slate-50/50 border-b">
                         <td></td>
-                        <td colSpan={11} className="px-3 py-3">
+                        <td colSpan={12} className="px-3 py-3">
                           {p.sales.length === 0 ? (
                             <p className="text-xs text-slate-500">
                               Este pago no tiene venta asociada en tu base. Puede ser un cargo administrativo, un reembolso, o requiere re-sincronización.
@@ -228,6 +239,7 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                                   <th className="py-1">Producto</th>
                                   <th className="py-1 text-right">Venta bruta</th>
                                   <th className="py-1 text-right">Asignado al pago</th>
+                                  <th className="py-1">Documento</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -242,11 +254,17 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                                     <td className="py-1.5 text-slate-600 truncate max-w-[280px]">{s.title || "—"}</td>
                                     <td className="py-1.5 text-right tabular-nums text-slate-500">{clp(s.gross)}</td>
                                     <td className="py-1.5 text-right tabular-nums font-medium">{clp(s.allocated)}</td>
+                                    <td className="py-1.5">
+                                      {s.hasDoc
+                                        ? <span className="text-emerald-600">✓ Con doc</span>
+                                        : <span className="text-red-600">Sin doc</span>}
+                                    </td>
                                   </tr>
                                 ))}
                                 <tr className="border-t border-slate-300 font-medium">
                                   <td colSpan={4} className="py-1.5 text-right text-slate-500">Σ asignado:</td>
                                   <td className="py-1.5 text-right tabular-nums">{clp(p.allocatedSum)}</td>
+                                  <td></td>
                                 </tr>
                               </tbody>
                             </table>

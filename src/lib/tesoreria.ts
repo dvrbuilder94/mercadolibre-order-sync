@@ -1,4 +1,5 @@
 import { CHANNEL_LABEL } from "@/lib/constants";
+import { orderHasDoc } from "@/lib/taxDocs";
 
 export const clp = (n: number | null | undefined) =>
   new Intl.NumberFormat("es-CL", {
@@ -20,6 +21,8 @@ export interface TesoreriaSaleLink {
     money_release_date: string | null;
     installments: number | null;
     payment_method: string | null;
+    has_exact_data: boolean | null;
+    order_tax_documents: { id: string; tax_documents: { status: string | null } | null }[] | null;
   } | null;
 }
 
@@ -52,6 +55,9 @@ export interface TesoreriaPayment {
   channels: string[];
   releaseDate: string | null;
   liberado: boolean;
+  // La fecha de liberación es exacta solo cuando MercadoPago la confirmó
+  // (has_exact_data). Si alguna venta del pago no está confirmada, es estimada.
+  exactRelease: boolean;
   sales: {
     id: string;
     orderId: string;
@@ -60,8 +66,11 @@ export interface TesoreriaPayment {
     title: string | null;
     allocated: number;
     gross: number | null;
+    hasDoc: boolean;
   }[];
   allocatedSum: number;
+  // Cuántas de las ventas de este pago ya tienen documento tributario vigente.
+  docsOk: number;
   matchState: "matched" | "partial" | "orphan";
 }
 
@@ -119,6 +128,7 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
       title: l.orders!.product_title,
       allocated: l.allocated_amount || 0,
       gross: l.orders!.gross_amount,
+      hasDoc: orderHasDoc(l.orders!.order_tax_documents),
     }));
   const channels = Array.from(
     new Set(links.map((l) => l.orders?.channel).filter(Boolean) as string[]),
@@ -130,6 +140,9 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     releaseDates.length > 0
       ? releaseDates.reduce((a, b) => (new Date(a) > new Date(b) ? a : b))
       : null;
+  const linkedOrders = links.filter((l) => l.orders);
+  const exactRelease =
+    linkedOrders.length > 0 && linkedOrders.every((l) => !!l.orders!.has_exact_data);
   const orderMethod =
     links.find((l) => l.orders?.payment_method)?.orders?.payment_method || null;
   const installments =
@@ -161,8 +174,10 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     channels,
     releaseDate: release,
     liberado: release ? new Date(release) <= new Date() : true,
+    exactRelease,
     sales,
     allocatedSum,
+    docsOk: sales.filter((s) => s.hasDoc).length,
     matchState,
   };
 };
