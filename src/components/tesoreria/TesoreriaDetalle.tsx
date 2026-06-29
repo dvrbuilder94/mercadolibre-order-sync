@@ -80,12 +80,13 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
   const exportCsv = () => {
     const headers = [
       "fecha_pago", "payment_id", "pasarela", "medio", "marca", "cuotas",
-      "canal", "bruto", "comision", "neto", "liberacion", "ventas", "documentos", "estado_match",
+      "canal", "bruto", "comision", "neto", "liberacion", "liberacion_estimada", "ventas", "documentos", "estado_match",
     ];
     const rows = filtered.map((p) => [
       p.paymentDate, p.paymentId, p.provider, p.method, p.methodBrand || "",
       p.installments ?? "", p.channels.join("|"),
       p.gross, p.fees, p.net, p.releaseDate || "",
+      p.exactRelease ? "" : "estimada",
       p.sales.map((s) => s.orderId).join("|"),
       `${p.docsOk}/${p.sales.length}`,
       p.matchState,
@@ -202,7 +203,8 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                         {p.releaseDate
                           ? <span className={p.liberado ? "text-emerald-600" : "text-amber-600"}>
                               {format(new Date(p.releaseDate), "dd MMM", { locale: es })}
-                              <span className="block text-[10px] text-slate-400">{p.liberado ? "Liberado" : "Pendiente"}</span>
+                              {!p.exactRelease && <span title="Fecha estimada: MercadoPago no la confirmó (~14 días)" className="text-amber-500"> ≈</span>}
+                              <span className="block text-[10px] text-slate-400">{p.liberado ? "Liberado" : "Pendiente"}{!p.exactRelease ? " · estim." : ""}</span>
                             </span>
                           : <span className="text-slate-300">—</span>}
                       </td>
