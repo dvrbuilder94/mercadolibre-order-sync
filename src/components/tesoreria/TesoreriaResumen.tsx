@@ -141,10 +141,10 @@ export function TesoreriaResumen({ payments, upcomingReleases, rangeIso, onJumpT
         <Kpi title="Liberado" value={clp(kpis.releasedNet)} hint="Disponible en saldo" tone="green" />
         <Kpi title="Pendiente de liberar" value={clp(kpis.pendingNet)} hint="Aprobado, aún retenido" tone="amber" />
         <Kpi
-          title="Matcheado a ventas"
+          title="Con venta ligada (local)"
           value={`${kpis.matchedPct}%`}
-          hint={`${kpis.orphanCount} pagos sin venta · ${clp(kpis.orphanAmount)}`}
-          tone={kpis.orphanCount > 0 ? "red" : "green"}
+          hint={'Solo verifica vínculo interno. Para plata sin registrar usa "Buscar huérfanos en MercadoPago" abajo.'}
+          tone="slate"
           onClick={kpis.orphanCount > 0 ? () => onJumpToDetail("orphan") : undefined}
         />
       </div>

@@ -226,6 +226,17 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                       <tr className="bg-slate-50/50 border-b">
                         <td></td>
                         <td colSpan={12} className="px-3 py-3">
+                          {/* Puente por pago: bruto → comisión → envío/cupones → neto.
+                              "Envío/cupones" = residual gross − fees − net (charges_details). */}
+                          <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-xs mb-3">
+                            <span className="text-slate-400">Bruto <b className="text-slate-700 tabular-nums">{clp(p.gross)}</b></span>
+                            <span className="text-slate-300">−</span>
+                            <span className="text-slate-400">Comisión <b className="text-red-600 tabular-nums">{clp(p.fees)}</b></span>
+                            <span className="text-slate-300">−</span>
+                            <span className="text-slate-400">Envío/cupones <b className="text-red-600 tabular-nums">{clp(p.gross - p.fees - p.net)}</b></span>
+                            <span className="text-slate-300">=</span>
+                            <span className="text-slate-400">Neto <b className="text-emerald-600 tabular-nums">{clp(p.net)}</b></span>
+                          </div>
                           {p.sales.length === 0 ? (
                             <p className="text-xs text-slate-500">
                               Este pago no tiene venta asociada en tu base. Puede ser un cargo administrativo, un reembolso, o requiere re-sincronización.
