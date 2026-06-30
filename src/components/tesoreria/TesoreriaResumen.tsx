@@ -33,7 +33,14 @@ export function TesoreriaResumen({ payments, upcomingReleases, rangeIso, onJumpT
     }
     const matchedPct = payments.length > 0 ? Math.round((matched / payments.length) * 100) : 0;
     const feesPct = gross > 0 ? Math.round((fees / gross) * 100) : 0;
-    return { received, releasedNet, pendingNet, matchedPct, orphanCount, orphanAmount, count: payments.length, gross, fees, feesPct };
+    // "Otras deducciones" = todo lo que MercadoPago descontó del bruto que NO es
+    // comisión: envío (shp_cross_docking), cupones y cashback. Es el residual
+    // exacto bruto − comisión − neto (verificado contra charges_details). Antes
+    // quedaba invisible y hacía ver la comisión como el único descuento.
+    const otras = gross - fees - received;
+    const otrasPct = gross > 0 ? Math.round((otras / gross) * 100) : 0;
+    const netPct = gross > 0 ? Math.round((received / gross) * 100) : 0;
+    return { received, releasedNet, pendingNet, matchedPct, orphanCount, orphanAmount, count: payments.length, gross, fees, feesPct, otras, otrasPct, netPct };
   }, [payments]);
 
   const dailySeries = useMemo(() => {
@@ -102,6 +109,26 @@ export function TesoreriaResumen({ payments, upcomingReleases, rangeIso, onJumpT
 
   return (
     <div className="space-y-6">
+      {/* Puente del dinero: del bruto a lo que realmente llega a caja. Hace
+          visible el envío + cupones (charges_details), que antes quedaba oculto
+          y hacía ver la comisión como el único descuento. */}
+      <div className="bg-white rounded-xl border shadow-card p-4">
+        <p className="text-sm font-semibold text-slate-700 mb-3">Del bruto a tu bolsillo</p>
+        <div className="flex items-center gap-x-3 gap-y-2 flex-wrap text-sm">
+          <BridgeItem label="Bruto vendido" value={clp(kpis.gross)} />
+          <span className="text-slate-300 font-semibold">−</span>
+          <BridgeItem label="Comisión MELI" value={clp(kpis.fees)} sub={`${kpis.feesPct}%`} tone="red" />
+          <span className="text-slate-300 font-semibold">−</span>
+          <BridgeItem label="Envío + cupones" value={clp(kpis.otras)} sub={`${kpis.otrasPct}%`} tone="red" />
+          <span className="text-slate-300 font-semibold">=</span>
+          <BridgeItem label="Recibido" value={clp(kpis.received)} sub={`${kpis.netPct}%`} tone="green" />
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          Recibes el {kpis.netPct}% del bruto. La comisión es {kpis.feesPct}%; el resto ({kpis.otrasPct}%) es
+          principalmente envío (cross-docking) más cupones/cashback — descontado por MercadoPago, antes invisible.
+        </p>
+      </div>
+
       {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <Kpi title="Recibido en el período" value={clp(kpis.received)} hint={`${kpis.count} pagos`} />
@@ -257,6 +284,19 @@ export function TesoreriaResumen({ payments, upcomingReleases, rangeIso, onJumpT
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function BridgeItem({
+  label, value, sub, tone = "slate",
+}: { label: string; value: string; sub?: string; tone?: "slate" | "green" | "red" }) {
+  const colorMap = { slate: "text-slate-900", green: "text-emerald-600", red: "text-red-600" };
+  return (
+    <div className="min-w-[110px]">
+      <p className="text-[11px] text-slate-400">{label}</p>
+      <p className={`text-lg font-bold tabular-nums ${colorMap[tone]}`}>{value}</p>
+      {sub && <p className="text-[10px] text-slate-400">{sub} del bruto</p>}
     </div>
   );
 }
