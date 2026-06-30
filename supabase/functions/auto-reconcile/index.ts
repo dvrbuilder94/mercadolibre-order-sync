@@ -276,7 +276,7 @@ Deno.serve(async (req) => {
 
     const { data: unreconciledOrders } = await supabase
       .from('orders')
-      .select('*')
+      .select('id, order_id, channel')
       .eq('reconciliation_status', 'pending');
 
     console.log(`Found ${unreconciledItems?.length || 0} unreconciled settlement items`);
@@ -656,7 +656,7 @@ Deno.serve(async (req) => {
     for (let page = 0; page < 20; page++) {
       let oq = supabaseAdmin
         .from('orders')
-        .select(`*, order_tax_documents(id)`)
+        .select(`id, order_id, customer_tax_id, customer_name, gross_amount, amount, order_date, channel, status, currency_id, created_at, order_tax_documents(id), pack_id:raw_data->>pack_id`)
         .neq('status', 'cancelled')
         .order('order_date', { ascending: false })
         .order('id', { ascending: true })
@@ -845,12 +845,12 @@ Deno.serve(async (req) => {
       hardLinkedCount++;
       // Link pack siblings: orders in the same MeLi pack get the same boleta,
       // each with their own gross_amount (not the full doc total).
-      const primaryPackId = order.raw_data?.pack_id;
+      const primaryPackId = order.pack_id;
       if (primaryPackId) {
         for (const sibling of ordersNeedingDocs) {
           if (sibling.id === order.id) continue;
           if (linkedOrderIds.has(sibling.id) || newlyLinkedOrderIds.has(sibling.id)) continue;
-          if (sibling.raw_data?.pack_id == null || String(sibling.raw_data.pack_id) !== String(primaryPackId)) continue;
+          if (sibling.pack_id == null || String(sibling.pack_id) !== String(primaryPackId)) continue;
           hardLinks.push({
             order_id: sibling.id, tax_document_id: doc.id,
             allocated_amount: sibling.gross_amount || sibling.amount,
@@ -875,7 +875,7 @@ Deno.serve(async (req) => {
     let packLinkedOrdersCount = 0;
     const ordersByPackId = new Map<string, any[]>();
     for (const o of ordersNeedingDocs) {
-      const packId = o.raw_data?.pack_id;
+      const packId = o.pack_id;
       if (!packId) continue;
       const key = String(packId);
       if (!ordersByPackId.has(key)) ordersByPackId.set(key, []);
@@ -923,7 +923,7 @@ Deno.serve(async (req) => {
     for (let page = 0; page < 20; page++) {
       let ccq = supabaseAdmin
         .from('orders')
-        .select(`*, order_tax_documents(id)`)
+        .select(`id, order_id, customer_tax_id, customer_name, gross_amount, amount, order_date, channel, status, currency_id, created_at, order_tax_documents(id), pack_id:raw_data->>pack_id`)
         .eq('status', 'cancelled')
         .order('order_date', { ascending: false })
         .order('id', { ascending: true })
@@ -949,7 +949,7 @@ Deno.serve(async (req) => {
     );
     const cancelledByPackId = new Map<string, any[]>();
     for (const o of cancelledOrdersNeedingDocs) {
-      const packId = o.raw_data?.pack_id;
+      const packId = o.pack_id;
       if (!packId) continue;
       const key = String(packId);
       if (!cancelledByPackId.has(key)) cancelledByPackId.set(key, []);
