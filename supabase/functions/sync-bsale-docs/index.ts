@@ -203,6 +203,30 @@ function extractExternalOrderId(doc: any): string | null {
   return null;
 }
 
+// Resuelve el documento ORIGINAL que anula una Nota de Crédito.
+// Las references de Bsale en una NC llevan el folio del documento original;
+// lo cruzamos contra nuestros propios tax_documents (mismo usuario) para setear
+// original_tax_document_id. Los números de orden MELI que también vienen en
+// references no matchean ningún document_number, así que se filtran solos.
+async function resolveOriginalDocId(
+  supabase: any, userId: string, doc: any
+): Promise<string | null> {
+  const refs = doc.references?.items || [];
+  const numbers = refs
+    .map((r: any) => (r.number != null ? String(r.number) : null))
+    .filter(Boolean) as string[];
+  if (numbers.length === 0) return null;
+  const { data } = await supabase
+    .from('tax_documents')
+    .select('id, client_tax_id')
+    .eq('user_id', userId)
+    .eq('external_system', 'bsale')
+    .in('document_number', numbers)
+    .in('document_type', ['boleta', 'factura', 'factura_exenta']);
+  if (!data || data.length === 0) return null;
+  return data[0].id;
+}
+
 // Transform a Bsale document to our tax_documents schema
 function transformBsaleDoc(doc: any, userId: string, batchId: string) {
   const codeSii = normalizeCodeSii(doc.document_type?.codeSii);
@@ -318,6 +342,7 @@ Deno.serve(async (req) => {
       start_code_sii = null,
       start_offset = 0,
       reclassify_b2b = false,  // If true: fix existing B2B docs to MARKETPLACE (no new sync)
+      link_credit_notes = false, // If true: vincular NCs existentes a su doc original (sin API Bsale)
       user_id: userIdParam = null,
     } = body;
 
@@ -359,6 +384,63 @@ Deno.serve(async (req) => {
       console.log(`Reclassified ${count} B2B docs to MARKETPLACE`);
       return new Response(JSON.stringify({ success: true, reclassified: count }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    // MODE: link_credit_notes — vincular NCs históricas a su documento original
+    // usando las references YA guardadas en raw_data (sin llamar a la API de Bsale).
+    // Idempotente: solo toca las que tienen original_tax_document_id NULL.
+    if (link_credit_notes) {
+      console.log('=== LINK CREDIT NOTES MODE ===');
+      const startedAtLink = Date.now();
+      let checked = 0, linked = 0, partialLink = false, lastId = '';
+      const PAGE = 300;
+      for (;;) {
+        if (Date.now() - startedAtLink > TIME_BUDGET_MS) { partialLink = true; break; }
+        const { data: ncs, error: ncErr } = await supabaseClient
+          .from('tax_documents')
+          .select('id, client_tax_id, raw_data')
+          .eq('user_id', user.id)
+          .eq('document_type', 'nota_credito')
+          .is('original_tax_document_id', null)
+          .gt('id', lastId)
+          .order('id', { ascending: true })
+          .limit(PAGE);
+        if (ncErr) {
+          return new Response(JSON.stringify({ error: ncErr.message }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+        if (!ncs || ncs.length === 0) break;
+        for (const nc of ncs) {
+          lastId = nc.id;
+          checked++;
+          const refs = (nc.raw_data as any)?.references?.items || [];
+          const numbers = refs
+            .map((r: any) => (r.number != null ? String(r.number) : null))
+            .filter(Boolean) as string[];
+          if (numbers.length === 0) continue;
+          const { data: origs } = await supabaseClient
+            .from('tax_documents')
+            .select('id, client_tax_id')
+            .eq('user_id', user.id)
+            .eq('external_system', 'bsale')
+            .in('document_number', numbers)
+            .in('document_type', ['boleta', 'factura', 'factura_exenta']);
+          if (!origs || origs.length === 0) continue;
+          // Preferir mismo RUT de cliente; si no, el primero.
+          const pick = origs.find((o: any) => o.client_tax_id && o.client_tax_id === nc.client_tax_id) || origs[0];
+          const { error: upErr } = await supabaseClient
+            .from('tax_documents')
+            .update({ original_tax_document_id: pick.id })
+            .eq('id', nc.id);
+          if (!upErr) linked++;
+        }
+        if (ncs.length < PAGE) break;
+      }
+      console.log(`Link credit notes: checked ${checked}, linked ${linked}, partial ${partialLink}`);
+      return new Response(
+        JSON.stringify({ success: true, mode: 'link_credit_notes', checked, linked, partial: partialLink }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     // Validación: resync requiere date_from obligatorio
@@ -523,10 +605,18 @@ Deno.serve(async (req) => {
             const coinName = doc.coin?.name || null;
             (transformed.raw_data as any).reference_reason = referenceReason;
             (transformed.raw_data as any).payment_method_name = coinName;
+            // NC → documento original: resolver el enlace al sincronizar (las
+            // boletas/facturas del mismo período ya se procesaron antes, porque
+            // codeSii 61 va último en VALID_SII_CODES).
+            let originalDocId: string | null = null;
+            if (transformed.document_type === 'nota_credito') {
+              originalDocId = await resolveOriginalDocId(supabaseClient, user.id, doc);
+            }
             taxDocsToUpsert.push({
               ...transformed,
               sales_channel: 'MARKETPLACE',
               detected_channel: detectedChannel,
+              ...(originalDocId ? { original_tax_document_id: originalDocId } : {}),
             });
           } catch (error) {
             console.error(`❌ Error processing doc ${doc.id}:`, error);
