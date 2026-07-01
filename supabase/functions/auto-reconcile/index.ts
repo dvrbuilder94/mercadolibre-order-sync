@@ -163,6 +163,12 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({} as any));
     const periodFrom: string | null = body?.date_from || null;
     const periodTo: string | null = body?.date_to || null;
+    // Chunking de Stage 3: procesa los documentos por tandas y se auto-encadena
+    // para no reventar los límites de cómputo del edge runtime (OOM).
+    const docCursor: string = body?.doc_cursor ? String(body.doc_cursor) : '';
+    const chainDepth: number = Number(body?.chain_depth || 0);
+    const MAX_CHAIN = 50;   // tope duro anti-runaway
+    const DOC_BATCH = 200;  // docs procesados por invocación
 
     const userId = await resolveUserId(req, supabase, body?.user_id || null);
     if (!userId) {
@@ -769,7 +775,21 @@ Deno.serve(async (req) => {
     const allUnlinked = tributaryDocs.filter(doc => !isSettled(doc));
     const partiallyLinkedCount = allUnlinked.filter(doc => linkedDocIds.has(doc.id)).length;
     const excludedB2BCount = allUnlinked.filter(doc => doc.sales_channel === 'B2B').length;
-    const unlinkedDocs = allUnlinked;
+
+    // Chunking: cargar y matchear TODOS los docs del período en una sola
+    // invocación reventaba los límites de cómputo (OOM). Ahora procesamos una
+    // tanda estable (por cursor de id ascendente) y nos re-invocamos para el
+    // resto. linkedDocIds/linkedOrderIds se recargan de la BD en cada tanda, así
+    // que los enlaces previos se respetan; el cursor avanza aunque un doc no
+    // matchee, por lo que no hay reproceso ni loop infinito.
+    const sortedUnlinked = [...allUnlinked].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    const pendingAfterCursor = sortedUnlinked.filter(d => String(d.id) > docCursor);
+    const unlinkedDocs = pendingAfterCursor.slice(0, DOC_BATCH);
+    const moreDocsRemain = pendingAfterCursor.length > unlinkedDocs.length;
+    const nextDocCursor = unlinkedDocs.length > 0
+      ? String(unlinkedDocs[unlinkedDocs.length - 1].id)
+      : docCursor;
+    console.log(`Chunk Stage 3: cursor='${docCursor}' depth=${chainDepth} → ${unlinkedDocs.length}/${pendingAfterCursor.length} docs pendientes (más por venir: ${moreDocsRemain})`);
     
     // --- OPTIMIZATION: PRE-CALCULATE AND INDEX ---
     const ordersWithMeta = ordersNeedingDocs.map(o => ({
@@ -1304,10 +1324,28 @@ Deno.serve(async (req) => {
     console.log(`Stage 4 (Refunds flagged): ${stage4}`);
     console.log(`Total processed: ${stage1 + stage2 + stage3 + stage4}`);
 
+    // Auto-encadenar la siguiente tanda de documentos (con tope duro).
+    const willChain = moreDocsRemain && chainDepth < MAX_CHAIN;
+    if (willChain) {
+      console.log(`Chaining Stage 3: doc_cursor='${nextDocCursor}', depth=${chainDepth + 1}`);
+      try {
+        supabaseAdmin.functions.invoke('auto-reconcile', {
+          body: { date_from: periodFrom, date_to: periodTo, user_id: user.id, doc_cursor: nextDocCursor, chain_depth: chainDepth + 1 },
+        }).catch((e: any) => console.error('Chain invoke failed:', e));
+      } catch (e) {
+        console.error('Chain invoke threw:', e);
+      }
+    } else if (moreDocsRemain) {
+      console.warn(`⚠️ MAX_CHAIN (${MAX_CHAIN}) alcanzado con docs pendientes — se detiene para evitar runaway.`);
+    }
+
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         success: true,
-        message: 'Conciliación automática completada (4 etapas)',
+        message: willChain ? 'Conciliación: tanda procesada, continuando…' : 'Conciliación automática completada',
+        partial: willChain,
+        next_doc_cursor: willChain ? nextDocCursor : null,
+        chain_depth: chainDepth,
         stage1_bank_settlement: stage1,
         stage2_settlement_order: stage2,
         stage3_order_taxdoc: {
