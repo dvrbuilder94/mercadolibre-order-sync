@@ -12,19 +12,42 @@ verificar que lo nuevo anda.
 
 ---
 
-## ⚠️ Los 2 landmines (léelos antes de empezar)
+## ⚠️ Bsale: NO usa OAuth con client_id/secret (verificado en el código)
 
-1. **`BSALE_TOKEN_ENCRYPTION_KEY`** — cifra los tokens de Bsale guardados en la
-   DB. Lovable Cloud probablemente **NO te deja ver su valor**. Si no lo
-   recuperas idéntico, los tokens migrados de Bsale **quedan inservibles** →
-   plan A: **reconectar Bsale** desde cero en el entorno nuevo.
-2. **`ai-chat` usa `LOVABLE_API_KEY`** (el AI Gateway de Lovable). Al migrar,
-   `/asistente` deja de funcionar salvo que lo cambies a tu propia key
-   (`OPENAI_API_KEY` / Anthropic). Prioridad baja (Asistente está fuera del nav).
+Se pensó inicialmente que Bsale usaba un flujo OAuth completo (`BSALE_CLIENT_ID`/
+`BSALE_CLIENT_SECRET`/`BSALE_TOKEN_ENCRYPTION_KEY`) — **falso**, revisado en
+`supabase/functions/connect-bsale/index.ts`. El flujo real:
 
-Las credenciales OAuth **de cliente** (`MELI_APP_ID`, `MELI_CLIENT_SECRET`,
-`BSALE_CLIENT_ID`, `BSALE_CLIENT_SECRET`, Shopify) **sí las recuperas** desde los
-paneles de desarrollador de MELI / Bsale / Shopify — no dependen de Lovable.
+- El usuario pega directo el **access_token** que Bsale le entregó (no hay
+  intercambio de código, ni client_id/secret propios).
+- La función solo valida ese token llamando `GET https://api.bsale.io/v1/users.json`
+  con el header `access_token`, y guarda el resultado (`cpn_id`, `client_name`).
+- Hay un segundo flujo OAuth completo en el código
+  (`get-bsale-auth-url`/`bsale-oauth-callback`, usando `BSALE_APP_ID`/
+  `BSALE_USR_TOKEN`) que **existe pero nunca se usó** — la cuenta conectada real
+  tiene `app_client_id = NULL`, confirmando que pasó por `connect-bsale`, no por ahí.
+- No existe `BSALE_TOKEN_ENCRYPTION_KEY` en ningún lado del código (solo una
+  columna `access_token_encrypted` sin uso activo — probablemente diseño legacy).
+
+**Conclusión: para Bsale NO cargues ningún secret nuevo.** En la app nueva, ve a
+Conexiones → Bsale → pega el **mismo access_token** que usaste la primera vez.
+Si no lo tienes guardado, hay que pedírselo de nuevo a Bsale (soporte/panel del
+cliente), no a un panel de desarrollador de partners.
+
+## El landmine real: `ai-chat` / `LOVABLE_API_KEY`
+
+`ai-chat` usa `LOVABLE_API_KEY` (el AI Gateway de Lovable). **Descartado por el
+usuario — no importa**: simplemente no se configura, `ai-chat` queda inactivo,
+sin impacto (Asistente ya está fuera del nav).
+
+## Lo que sí hay que recuperar (MELI)
+
+`MELI_APP_ID`/`MELI_CLIENT_SECRET` sí son un OAuth real (confirmado en
+`get-meli-auth-url`/`meli-callback`, que arma la URL con `client_id` real).
+El `client_id` (= App ID) queda guardado en tu propia tabla `meli_accounts` —
+corre `select client_id, redirect_uri from meli_accounts;` en la Supabase VIEJA
+para recuperarlo. El `client_secret` no se guarda en ningún lado: se saca del
+panel de desarrollador de MELI (developers.mercadolibre.cl → Mis aplicaciones).
 
 ---
 
@@ -52,11 +75,10 @@ MELI/Bsale vía los syncs). Así que en vez de pelear con el dump completo:
    supabase link --project-ref <NUEVO_REF>
    supabase db push        # corre todas las migraciones del repo en orden
    ```
-4. **Cargar secrets** en el proyecto nuevo (ver tabla abajo):
+4. **Cargar secrets** en el proyecto nuevo (ver tabla abajo — solo MELI, Bsale
+   NO necesita secrets nuevos):
    ```bash
-   supabase secrets set MELI_APP_ID=... MELI_CLIENT_SECRET=... BSALE_CLIENT_ID=... \
-     BSALE_CLIENT_SECRET=... BSALE_TOKEN_ENCRYPTION_KEY=... MELI_REDIRECT_URI=... \
-     BSALE_REDIRECT_URI=...
+   supabase secrets set MELI_APP_ID=... MELI_CLIENT_SECRET=... MELI_REDIRECT_URI=...
    ```
 5. **Desplegar edge functions**:
    ```bash
@@ -66,8 +88,8 @@ MELI/Bsale vía los syncs). Así que en vez de pelear con el dump completo:
    completo con `psql "<conn-string>" < dump.sql`).
 7. **Actualizar redirect URIs** en las apps de MELI / Bsale / Shopify → apuntar
    al dominio del proyecto nuevo (functions URL).
-8. **Re-conectar MELI y Bsale** desde la app (por el landmine #1, esto es lo más
-   probable de todos modos).
+8. **Re-conectar MELI** (OAuth normal) **y Bsale** (Conexiones → pegar el mismo
+   access_token de siempre — Bsale no usa OAuth con secrets en este proyecto).
 9. **Re-crear los cron jobs** (`cron-pipeline-sync`, `cron-refresh-meli-tokens`)
    con la URL nueva — la migración los inserta con la URL vieja hardcodeada:
    ```sql
@@ -89,16 +111,14 @@ MELI/Bsale vía los syncs). Así que en vez de pelear con el dump completo:
 
 | Secret | Uso | ¿De dónde lo saco? |
 |---|---|---|
-| `MELI_APP_ID` | OAuth MELI | Panel de desarrollador MELI |
-| `MELI_CLIENT_SECRET` | OAuth MELI | Panel MELI |
-| `MELI_REDIRECT_URI` | Callback OAuth | nuevo dominio |
-| `BSALE_CLIENT_ID` | OAuth Bsale | Panel Bsale |
-| `BSALE_CLIENT_SECRET` | OAuth Bsale | Panel Bsale |
-| `BSALE_REDIRECT_URI` | Callback OAuth | nuevo dominio |
-| `BSALE_TOKEN_ENCRYPTION_KEY` | Cifra tokens Bsale en DB | ⚠️ Lovable puede no darlo → si no, reconectar Bsale |
-| `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` | Shopify OAuth | Panel Shopify (si se usa) |
-| `OPENAI_API_KEY` (o similar) | reemplaza `LOVABLE_API_KEY` en `ai-chat` | tu cuenta |
+| `MELI_APP_ID` | OAuth MELI (client_id) | `select client_id from meli_accounts;` en la Supabase vieja |
+| `MELI_CLIENT_SECRET` | OAuth MELI | Panel developers.mercadolibre.cl → Mis aplicaciones |
+| `MELI_REDIRECT_URI` | Callback OAuth | nuevo dominio: `.../functions/v1/meli-callback` |
+| `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` | Shopify OAuth (si se usa) | Panel Shopify |
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | — | los inyecta Supabase solo |
+
+**Bsale: ningún secret nuevo.** Reconectar desde la UI pegando el access_token
+(ver sección de arriba). **`ai-chat`/`LOVABLE_API_KEY`: descartado, no se configura.**
 
 ---
 
