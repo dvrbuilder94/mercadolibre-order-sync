@@ -40,14 +40,27 @@ cliente), no a un panel de desarrollador de partners.
 usuario — no importa**: simplemente no se configura, `ai-chat` queda inactivo,
 sin impacto (Asistente ya está fuera del nav).
 
-## Lo que sí hay que recuperar (MELI)
+## MELI: tampoco es un secret de Supabase — es una columna por cuenta
 
-`MELI_APP_ID`/`MELI_CLIENT_SECRET` sí son un OAuth real (confirmado en
-`get-meli-auth-url`/`meli-callback`, que arma la URL con `client_id` real).
-El `client_id` (= App ID) queda guardado en tu propia tabla `meli_accounts` —
-corre `select client_id, redirect_uri from meli_accounts;` en la Supabase VIEJA
-para recuperarlo. El `client_secret` no se guarda en ningún lado: se saca del
-panel de desarrollador de MELI (developers.mercadolibre.cl → Mis aplicaciones).
+Corrección igual de importante: `MELI_APP_ID`/`MELI_CLIENT_SECRET` **NO son env
+vars de las edge functions** (no existe ningún `Deno.env.get('MELI_APP_ID')` en
+el código). Es OAuth real, pero el patrón es multi-tenant a nivel de fila:
+`get-meli-auth-url`/`meli-callback` leen `client_id` y `client_secret` **de la
+propia fila del usuario en `meli_accounts`** (columnas `client_id`,
+`client_secret`, `redirect_uri`, `site_id`) — no de un secret global.
+
+Esto es correcto para un SaaS (credenciales por tenant, protegidas por RLS),
+pero hoy **no hay UI de auto-servicio** para cargarlas (no hay form en
+`ConfigNew.tsx` ni en ningún lado del frontend) — la fila se insertó una vez a
+mano (SQL directo), probablemente por Lovable AI durante el setup inicial.
+
+**Para migrar:** en la Supabase VIEJA corre
+`select client_id, client_secret, redirect_uri, site_id from meli_accounts;`
+y con esos 4 valores, en la Supabase NUEVA, inserta/actualiza la fila
+correspondiente (via SQL Editor o reconectando si en algún momento se agrega un
+form). **No es `supabase secrets set`** — es un `insert`/`update` sobre la tabla.
+El `redirect_uri` sí cambia (debe apuntar al dominio nuevo); el `client_id`/
+`client_secret` se mantienen (es la misma app MELI ya registrada).
 
 ---
 
@@ -75,11 +88,10 @@ MELI/Bsale vía los syncs). Así que en vez de pelear con el dump completo:
    supabase link --project-ref <NUEVO_REF>
    supabase db push        # corre todas las migraciones del repo en orden
    ```
-4. **Cargar secrets** en el proyecto nuevo (ver tabla abajo — solo MELI, Bsale
-   NO necesita secrets nuevos):
-   ```bash
-   supabase secrets set MELI_APP_ID=... MELI_CLIENT_SECRET=... MELI_REDIRECT_URI=...
-   ```
+4. **MELI y Bsale no usan Supabase secrets** — son columnas en `meli_accounts`/
+   `bsale_accounts`. Ver "MELI" y "Bsale" arriba: hay que hacer un `insert`/
+   `update` SQL con los valores reales (client_id/secret de MELI desde la
+   Supabase vieja; access_token de Bsale desde donde lo tengas guardado).
 5. **Desplegar edge functions**:
    ```bash
    supabase functions deploy --project-ref <NUEVO_REF>
@@ -88,8 +100,10 @@ MELI/Bsale vía los syncs). Así que en vez de pelear con el dump completo:
    completo con `psql "<conn-string>" < dump.sql`).
 7. **Actualizar redirect URIs** en las apps de MELI / Bsale / Shopify → apuntar
    al dominio del proyecto nuevo (functions URL).
-8. **Re-conectar MELI** (OAuth normal) **y Bsale** (Conexiones → pegar el mismo
-   access_token de siempre — Bsale no usa OAuth con secrets en este proyecto).
+8. **Re-conectar MELI y Bsale**: insertar/actualizar las filas de
+   `meli_accounts`/`bsale_accounts` con los valores reales (ver arriba), o
+   usar el botón "Reconectar" de la app si el flujo de OAuth de MELI ya
+   funciona con la fila cargada.
 9. **Re-crear los cron jobs** (`cron-pipeline-sync`, `cron-refresh-meli-tokens`)
    con la URL nueva — la migración los inserta con la URL vieja hardcodeada:
    ```sql
@@ -107,18 +121,27 @@ MELI/Bsale vía los syncs). Así que en vez de pelear con el dump completo:
 
 ---
 
-## Secrets a crear en el proyecto nuevo
+## Secrets de Supabase a crear en el proyecto nuevo
+
+MELI y Bsale **NO van acá** (son columnas de tabla, ver secciones arriba).
+Lo único real:
 
 | Secret | Uso | ¿De dónde lo saco? |
 |---|---|---|
-| `MELI_APP_ID` | OAuth MELI (client_id) | `select client_id from meli_accounts;` en la Supabase vieja |
-| `MELI_CLIENT_SECRET` | OAuth MELI | Panel developers.mercadolibre.cl → Mis aplicaciones |
-| `MELI_REDIRECT_URI` | Callback OAuth | nuevo dominio: `.../functions/v1/meli-callback` |
 | `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` | Shopify OAuth (si se usa) | Panel Shopify |
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | — | los inyecta Supabase solo |
 
-**Bsale: ningún secret nuevo.** Reconectar desde la UI pegando el access_token
-(ver sección de arriba). **`ai-chat`/`LOVABLE_API_KEY`: descartado, no se configura.**
+**`ai-chat`/`LOVABLE_API_KEY`: descartado, no se configura.**
+
+## Datos por tabla (no secrets) a migrar manualmente
+
+```sql
+-- correr en la Supabase VIEJA para recuperar los valores:
+select client_id, client_secret, redirect_uri, site_id from meli_accounts;
+select access_token, cpn_id, client_name from bsale_accounts;
+-- luego, en la Supabase NUEVA, insert/update con estos valores
+-- (redirect_uri de MELI sí cambia al dominio nuevo)
+```
 
 ---
 
