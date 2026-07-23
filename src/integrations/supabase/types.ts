@@ -1445,6 +1445,24 @@ export type Database = {
           vat_amount: number
         }[]
       }
+      get_meli_billing_summary: {
+        Args: { p_period: string }
+        Returns: {
+          monto: number
+          raw_name: string
+          rubro: string
+          tx_count: number
+        }[]
+      }
+      get_meli_billing_totals: {
+        Args: { p_period: string }
+        Returns: {
+          fees: number
+          gross: number
+          net: number
+          tx_count: number
+        }[]
+      }
       get_pending_sales: {
         Args: {
           p_date_from?: string
