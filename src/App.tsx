@@ -20,6 +20,7 @@ import PageTesoreria         from "./pages/PageTesoreria";
 import PageDevoluciones      from "./pages/PageDevoluciones";
 import PageDocumentos        from "./pages/PageDocumentos";
 import PageWorkflow          from "./pages/PageWorkflow";
+import PageBilling           from "./pages/PageBilling";
 
 const queryClient = new QueryClient();
 
@@ -41,6 +42,7 @@ const App = () => (
           <Route path="/conciliacion" element={<PageConciliacion />} />
           <Route path="/tesoreria"     element={<PageTesoreria />} />
           <Route path="/liquidaciones" element={<Navigate to="/tesoreria" replace />} />
+          <Route path="/billing"       element={<PageBilling />} />
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
           <Route path="/pipeline"     element={<Pipeline />} />
           <Route path="/workflow"     element={<PageWorkflow />} />
