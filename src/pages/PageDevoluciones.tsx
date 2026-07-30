@@ -109,45 +109,77 @@ export default function PageDevoluciones() {
         .order("date_created", { ascending: false });
       if (error) throw error;
       const claims = (data || []) as unknown as ClaimRow[];
-      setRows(claims);
+
+      // Cash truth is independent from Claims/Post-Purchase permissions. Read the
+      // negative ledger movements by refund date and attach their sale directly.
+      const { data: refundLinks, error: refundError } = await supabase
+        .from("payment_sales")
+        .select(`
+          sale_id,
+          orders ( id, order_id, channel, product_title, customer_name, gross_amount ),
+          payments!inner (
+            external_payment_id, payment_date, net_amount, status, raw_data
+          )
+        `)
+        .in("payments.status", ["REFUND", "CHARGEBACK"])
+        .gte("payments.payment_date", from + "T00:00:00")
+        .lte("payments.payment_date", to + "T23:59:59");
+      if (refundError) throw refundError;
+
+      const refundMap = new Map<string, RefundMovement>();
+      const refundOrders = new Map<string, ClaimOrder>();
+      for (const link of (refundLinks || []) as any[]) {
+        const payment = Array.isArray(link.payments) ? link.payments[0] : link.payments;
+        const order = Array.isArray(link.orders) ? link.orders[0] : link.orders;
+        if (!payment) continue;
+        const previous = refundMap.get(link.sale_id);
+        const amount = Math.abs(Number(payment.net_amount ?? 0));
+        refundMap.set(link.sale_id, {
+          status: payment.status === "CHARGEBACK" || previous?.status === "CHARGEBACK"
+            ? "CHARGEBACK"
+            : "REFUND",
+          amount: (previous?.amount ?? 0) + amount,
+          paymentId: payment.external_payment_id ?? previous?.paymentId ?? null,
+          paymentDate: [previous?.paymentDate, payment.payment_date]
+            .filter(Boolean)
+            .sort()
+            .pop() ?? null,
+        });
+        if (order) refundOrders.set(link.sale_id, order as ClaimOrder);
+      }
+      setRefunds(refundMap);
+
+      // A refund must remain visible even when MELI does not grant access to the
+      // Claims API. Add one synthetic case per refunded sale not already returned
+      // by Post-Purchase, clearly identified as a Mercado Pago cash event.
+      const claimedOrderIds = new Set(
+        claims.map((claim) => claim.order_id).filter(Boolean) as string[],
+      );
+      const cashOnlyRows: ClaimRow[] = Array.from(refundMap.entries())
+        .filter(([saleId]) => !claimedOrderIds.has(saleId))
+        .map(([saleId, refund]) => ({
+          id: `mp-refund-${saleId}`,
+          claim_id: refund.paymentId ?? `MP-${saleId}`,
+          resource_id: null,
+          order_id: saleId,
+          type: "returns",
+          stage: "mercadopago",
+          status: "closed",
+          reason_id: null,
+          date_created: refund.paymentDate,
+          last_updated: refund.paymentDate,
+          raw_data: { source: "mercadopago_refund", cash_status: refund.status },
+          orders: refundOrders.get(saleId) ?? null,
+        }));
+      const combinedRows = [...claims, ...cashOnlyRows].sort((a, b) =>
+        (b.date_created ?? "").localeCompare(a.date_created ?? ""),
+      );
+      setRows(combinedRows);
 
       const orderIds = Array.from(new Set(
-        claims.map((claim) => claim.order_id).filter(Boolean) as string[],
+        combinedRows.map((row) => row.order_id).filter(Boolean) as string[],
       ));
       if (orderIds.length > 0) {
-        // Cash truth: negative refund/chargeback movements linked to the sale.
-        const { data: refundLinks, error: refundError } = await supabase
-          .from("payment_sales")
-          .select(`
-            sale_id,
-            payments!inner (
-              external_payment_id, payment_date, net_amount, status, raw_data
-            )
-          `)
-          .in("sale_id", orderIds)
-          .in("payments.status", ["REFUND", "CHARGEBACK"]);
-        if (refundError) throw refundError;
-
-        const refundMap = new Map<string, RefundMovement>();
-        for (const link of (refundLinks || []) as any[]) {
-          const payment = Array.isArray(link.payments) ? link.payments[0] : link.payments;
-          if (!payment) continue;
-          const previous = refundMap.get(link.sale_id);
-          const amount = Math.abs(Number(payment.net_amount ?? 0));
-          refundMap.set(link.sale_id, {
-            status: payment.status === "CHARGEBACK" || previous?.status === "CHARGEBACK"
-              ? "CHARGEBACK"
-              : "REFUND",
-            amount: (previous?.amount ?? 0) + amount,
-            paymentId: payment.external_payment_id ?? previous?.paymentId ?? null,
-            paymentDate: [previous?.paymentDate, payment.payment_date]
-              .filter(Boolean)
-              .sort()
-              .pop() ?? null,
-          });
-        }
-        setRefunds(refundMap);
-
         // Tax truth: first identify the original boleta/factura linked to each
         // sale, then find issued credit notes that reference that document.
         const { data: docLinks, error: docLinksError } = await supabase
@@ -211,7 +243,6 @@ export default function PageDevoluciones() {
         }
         setCreditNotes(taxState);
       } else {
-        setRefunds(new Map());
         setCreditNotes(new Map());
       }
     } catch (e) {
