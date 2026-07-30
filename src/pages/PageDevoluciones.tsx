@@ -26,7 +26,7 @@ const clp = (n: number | null | undefined) =>
 
 const PAGE_SIZE = 50;
 
-type StatusFilter = "all" | "opened" | "closed";
+type StatusFilter = "all" | "opened" | "closed" | "missing_nc";
 
 // type_id que devuelve la API de Post-Purchase de MELI. No están todos
 // documentados con certeza — si aparece uno no mapeado, se muestra el valor
@@ -57,11 +57,19 @@ interface ClaimRow {
   raw_data: Record<string, any> | null;
   orders: ClaimOrder | null;
 }
-// Dato real de MercadoPago (no estimado) — si el pago de la orden reclamada
-// ya quedó en un estado que implica plata devuelta, lo mostramos. Si no hay
-// match, se deja vacío en vez de inventar un monto desde el claim.
-interface RefundedPayment {
-  order_id: string; status: string; net_received_amount: number;
+// Movimientos negativos reales creados desde transaction_amount_refunded o
+// un contracargo de Mercado Pago. Se agregan por venta para no duplicar montos
+// cuando una misma orden tiene más de un reclamo.
+interface RefundMovement {
+  status: string;
+  amount: number;
+  paymentId: string | null;
+  paymentDate: string | null;
+}
+interface CreditNoteState {
+  hasOriginalDocument: boolean;
+  hasCreditNote: boolean;
+  creditNoteNumber: string | null;
 }
 
 export default function PageDevoluciones() {
@@ -70,7 +78,8 @@ export default function PageDevoluciones() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<ClaimRow[]>([]);
-  const [refunds, setRefunds] = useState<Map<string, RefundedPayment>>(new Map());
+  const [refunds, setRefunds] = useState<Map<string, RefundMovement>>(new Map());
+  const [creditNotes, setCreditNotes] = useState<Map<string, CreditNoteState>>(new Map());
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -102,25 +111,114 @@ export default function PageDevoluciones() {
       const claims = (data || []) as unknown as ClaimRow[];
       setRows(claims);
 
-      const orderIds = claims.map((c) => c.order_id).filter(Boolean) as string[];
+      const orderIds = Array.from(new Set(
+        claims.map((claim) => claim.order_id).filter(Boolean) as string[],
+      ));
       if (orderIds.length > 0) {
-        const { data: paymentDetails } = await supabase
-          .from("meli_payment_details")
-          .select("order_id, status, net_received_amount")
-          .in("order_id", orderIds)
-          .in("status", ["refunded", "charged_back", "in_mediation"]);
-        const map = new Map<string, RefundedPayment>();
-        for (const p of (paymentDetails || []) as RefundedPayment[]) {
-          if (p.order_id) map.set(p.order_id, p);
+        // Cash truth: negative refund/chargeback movements linked to the sale.
+        const { data: refundLinks, error: refundError } = await supabase
+          .from("payment_sales")
+          .select(`
+            sale_id,
+            payments!inner (
+              external_payment_id, payment_date, net_amount, status, raw_data
+            )
+          `)
+          .in("sale_id", orderIds)
+          .in("payments.status", ["REFUND", "CHARGEBACK"]);
+        if (refundError) throw refundError;
+
+        const refundMap = new Map<string, RefundMovement>();
+        for (const link of (refundLinks || []) as any[]) {
+          const payment = Array.isArray(link.payments) ? link.payments[0] : link.payments;
+          if (!payment) continue;
+          const previous = refundMap.get(link.sale_id);
+          const amount = Math.abs(Number(payment.net_amount ?? 0));
+          refundMap.set(link.sale_id, {
+            status: payment.status === "CHARGEBACK" || previous?.status === "CHARGEBACK"
+              ? "CHARGEBACK"
+              : "REFUND",
+            amount: (previous?.amount ?? 0) + amount,
+            paymentId: payment.external_payment_id ?? previous?.paymentId ?? null,
+            paymentDate: [previous?.paymentDate, payment.payment_date]
+              .filter(Boolean)
+              .sort()
+              .pop() ?? null,
+          });
         }
-        setRefunds(map);
+        setRefunds(refundMap);
+
+        // Tax truth: first identify the original boleta/factura linked to each
+        // sale, then find issued credit notes that reference that document.
+        const { data: docLinks, error: docLinksError } = await supabase
+          .from("order_tax_documents")
+          .select(`
+            order_id, tax_document_id,
+            tax_documents (
+              id, document_number, document_type, status, original_tax_document_id
+            )
+          `)
+          .in("order_id", orderIds);
+        if (docLinksError) throw docLinksError;
+
+        const taxState = new Map<string, CreditNoteState>();
+        const originalDocToOrders = new Map<string, string[]>();
+        for (const link of (docLinks || []) as any[]) {
+          const doc = Array.isArray(link.tax_documents)
+            ? link.tax_documents[0]
+            : link.tax_documents;
+          if (!doc || doc.status === "voided") continue;
+          const current = taxState.get(link.order_id) || {
+            hasOriginalDocument: false,
+            hasCreditNote: false,
+            creditNoteNumber: null,
+          };
+          if (doc.document_type === "nota_credito") {
+            current.hasCreditNote = true;
+            current.creditNoteNumber = doc.document_number ?? current.creditNoteNumber;
+          } else {
+            current.hasOriginalDocument = true;
+            const orders = originalDocToOrders.get(doc.id) || [];
+            orders.push(link.order_id);
+            originalDocToOrders.set(doc.id, orders);
+          }
+          taxState.set(link.order_id, current);
+        }
+
+        const originalDocIds = Array.from(originalDocToOrders.keys());
+        if (originalDocIds.length > 0) {
+          const { data: creditDocs, error: creditDocsError } = await supabase
+            .from("tax_documents")
+            .select("document_number, original_tax_document_id, status")
+            .eq("document_type", "nota_credito")
+            .neq("status", "voided")
+            .in("original_tax_document_id", originalDocIds);
+          if (creditDocsError) throw creditDocsError;
+
+          for (const creditDoc of creditDocs || []) {
+            if (!creditDoc.original_tax_document_id) continue;
+            for (const orderId of originalDocToOrders.get(creditDoc.original_tax_document_id) || []) {
+              const state = taxState.get(orderId) || {
+                hasOriginalDocument: true,
+                hasCreditNote: false,
+                creditNoteNumber: null,
+              };
+              state.hasCreditNote = true;
+              state.creditNoteNumber = creditDoc.document_number ?? state.creditNoteNumber;
+              taxState.set(orderId, state);
+            }
+          }
+        }
+        setCreditNotes(taxState);
       } else {
         setRefunds(new Map());
+        setCreditNotes(new Map());
       }
     } catch (e) {
       console.error("Error cargando devoluciones:", e);
       setRows([]);
       setRefunds(new Map());
+      setCreditNotes(new Map());
     } finally {
       setLoading(false);
     }
@@ -130,22 +228,48 @@ export default function PageDevoluciones() {
   useEffect(() => { setPage(0); setExpanded(null); }, [range.from, range.to, statusFilter]);
 
   const kpis = useMemo(() => {
-    let opened = 0, closed = 0, refundedAmount = 0, refundedCount = 0;
-    for (const c of rows) {
-      if (c.status === "opened") opened++;
-      if (c.status === "closed") closed++;
-      // "Confirmado" excluye in_mediation a propósito: una mediación todavía está
-      // en disputa, no es una pérdida confirmada (mismo criterio que usa Resumen).
-      const r = c.order_id ? refunds.get(c.order_id) : null;
-      if (r && r.status !== "in_mediation") { refundedAmount += r.net_received_amount || 0; refundedCount++; }
+    let opened = 0, closed = 0, refundedAmount = 0;
+    for (const claim of rows) {
+      if (claim.status === "opened") opened++;
+      if (claim.status === "closed") closed++;
     }
-    return { total: rows.length, opened, closed, refundedAmount, refundedCount };
-  }, [rows, refunds]);
+
+    const claimedOrderIds = new Set(
+      rows.map((claim) => claim.order_id).filter(Boolean) as string[],
+    );
+    let refundedCount = 0, missingCreditNote = 0, creditNotesOk = 0;
+    for (const orderId of claimedOrderIds) {
+      const refund = refunds.get(orderId);
+      if (!refund) continue;
+      refundedCount++;
+      refundedAmount += refund.amount;
+      const tax = creditNotes.get(orderId);
+      if (tax?.hasOriginalDocument && tax.hasCreditNote) creditNotesOk++;
+      else if (tax?.hasOriginalDocument && !tax.hasCreditNote) missingCreditNote++;
+    }
+
+    return {
+      total: rows.length,
+      opened,
+      closed,
+      refundedAmount,
+      refundedCount,
+      missingCreditNote,
+      creditNotesOk,
+    };
+  }, [rows, refunds, creditNotes]);
 
   const filtered = useMemo(() => {
     if (statusFilter === "all") return rows;
-    return rows.filter((c) => c.status === statusFilter);
-  }, [rows, statusFilter]);
+    if (statusFilter === "missing_nc") {
+      return rows.filter((claim) => {
+        if (!claim.order_id || !refunds.has(claim.order_id)) return false;
+        const tax = creditNotes.get(claim.order_id);
+        return !!tax?.hasOriginalDocument && !tax.hasCreditNote;
+      });
+    }
+    return rows.filter((claim) => claim.status === statusFilter);
+  }, [rows, statusFilter, refunds, creditNotes]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
@@ -194,6 +318,22 @@ export default function PageDevoluciones() {
       {CHANNEL_LABEL[channel] ?? channel}
     </span>
   ) : <span className="text-slate-300">—</span>;
+
+  const creditNoteBadge = (orderId: string | null, refund: RefundMovement | null) => {
+    if (!refund || !orderId) return <span className="text-xs text-slate-300">No aplica</span>;
+    const tax = creditNotes.get(orderId);
+    if (!tax?.hasOriginalDocument) {
+      return <span className="text-xs font-medium text-amber-600">Sin DTE original</span>;
+    }
+    if (tax.hasCreditNote) {
+      return (
+        <span className="text-xs font-medium text-emerald-600">
+          {tax.creditNoteNumber ? `NC ${tax.creditNoteNumber}` : "Emitida"}
+        </span>
+      );
+    }
+    return <span className="text-xs font-medium text-red-600">Pendiente</span>;
+  };
 
   return (
     <div className="flex min-h-screen bg-slate-50">
