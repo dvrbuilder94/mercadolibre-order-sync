@@ -372,12 +372,12 @@ export default function PageDashboard() {
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs text-slate-400">Recibido</p>
+                    <p className="text-xs text-slate-400">En caja Mercado Pago</p>
                     <div className="h-7 w-7 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
                       <Wallet className="h-3.5 w-3.5" />
                     </div>
                   </div>
-                  <p className="text-xl font-bold text-slate-900 tabular-nums" title="Confirmado por MercadoPago — pagos aprobados con monto neto real">
+                  <p className="text-xl font-bold text-slate-900 tabular-nums" title="Caja operativa confirmada por Mercado Pago: pagos aprobados con monto neto real">
                     {CLP(data.recibidoReal)}
                   </p>
                   {/* Conteo exacto, no % redondeado — con pocas órdenes confirmadas el
@@ -402,7 +402,7 @@ export default function PageDashboard() {
                 </div>
                 <div className="bg-white rounded-xl border shadow-card hover:shadow-elevated transition-shadow p-4">
                   <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs text-slate-400">Diferencia</p>
+                    <p className="text-xs text-slate-400">Banco tradicional</p>
                     <div className="h-7 w-7 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
                       <Scale className="h-3.5 w-3.5" />
                     </div>
@@ -410,15 +410,15 @@ export default function PageDashboard() {
                   {data.abonosBanco === 0 ? (
                     <>
                       <p className="text-xl font-bold tabular-nums text-slate-300">—</p>
-                      <p className="text-xs text-slate-400 mt-1" title="MercadoPago no es tu cuenta bancaria: es donde el dinero llega primero. Esta comparación es contra tu cuenta bancaria real, todavía sin conectar.">
-                        cuenta bancaria sin conectar
+                      <p className="text-xs text-slate-400 mt-1" title="La cuenta bancaria tradicional es una conciliación adicional y no bloquea el MVP: Mercado Pago funciona como caja operativa.">
+                        opcional · no conectado
                       </p>
                     </>
                   ) : (
                     <>
                       <p
                         className={`text-xl font-bold tabular-nums ${Math.abs(data.diferencia) < 100 ? "text-emerald-600" : "text-amber-600"}`}
-                        title="MercadoPago confirmado vs. lo que efectivamente entró a tu cuenta bancaria real (no es el saldo de MercadoPago)"
+                        title="Comparación opcional entre la caja Mercado Pago y la cuenta bancaria tradicional"
                       >
                         {data.diferencia >= 0 ? "+" : ""}{CLP(data.diferencia)}
                       </p>
@@ -497,10 +497,10 @@ export default function PageDashboard() {
                         approx={data.datosExactos.pct < 100} />
 
                       <div className="border-t border-dashed border-slate-100 my-2" />
-                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Cuenta bancaria</p>
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Banco tradicional · opcional</p>
                       {data.abonosBanco === 0 ? (
                         <p className="text-xs text-slate-300 italic py-1.5">
-                          Sin movimientos de tu cuenta bancaria real todavía — MercadoPago es solo el primer destino del dinero, no tu banco. Esta conexión está pendiente.
+                          No hay movimientos bancarios cargados. Esta conciliación es opcional: para el MVP, Mercado Pago funciona como caja operativa.
                         </p>
                       ) : (
                         <>
