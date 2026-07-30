@@ -158,46 +158,128 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         // TODO: comision_pago per-order breakdown — needs meli_payment_details FK in schema
         const comisionPagoMonto = 0;
 
-        // ── 6b. Devoluciones ─────────────────────────────────────────────────
-        // El monto devuelto es la plata que MercadoPago confirmó como reembolsada
-        // o contracargada (misma fuente que la pantalla Devoluciones), NO el bruto
-        // de las órdenes canceladas. Una orden cancelada normalmente nunca se pagó:
-        // contarla inflaba la cifra y, como ventasBrutas ya excluye las canceladas,
-        // el líquido terminaba restándolas dos veces.
-        const periodOrderIds: string[] = [];
+        // ── 6b. Devoluciones y contracargos ──────────────────────────────────
+        // La fuente de caja es el ledger de payments: check-orphan-payments
+        // registra cada aumento del monto reembolsado como un movimiento negativo,
+        // idempotente y fechado por date_last_updated de MercadoPago. Así soporta
+        // reembolsos parciales y evita usar net_received_amount como si fuera el
+        // monto devuelto.
+        const refundMovements: any[] = [];
         {
           let offset = 0;
           while (true) {
-            let q = supabase
-              .from('orders').select('id')
-              .gte('order_date', from).lte('order_date', to)
+            const { data: batch, error: e } = await supabase
+              .from('payments')
+              .select('id, net_amount, payment_date')
+              .in('status', ['REFUND', 'CHARGEBACK'])
+              .gte('payment_date', from)
+              .lte('payment_date', to)
+              .order('payment_date', { ascending: false })
               .order('id', { ascending: true })
               .range(offset, offset + PAGE - 1);
-            if (canalId !== 'todos') q = q.eq('channel', canalId as any);
-            const { data: batch, error: e } = await q;
             if (e) throw e;
-            periodOrderIds.push(...(batch ?? []).map((o: any) => o.id));
+            refundMovements.push(...(batch ?? []));
             if ((batch ?? []).length < PAGE) break;
             offset += PAGE;
           }
         }
-        let devolucionMonto = 0;
-        for (let i = 0; i < periodOrderIds.length; i += 300) {
-          const { data: pd } = await supabase
-            .from('meli_payment_details')
-            .select('order_id, net_received_amount, status')
-            .in('order_id', periodOrderIds.slice(i, i + 300))
-            .in('status', ['refunded', 'charged_back']);
-          for (const p of (pd ?? []) as any[]) {
-            const amt = Math.abs(p.net_received_amount ?? 0);
-            devolucionMonto += amt;
-            const ch = orderIdToChannel.get(p.order_id);
-            if (ch) {
-              const cur = porCanalMap.get(ch);
-              if (cur) cur.devoluciones += amt;
+
+        const refundById = new Map<string, number>(
+          refundMovements.map((payment) => [
+            payment.id,
+            Math.abs(Number(payment.net_amount ?? 0)),
+          ]),
+        );
+        const refundLinks: any[] = [];
+        const refundPaymentIds = Array.from(refundById.keys());
+        for (let i = 0; i < refundPaymentIds.length; i += 300) {
+          const { data: links, error: linksError } = await supabase
+            .from('payment_sales')
+            .select('payment_id, sale_id, allocated_amount, orders(channel)')
+            .in('payment_id', refundPaymentIds.slice(i, i + 300));
+          if (linksError) throw linksError;
+          refundLinks.push(...(links ?? []));
+        }
+
+        const refundedSaleIds = new Set<string>();
+        let devolucionMonto = canalId === 'todos'
+          ? Array.from(refundById.values()).reduce((sum, amount) => sum + amount, 0)
+          : 0;
+
+        for (const link of refundLinks) {
+          const order = Array.isArray(link.orders) ? link.orders[0] : link.orders;
+          const ch = (order?.channel as string | undefined) ?? 'desconocido';
+          if (canalId !== 'todos' && ch !== canalId) continue;
+
+          const amount = Math.abs(Number(link.allocated_amount ?? 0));
+          refundedSaleIds.add(link.sale_id);
+          if (canalId !== 'todos') devolucionMonto += amount;
+
+          const cur = porCanalMap.get(ch) ?? {
+            ordenes: 0, monto: 0, comisiones: 0,
+            devoluciones: 0, pagado: 0, ordenesExactas: 0,
+          };
+          cur.devoluciones += amount;
+          cur.pagado -= amount;
+          porCanalMap.set(ch, cur);
+        }
+
+        // Cobertura tributaria: la NC puede estar vinculada directamente a la
+        // venta o referenciar la boleta/factura original mediante
+        // original_tax_document_id.
+        const refundedSales = Array.from(refundedSaleIds);
+        const salesWithOriginalDoc = new Set<string>();
+        const salesWithCreditNote = new Set<string>();
+        const originalDocToSales = new Map<string, string[]>();
+
+        for (let i = 0; i < refundedSales.length; i += 300) {
+          const { data: links, error: linksError } = await supabase
+            .from('order_tax_documents')
+            .select(`
+              order_id,
+              tax_documents (
+                id, document_type, status, original_tax_document_id
+              )
+            `)
+            .in('order_id', refundedSales.slice(i, i + 300));
+          if (linksError) throw linksError;
+
+          for (const link of (links ?? []) as any[]) {
+            const doc = Array.isArray(link.tax_documents)
+              ? link.tax_documents[0]
+              : link.tax_documents;
+            if (!doc || doc.status === 'voided') continue;
+            if (doc.document_type === 'nota_credito') {
+              salesWithCreditNote.add(link.order_id);
+              continue;
+            }
+            salesWithOriginalDoc.add(link.order_id);
+            const sales = originalDocToSales.get(doc.id) ?? [];
+            sales.push(link.order_id);
+            originalDocToSales.set(doc.id, sales);
+          }
+        }
+
+        const originalDocIds = Array.from(originalDocToSales.keys());
+        for (let i = 0; i < originalDocIds.length; i += 300) {
+          const { data: creditNotes, error: creditNotesError } = await supabase
+            .from('tax_documents')
+            .select('original_tax_document_id')
+            .eq('document_type', 'nota_credito')
+            .neq('status', 'voided')
+            .in('original_tax_document_id', originalDocIds.slice(i, i + 300));
+          if (creditNotesError) throw creditNotesError;
+
+          for (const note of (creditNotes ?? []) as any[]) {
+            for (const saleId of originalDocToSales.get(note.original_tax_document_id) ?? []) {
+              salesWithCreditNote.add(saleId);
             }
           }
         }
+
+        const devTotal = salesWithOriginalDoc.size;
+        const devConNC = Array.from(salesWithOriginalDoc)
+          .filter((saleId) => salesWithCreditNote.has(saleId)).length;
 
         const porCanal = Array.from(porCanalMap.entries()).map(([ch, v]) => ({
           canalId: ch,
@@ -210,30 +292,6 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           pagado: v.pagado,
           ordenesExactas: v.ordenesExactas,
         }));
-
-        // Cobertura tributaria de las devoluciones reales (órdenes 'returned'): una
-        // devolución debería tener una NOTA DE CRÉDITO que la reverse ante el SII.
-        // Las canceladas no entran acá — una cancelación sin pago no exige NC.
-        // La NC sólo cuenta como cobertura si está vigente y su total cubre al menos
-        // el bruto de la orden (una NC parcial no debe leerse como resuelta).
-        let devQuery = supabase
-          .from('orders')
-          .select('gross_amount, order_tax_documents(id, tax_documents(status, document_type, total_amount))')
-          .gte('order_date', from)
-          .lte('order_date', to)
-          .eq('status', 'returned');
-        if (canalId !== 'todos') devQuery = devQuery.eq('channel', canalId as any);
-        const { data: devRows } = await devQuery;
-        const devConNC = (devRows ?? []).filter(r => {
-          const links = (r.order_tax_documents as any[]) ?? [];
-          const ncTotal = links.reduce((sum, l) => {
-            const td = Array.isArray(l.tax_documents) ? l.tax_documents[0] : l.tax_documents;
-            if (!td || td.status === 'voided' || td.document_type !== 'nota_credito') return sum;
-            return sum + (td.total_amount ?? 0);
-          }, 0);
-          return ncTotal >= (r.gross_amount ?? 0) - 100;
-        }).length;
-        const devTotal = (devRows ?? []).length;
 
         // TODO: facturas de comisión de MeLi no disponibles en tax_documents aún
         const comisionConFactura = { pct: 0, faltan: 0 };
@@ -252,7 +310,11 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
         // false = todavía no hay confirmación de pago, sea por estar pendiente
         // o por no haberse sincronizado — su monto bruto cuenta como "por cobrar"
         // en vez de inventar un neto estimado.
-        const recibidoReal = rows.reduce((s, r) => s + (r.has_exact_data ? (r.net_amount ?? 0) : 0), 0);
+        const recibidoRealBruto = rows.reduce(
+          (s, r) => s + (r.has_exact_data ? (r.net_amount ?? 0) : 0),
+          0,
+        );
+        const recibidoReal = recibidoRealBruto - devolucionMonto;
         const porCobrar     = rows.reduce((s, r) => s + (!r.has_exact_data ? (r.gross_amount ?? 0) : 0), 0);
 
         // ── 8. Abonos banco ───────────────────────────────────────────────────
