@@ -11,7 +11,7 @@ const ADV_KEY = "quadra.advancedMode";
 
 const primary = [
   { to: "/tesoreria",     label: "Tesorería",     icon: Landmark },
-  { to: "/billing",       label: "Facturación MELI", icon: Receipt },
+  { to: "/billing",       label: "Cargos y comisiones", icon: Receipt },
   { to: "/resumen",       label: "Resumen",       icon: Home },
   { to: "/ventas",        label: "Ventas",        icon: ShoppingBag },
   { to: "/documentos",    label: "Documentos",    icon: FileText },

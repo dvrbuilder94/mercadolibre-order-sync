@@ -102,9 +102,9 @@ export default function PageBilling() {
       <main className="flex-1 p-8 max-w-6xl">
         <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Facturación MercadoLibre</h1>
+            <h1 className="text-2xl font-bold text-slate-900">Cargos y comisiones MercadoLibre</h1>
             <p className="text-xs text-slate-400 mt-0.5">
-              Lo que MercadoLibre te cobró este mes, desagregado por rubro (comisión, envío, cupones y otros).
+              Por qué el bruto de tus ventas termina en el neto disponible en Mercado Pago: comisiones, envíos, cupones y otros ajustes.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -139,7 +139,7 @@ export default function PageBilling() {
                 <p className="text-[11px] text-slate-400 mt-1">{totals?.tx_count || 0} pagos MP</p>
               </div>
               <div className="bg-white border rounded-lg p-4">
-                <p className="text-[11px] uppercase tracking-wider text-slate-400">Total facturado por MELI</p>
+                <p className="text-[11px] uppercase tracking-wider text-slate-400">Total descontado por MELI</p>
                 <p className="text-xl font-bold text-rose-600 mt-1">{clp(netoFacturado)}</p>
                 <p className="text-[11px] text-slate-400 mt-1">{pct(netoFacturado)} del bruto</p>
               </div>
@@ -157,7 +157,7 @@ export default function PageBilling() {
 
             {rubros.length === 0 ? (
               <div className="bg-white border rounded-lg p-8 text-center text-slate-400 text-sm">
-                No hay datos de facturación para {periodLabel(period)}. Sincroniza los detalles de pago de MELI
+                No hay datos de cargos para {periodLabel(period)}. Sincroniza los detalles de pago de MELI
                 desde Sync avanzada para poblar este período.
               </div>
             ) : (
@@ -191,7 +191,7 @@ export default function PageBilling() {
                         </tr>
                       ))}
                       <tr className="bg-slate-50 font-semibold">
-                        <td className="px-4 py-2">Total facturado</td>
+                        <td className="px-4 py-2">Total descontado</td>
                         <td></td>
                         <td className={`px-4 py-2 text-right tabular-nums ${netoFacturado < 0 ? "text-emerald-600" : "text-rose-600"}`}>
                           {clp(netoFacturado)}
@@ -204,7 +204,7 @@ export default function PageBilling() {
 
                 {/* Pie */}
                 <div className="lg:col-span-2 bg-white border rounded-lg p-4">
-                  <p className="text-sm font-semibold text-slate-700 mb-2">Composición de cargos</p>
+                  <p className="text-sm font-semibold text-slate-700 mb-2">Composición de descuentos</p>
                   <div className="h-72">
                     <ResponsiveContainer>
                       <PieChart>
