@@ -112,10 +112,8 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           devoluciones: number; pagado: number; ordenesExactas: number;
         };
         const porCanalMap = new Map<string, CanalAgg>();
-        const orderIdToChannel = new Map<string, string>();
         for (const r of rows) {
           const ch = (r.channel as string) ?? 'desconocido';
-          orderIdToChannel.set(r.id, ch);
           const cur = porCanalMap.get(ch) ?? {
             ordenes: 0, monto: 0, comisiones: 0,
             devoluciones: 0, pagado: 0, ordenesExactas: 0,
@@ -172,8 +170,8 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               .from('payments')
               .select('id, net_amount, payment_date')
               .in('status', ['REFUND', 'CHARGEBACK'])
-              .gte('payment_date', from)
-              .lte('payment_date', to)
+              .gte('payment_date', from.slice(0, 10))
+              .lte('payment_date', to.slice(0, 10))
               .order('payment_date', { ascending: false })
               .order('id', { ascending: true })
               .range(offset, offset + PAGE - 1);
