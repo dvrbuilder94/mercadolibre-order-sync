@@ -7,8 +7,8 @@ const corsHeaders = {
 
 // Runs the Pipeline's 6 steps (Sync MeLi → Sync pagos por orden → Caja MP →
 // Sync Bsale → RUTs → Conciliar) for every connected account, on a pg_cron
-// schedule (no JWT,
-// service role — same pattern as cron-refresh-meli-tokens). Scoped to the
+// schedule (no JWT, service role — same pattern as cron-refresh-meli-tokens).
+// Scoped to the
 // current + previous month, since that's what actually needs to stay fresh.
 //
 // Each step is just the existing user-facing edge function, called with the
