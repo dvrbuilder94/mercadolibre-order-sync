@@ -263,7 +263,7 @@ Deno.serve(async (req) => {
         unmatched: unmatched.slice(0, 100).map(compact),
         payments: mpPayments.slice(0, 500).map((payment) => ({
           ...compact(payment),
-          matched: known.has(payment.id),
+          matched: known.has(payment.id) || existingStatuses.get(payment.id) === 'ALLOCATED',
         })),
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
