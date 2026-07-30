@@ -276,13 +276,21 @@ Deno.serve(async (req) => {
 
       const ledgerType = isChargeback ? 'MP_CHARGEBACK' : 'MP_REFUND';
       const prefix = isChargeback ? 'MP-CHARGEBACK' : 'MP-REFUND';
-      const { data: priorRows, error: priorError } = await supabase
-        .from('payments')
-        .select('id, raw_data')
-        .like('external_payment_id', `${prefix}-${originalPaymentId}-%`);
-      if (priorError) throw priorError;
+      // Refund and chargeback are two states of the same cumulative reversal.
+      // Look at both prefixes so a payment that moves from refunded to charged
+      // back never subtracts the same money twice.
+      const priorRows: any[] = [];
+      for (const priorPrefix of ['MP-REFUND', 'MP-CHARGEBACK']) {
+        const { data: rows, error: priorError } = await supabase
+          .from('payments')
+          .select('id, raw_data')
+          .eq('user_id', userId)
+          .like('external_payment_id', `${priorPrefix}-${originalPaymentId}-%`);
+        if (priorError) throw priorError;
+        priorRows.push(...(rows ?? []));
+      }
 
-      const previousCumulative = (priorRows ?? []).reduce(
+      const previousCumulative = priorRows.reduce(
         (max: number, row: any) => Math.max(
           max,
           Number(row.raw_data?.cumulative_reversal_amount ?? 0),
@@ -328,6 +336,7 @@ Deno.serve(async (req) => {
       const { data: originalPayment, error: originalError } = await supabase
         .from('payments')
         .select('id')
+        .eq('user_id', userId)
         .eq('external_payment_id', originalPaymentId)
         .maybeSingle();
       if (originalError) throw originalError;
