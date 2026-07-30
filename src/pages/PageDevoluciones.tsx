@@ -283,17 +283,30 @@ export default function PageDevoluciones() {
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const { data, error } = await supabase.functions.invoke("sync-meli-claims", {
+      const { data: claimsData, error: claimsError } = await supabase.functions.invoke("sync-meli-claims", {
         body: { max_pages: 10 },
       });
-      if (error) throw error;
-      if (data?.error_code === "meli_post_purchase_not_authorized") {
-        setSyncMsg(`⚠️ ${data.message}`);
-        return;
+      if (claimsError) throw claimsError;
+      const claimsUnavailable = claimsData?.error_code === "meli_post_purchase_not_authorized";
+      if (!claimsUnavailable && !claimsData?.success) {
+        throw new Error(claimsData?.error || claimsData?.message || "error desconocido");
       }
-      if (!data?.success) throw new Error(data?.error || data?.message || "error desconocido");
-      setSyncMsg(`✅ ${data.upserted} reclamos sincronizados (${data.found} encontrados de ${data.available ?? "?"} totales)`);
-      fetchRows();
+
+      // Refund truth comes from Mercado Pago and must still sync when MELI's
+      // Post-Purchase API is not enabled for the application.
+      const { data: cashData, error: cashError } = await supabase.functions.invoke("check-orphan-payments", {
+        body: {
+          date_from: range.from + "T00:00:00",
+          date_to: range.to + "T23:59:59",
+        },
+      });
+      if (cashError) throw cashError;
+
+      const cashSummary = `${cashData?.reversalCount ?? 0} movimientos de devolución MP`;
+      setSyncMsg(claimsUnavailable
+        ? `⚠️ Post-Venta MELI sin permiso · ${cashSummary} sincronizados`
+        : `✅ ${claimsData?.upserted ?? 0} reclamos · ${cashSummary}`);
+      await fetchRows();
     } catch (e: any) {
       setSyncMsg(`❌ ${e?.message || "No se pudo sincronizar"}`);
     } finally {
@@ -338,7 +351,7 @@ export default function PageDevoluciones() {
   return (
     <div className="flex min-h-screen bg-slate-50">
       <Nav />
-      <main className="flex-1 p-8 max-w-5xl">
+      <main className="flex-1 p-8 max-w-7xl">
 
         <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
           <div className="flex items-center gap-3">
@@ -356,10 +369,10 @@ export default function PageDevoluciones() {
           </div>
 
           <button onClick={runSync} disabled={syncing}
-            title="Trae reclamos/devoluciones de la API de Post-Venta de MercadoLibre"
+            title="Actualiza reclamos MELI, devoluciones y contracargos de Mercado Pago"
             className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white text-sm font-medium rounded-lg">
             {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Undo2 className="h-4 w-4" />}
-            Sync devoluciones MELI
+            Actualizar devoluciones
           </button>
         </div>
 
@@ -368,7 +381,7 @@ export default function PageDevoluciones() {
         )}
 
         {/* KPIs: siempre reflejan todo el período, sin importar el filtro de estado. */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
           <div className="bg-white rounded-xl border shadow-card p-4">
             <p className="text-xs text-slate-400 mb-1">Reclamos del período</p>
             <p className="text-xl font-bold text-slate-900 tabular-nums">{kpis.total}</p>
@@ -387,8 +400,8 @@ export default function PageDevoluciones() {
             <p className="text-xs text-slate-400 mt-1">proceso finalizado</p>
           </div>
           <div className="bg-white rounded-xl border shadow-card p-4">
-            <p className="text-xs text-slate-400 mb-1" title="Mismo monto que 'Devoluciones confirmadas' en Resumen — reembolsos y contracargos que MercadoPago ya confirmó.">
-              Devoluciones confirmadas
+            <p className="text-xs text-slate-400 mb-1">
+              Salidas confirmadas
             </p>
             <p className="text-xl font-bold text-red-600 tabular-nums">{clp(kpis.refundedAmount)}</p>
             <p className="text-xs text-slate-400 mt-1">
@@ -397,11 +410,20 @@ export default function PageDevoluciones() {
                 : "sin confirmación de MercadoPago todavía"}
             </p>
           </div>
+          <div className="bg-white rounded-xl border shadow-card p-4">
+            <p className="text-xs text-slate-400 mb-1">Sin nota de crédito</p>
+            <p className={`text-xl font-bold tabular-nums ${kpis.missingCreditNote > 0 ? "text-red-600" : "text-emerald-600"}`}>
+              {kpis.missingCreditNote}
+            </p>
+            <p className="text-xs text-slate-400 mt-1">
+              {kpis.creditNotesOk} devoluciones con NC emitida
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 mb-3 flex-wrap">
           {([
-            ["all", "Todos"], ["opened", "Abiertos"], ["closed", "Cerrados"],
+            ["all", "Todos"], ["opened", "Abiertos"], ["closed", "Cerrados"], ["missing_nc", "Sin nota de crédito"],
           ] as [StatusFilter, string][]).map(([val, label]) => (
             <button key={val} onClick={() => setStatusFilter(val)}
               className={`px-3 py-1 text-xs font-medium rounded-full border transition-colors ${
@@ -424,17 +446,18 @@ export default function PageDevoluciones() {
                 <th className="px-4 py-2 font-medium">Venta</th>
                 <th className="px-4 py-2 font-medium">Estado</th>
                 <th className="px-4 py-2 font-medium text-right">Plata devuelta</th>
+                <th className="px-4 py-2 font-medium">Nota de crédito</th>
                 <th className="px-4 py-2 font-medium"></th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin inline" />
                 </td></tr>
               ) : pageRows.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">
-                  Sin reclamos/devoluciones en este período. Corre <b>Sync devoluciones MELI</b> arriba si esperabas ver datos.
+                <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">
+                  Sin reclamos/devoluciones en este período. Presiona <b>Actualizar devoluciones</b> si esperabas ver datos.
                 </td></tr>
               ) : pageRows.map((c) => {
                 const isOpen = expanded === c.id;
@@ -453,7 +476,10 @@ export default function PageDevoluciones() {
                       </td>
                       <td className="px-4 py-2">{statusBadge(c.status)}</td>
                       <td className="px-4 py-2 text-right tabular-nums font-medium">
-                        {refund ? <span className="text-red-600">{clp(refund.net_received_amount)}</span> : <span className="text-slate-300">—</span>}
+                        {refund ? <span className="text-red-600">{clp(refund.amount)}</span> : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-4 py-2">
+                        {creditNoteBadge(c.order_id, refund)}
                       </td>
                       <td className="px-4 py-2 text-slate-400">
                         {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -461,7 +487,7 @@ export default function PageDevoluciones() {
                     </tr>
                     {isOpen && (
                       <tr className="border-b bg-slate-50">
-                        <td colSpan={7} className="px-4 py-3 text-xs space-y-1">
+                        <td colSpan={8} className="px-4 py-3 text-xs space-y-1">
                           <div><span className="text-slate-400">claim_id: </span><span className="font-mono">{c.claim_id}</span></div>
                           <div><span className="text-slate-400">stage: </span>{c.stage || "—"}</div>
                           <div><span className="text-slate-400">reason_id: </span>{c.reason_id || "—"}</div>
@@ -470,9 +496,13 @@ export default function PageDevoluciones() {
                           <div><span className="text-slate-400">monto venta: </span>{clp(c.orders?.gross_amount)}</div>
                           {refund && (
                             <div><span className="text-slate-400">pago MP: </span>
-                              <span className="text-red-600 font-medium">{refund.status}</span> · {clp(refund.net_received_amount)}
+                              <span className="text-red-600 font-medium">{refund.status}</span> · {clp(refund.amount)}
+                              {refund.paymentDate ? ` · ${format(new Date(refund.paymentDate), "dd/MM/yyyy")}` : ""}
                             </div>
                           )}
+                          <div><span className="text-slate-400">nota de crédito: </span>
+                            {creditNoteBadge(c.order_id, refund)}
+                          </div>
                         </td>
                       </tr>
                     )}
@@ -503,9 +533,10 @@ export default function PageDevoluciones() {
         )}
 
         <p className="text-xs text-slate-400 mt-3">
-          Los reclamos vienen de la API de Post-Venta de MercadoLibre. La "plata devuelta" solo se muestra cuando
-          MercadoPago ya confirmó el pago como reembolsado/contracargado — si no hay confirmación, se deja vacío en
-          vez de estimar un monto.
+          Los reclamos vienen de la API de Post-Venta de MercadoLibre. La plata devuelta se registra desde
+          <code> transaction_amount_refunded </code> o un contracargo confirmado por Mercado Pago, como una salida
+          negativa de caja. “NC pendiente” significa que existe un DTE original vigente pero todavía no aparece una
+          nota de crédito vinculada en Bsale.
         </p>
 
       </main>
