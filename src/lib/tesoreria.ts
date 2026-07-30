@@ -102,16 +102,17 @@ export const methodLabel = (type: string | null) =>
 
 /** Pulls the most informative payment method label we can from raw_data or the linked order. */
 const extractMethod = (raw: any, orderMethod: string | null) => {
+  const payment = raw?.mp_payment || raw;
   const type =
-    raw?.payment_type ||
-    raw?.payment_type_id ||
-    raw?.payment_method_type ||
+    payment?.payment_type ||
+    payment?.payment_type_id ||
+    payment?.payment_method_type ||
     orderMethod ||
     null;
   const brand =
-    raw?.payment_method_id ||
-    raw?.payment_method_brand ||
-    raw?.card?.payment_method?.id ||
+    payment?.payment_method_id ||
+    payment?.payment_method_brand ||
+    payment?.card?.payment_method?.id ||
     null;
   return { type, brand };
 };
@@ -154,9 +155,9 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
   let matchState: TesoreriaPayment["matchState"] = "orphan";
   if (sales.length > 0) {
     const ref = net || p.amount || 0;
-    const tolerance = Math.max(ref * 0.02, 100);
+    const tolerance = Math.max(Math.abs(ref) * 0.02, 100);
     matchState =
-      ref > 0 && Math.abs(allocatedSum - ref) <= tolerance ? "matched" : "partial";
+      ref !== 0 && Math.abs(allocatedSum - ref) <= tolerance ? "matched" : "partial";
   }
 
   return {

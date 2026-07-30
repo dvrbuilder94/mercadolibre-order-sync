@@ -174,14 +174,16 @@ export default function PageTesoreria() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const payments = useMemo(() => rows.map(toTesoreriaPayment), [rows]);
-  const cashPayments = useMemo(
-    () => payments.filter((payment) => payment.net > 0),
+  const cashMovements = useMemo(
+    () => payments.filter((payment) => payment.net !== 0),
     [payments],
   );
 
+  // Refunds and chargebacks are persisted as negative Mercado Pago movements,
+  // so the period total represents net cash flow rather than gross inflows.
   const cashTotal = useMemo(
-    () => cashPayments.reduce((sum, payment) => sum + payment.net, 0),
-    [cashPayments],
+    () => cashMovements.reduce((sum, payment) => sum + payment.net, 0),
+    [cashMovements],
   );
   const unpaidTotal = useMemo(
     () => unpaidOrders.reduce((sum, order) => sum + (order.gross_amount || 0), 0),
@@ -266,7 +268,7 @@ export default function PageTesoreria() {
           <div className="bg-white border rounded-lg p-4">
             <p className="text-[11px] uppercase tracking-wider text-slate-400">En caja Mercado Pago</p>
             <p className="text-xl font-bold text-emerald-600 mt-1">{clp(cashTotal)}</p>
-            <p className="text-[11px] text-slate-400 mt-1">{cashPayments.length} pagos con neto real</p>
+            <p className="text-[11px] text-slate-400 mt-1">{cashMovements.length} movimientos con neto real</p>
           </div>
           <div className="bg-white border rounded-lg p-4">
             <p className="text-[11px] uppercase tracking-wider text-slate-400">Ventas sin pago confirmado</p>
