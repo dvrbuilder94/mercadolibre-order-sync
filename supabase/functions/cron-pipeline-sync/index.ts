@@ -5,8 +5,9 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Runs the Pipeline's 5 steps (Sync MeLi → Sync pagos → Sync Bsale → RUTs →
-// Conciliar) for every connected account, on a pg_cron schedule (no JWT,
+// Runs the Pipeline's 6 steps (Sync MeLi → Sync pagos por orden → Caja MP →
+// Sync Bsale → RUTs → Conciliar) for every connected account, on a pg_cron
+// schedule (no JWT,
 // service role — same pattern as cron-refresh-meli-tokens). Scoped to the
 // current + previous month, since that's what actually needs to stay fresh.
 //
@@ -139,6 +140,15 @@ async function syncPaymentsLoop(admin: SupabaseClient, acc: { id: string; user_i
   return { rounds: round, totalLinked, remaining };
 }
 
+async function syncMercadoPagoCash(admin: SupabaseClient, acc: { id: string; user_id: string }, dateFrom: string, dateTo: string) {
+  return callStep(admin, 'check-orphan-payments', {
+    date_from: dateFrom,
+    date_to: dateTo,
+    account_id: acc.id,
+    user_id: acc.user_id,
+  });
+}
+
 async function enrichRutsLoop(admin: SupabaseClient, acc: { id: string; user_id: string }, dateFrom: string, dateTo: string, timeLeft: () => boolean) {
   let totalEnriched = 0, round = 0, remaining = 0;
   while (round < 20 && timeLeft()) {
@@ -252,23 +262,26 @@ Deno.serve(async (req) => {
       if (!timeLeft()) break outer;
       results.push(await runStep(admin, 'sync_payments', acc.user_id, acc.id, period,
         () => syncPaymentsLoop(admin, acc, dateFrom, dateTo, timeLeft)));
+      if (!timeLeft()) break outer;
+      results.push(await runStep(admin, 'sync_mp_cash', acc.user_id, acc.id, period,
+        () => syncMercadoPagoCash(admin, acc, dateFrom, dateTo)));
     }
 
-    // 3: per user — Sync Bsale (needs to land before RUTs/Conciliar, same order as Pipeline.tsx)
+    // 4: per user — Sync Bsale (needs to land before RUTs/Conciliar, same order as Pipeline.tsx)
     for (const userId of userIds) {
       if (!timeLeft()) break outer;
       results.push(await runStep(admin, 'sync_bsale', userId, null, period,
         () => syncBsaleLoop(admin, userId, period, timeLeft)));
     }
 
-    // 4: per MELI account — RUTs
+    // 5: per MELI account — RUTs
     for (const acc of accounts) {
       if (!timeLeft()) break outer;
       results.push(await runStep(admin, 'enrich_ruts', acc.user_id, acc.id, period,
         () => enrichRutsLoop(admin, acc, dateFrom, dateTo, timeLeft)));
     }
 
-    // 5: per user — Conciliar
+    // 6: per user — Conciliar
     for (const userId of userIds) {
       if (!timeLeft()) break outer;
       results.push(await runStep(admin, 'reconcile', userId, null, period,
