@@ -11,7 +11,7 @@ import { fetchOrderDetail } from "@/lib/orderDetail";
 import { TesoreriaResumen } from "@/components/tesoreria/TesoreriaResumen";
 import { TesoreriaDetalle } from "@/components/tesoreria/TesoreriaDetalle";
 import {
-  onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw, periodRange,
+  clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw, periodRange,
 } from "@/lib/tesoreria";
 
 const periodLabel = (p: string) => {
@@ -41,6 +41,11 @@ export default function PageTesoreria() {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<TesoreriaPaymentRaw[]>([]);
   const [upcomingRows, setUpcomingRows] = useState<TesoreriaPaymentRaw[]>([]);
+  const [unpaidOrders, setUnpaidOrders] = useState<Array<{
+    id: string;
+    order_id: string;
+    gross_amount: number | null;
+  }>>([]);
   const [detailOrder, setDetailOrder] = useState<any | null>(null);
 
   useEffect(() => {
@@ -79,6 +84,24 @@ export default function PageTesoreria() {
         offset += PAGE;
       }
       setRows(onlyRealMpPayments(acc));
+
+      // Para el MVP, Mercado Pago es la caja operativa. Estas son ventas MELI
+      // del período que todavía no tienen un pago aprobado con neto real.
+      const { data: unpaid, error: unpaidError } = await supabase
+        .from("orders")
+        .select("id, order_id, gross_amount")
+        .eq("channel", "meli")
+        .eq("has_exact_data", false)
+        .not("status", "in", "(cancelled,rejected,invalid)")
+        .gte("order_date", rangeIso.from)
+        .lte("order_date", rangeIso.to)
+        .order("order_date", { ascending: false });
+      if (unpaidError) throw unpaidError;
+      setUnpaidOrders((unpaid || []) as Array<{
+        id: string;
+        order_id: string;
+        gross_amount: number | null;
+      }>);
 
       // Upcoming releases: scan payments globally (no period filter) for the next 30 days
       const today = format(new Date(), "yyyy-MM-dd'T'00:00:00");
@@ -124,7 +147,7 @@ export default function PageTesoreria() {
       setUpcomingRows(futurePayments);
     } catch (e) {
       console.error("Error cargando tesorería:", e);
-      setRows([]); setUpcomingRows([]);
+      setRows([]); setUpcomingRows([]); setUnpaidOrders([]);
     } finally {
       setLoading(false);
     }
@@ -133,6 +156,32 @@ export default function PageTesoreria() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const payments = useMemo(() => rows.map(toTesoreriaPayment), [rows]);
+
+  const cashTotal = useMemo(
+    () => payments.reduce((sum, payment) => sum + payment.net, 0),
+    [payments],
+  );
+  const unpaidTotal = useMemo(
+    () => unpaidOrders.reduce((sum, order) => sum + (order.gross_amount || 0), 0),
+    [unpaidOrders],
+  );
+  const orphanPayments = useMemo(
+    () => payments.filter((payment) => payment.matchState === "orphan"),
+    [payments],
+  );
+  const partialPayments = useMemo(
+    () => payments.filter((payment) => payment.matchState === "partial"),
+    [payments],
+  );
+  const paidWithoutDte = useMemo(() => {
+    const orderIds = new Set<string>();
+    for (const payment of payments) {
+      for (const sale of payment.sales) {
+        if (!sale.hasDoc) orderIds.add(sale.id);
+      }
+    }
+    return orderIds.size;
+  }, [payments]);
 
   const upcoming = useMemo(() => {
     const map = new Map<string, { net: number; count: number }>();
@@ -172,7 +221,7 @@ export default function PageTesoreria() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Tesorería</h1>
             <p className="text-xs text-slate-400 mt-0.5">
-              Lo que la pasarela te depositó, lo que te falta liberar, y el matching contra tus ventas.
+              Tu caja operativa en Mercado Pago: qué ventas entraron, cuáles faltan y qué pagos no se pueden explicar.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -186,6 +235,39 @@ export default function PageTesoreria() {
             <button onClick={fetchData} disabled={loading} className="p-1.5 hover:bg-slate-100 rounded text-slate-400 disabled:opacity-40 ml-1">
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
+          </div>
+        </div>
+
+        {/* Mercado Pago es la caja operativa del MVP: estos controles
+            responden qué entró, qué falta y qué no se puede explicar todavía. */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
+          <div className="bg-white border rounded-lg p-4">
+            <p className="text-[11px] uppercase tracking-wider text-slate-400">En caja Mercado Pago</p>
+            <p className="text-xl font-bold text-emerald-600 mt-1">{clp(cashTotal)}</p>
+            <p className="text-[11px] text-slate-400 mt-1">{payments.length} pagos con neto real</p>
+          </div>
+          <div className="bg-white border rounded-lg p-4">
+            <p className="text-[11px] uppercase tracking-wider text-slate-400">Ventas sin pago confirmado</p>
+            <p className={`text-xl font-bold mt-1 ${unpaidOrders.length > 0 ? "text-amber-600" : "text-emerald-600"}`}>
+              {unpaidOrders.length}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-1">{clp(unpaidTotal)} bruto por explicar</p>
+          </div>
+          <div className="bg-white border rounded-lg p-4">
+            <p className="text-[11px] uppercase tracking-wider text-slate-400">Pagos sin venta</p>
+            <p className={`text-xl font-bold mt-1 ${orphanPayments.length > 0 ? "text-red-600" : "text-emerald-600"}`}>
+              {orphanPayments.length}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-1">
+              {partialPayments.length > 0 ? `${partialPayments.length} pagos parcialmente asignados` : "sin huérfanos detectados"}
+            </p>
+          </div>
+          <div className="bg-white border rounded-lg p-4">
+            <p className="text-[11px] uppercase tracking-wider text-slate-400">Pagadas sin DTE</p>
+            <p className={`text-xl font-bold mt-1 ${paidWithoutDte > 0 ? "text-red-600" : "text-emerald-600"}`}>
+              {paidWithoutDte}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-1">ventas en caja sin boleta o factura vinculada</p>
           </div>
         </div>
 
