@@ -153,13 +153,35 @@ export default function PageTesoreria() {
     }
   }, [rangeIso]);
 
+  const refreshTreasury = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { error } = await supabase.functions.invoke("check-orphan-payments", {
+        body: {
+          date_from: rangeIso.from,
+          date_to: rangeIso.to,
+        },
+      });
+      if (error) console.error("Error sincronizando caja Mercado Pago:", error);
+    } catch (error) {
+      console.error("Error sincronizando caja Mercado Pago:", error);
+    }
+    // Always reload the ledger: an MP request failure should not hide the data
+    // that was already persisted successfully.
+    await fetchData();
+  }, [fetchData, rangeIso]);
+
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const payments = useMemo(() => rows.map(toTesoreriaPayment), [rows]);
+  const cashPayments = useMemo(
+    () => payments.filter((payment) => payment.net > 0),
+    [payments],
+  );
 
   const cashTotal = useMemo(
-    () => payments.reduce((sum, payment) => sum + payment.net, 0),
-    [payments],
+    () => cashPayments.reduce((sum, payment) => sum + payment.net, 0),
+    [cashPayments],
   );
   const unpaidTotal = useMemo(
     () => unpaidOrders.reduce((sum, order) => sum + (order.gross_amount || 0), 0),
@@ -232,7 +254,7 @@ export default function PageTesoreria() {
             <button onClick={() => changePeriod(1)} className="p-1.5 hover:bg-slate-100 rounded">
               <ChevronRight className="h-4 w-4" />
             </button>
-            <button onClick={fetchData} disabled={loading} className="p-1.5 hover:bg-slate-100 rounded text-slate-400 disabled:opacity-40 ml-1">
+            <button onClick={refreshTreasury} disabled={loading} title="Sincronizar caja desde Mercado Pago" className="p-1.5 hover:bg-slate-100 rounded text-slate-400 disabled:opacity-40 ml-1">
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
           </div>
@@ -244,7 +266,7 @@ export default function PageTesoreria() {
           <div className="bg-white border rounded-lg p-4">
             <p className="text-[11px] uppercase tracking-wider text-slate-400">En caja Mercado Pago</p>
             <p className="text-xl font-bold text-emerald-600 mt-1">{clp(cashTotal)}</p>
-            <p className="text-[11px] text-slate-400 mt-1">{payments.length} pagos con neto real</p>
+            <p className="text-[11px] text-slate-400 mt-1">{cashPayments.length} pagos con neto real</p>
           </div>
           <div className="bg-white border rounded-lg p-4">
             <p className="text-[11px] uppercase tracking-wider text-slate-400">Ventas sin pago confirmado</p>
