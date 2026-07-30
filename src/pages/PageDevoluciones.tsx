@@ -332,7 +332,7 @@ export default function PageDevoluciones() {
     </span>
   ) : <span className="text-slate-300">—</span>;
 
-  const creditNoteBadge = (orderId: string | null, refund: RefundMovement | null) => {
+  const creditNoteBadge = (orderId: string | null, refund: RefundMovement | null | undefined) => {
     if (!refund || !orderId) return <span className="text-xs text-slate-300">No aplica</span>;
     const tax = creditNotes.get(orderId);
     if (!tax?.hasOriginalDocument) {
