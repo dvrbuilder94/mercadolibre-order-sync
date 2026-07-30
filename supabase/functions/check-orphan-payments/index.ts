@@ -40,6 +40,41 @@ const withChileOffset = (value: string, endOfDay: boolean) => {
   return `${normalized}${offset}`;
 };
 
+async function searchMercadoPagoPayments(
+  accessToken: string,
+  range: 'date_approved' | 'date_last_updated',
+  dateFrom: string,
+  dateTo: string,
+) {
+  const payments: any[] = [];
+  let offset = 0;
+  const limit = 50;
+
+  while (true) {
+    const url = `https://api.mercadopago.com/v1/payments/search`
+      + `?range=${range}&begin_date=${encodeURIComponent(withChileOffset(dateFrom, false))}`
+      + `&end_date=${encodeURIComponent(withChileOffset(dateTo, true))}`
+      + `&sort=${range}&criteria=desc&limit=${limit}&offset=${offset}`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`MercadoPago search ${range} falló (${response.status}): ${detail}`);
+    }
+
+    const body = await response.json();
+    const results = body?.results ?? [];
+    payments.push(...results);
+
+    const total = Number(body?.paging?.total ?? results.length);
+    offset += limit;
+    if (offset >= total || results.length === 0 || offset >= 10_000) break;
+  }
+
+  return payments;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { status: 200, headers: corsHeaders });
@@ -97,69 +132,41 @@ Deno.serve(async (req) => {
     // of truth for cash. Order-driven sync alone can never discover a payment
     // that has no order in our database.
     const mpPayments: MercadoPagoCashPayment[] = [];
-    let offset = 0;
-    const limit = 50;
-    while (true) {
-      const url = `https://api.mercadopago.com/v1/payments/search`
-        + `?range=date_approved&begin_date=${encodeURIComponent(withChileOffset(date_from, false))}`
-        + `&end_date=${encodeURIComponent(withChileOffset(date_to, true))}`
-        + `&sort=date_approved&criteria=desc&limit=${limit}&offset=${offset}`;
-      const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-      if (!resp.ok) {
-        const errText = await resp.text().catch(() => '');
-        throw new Error(`MercadoPago search falló (${resp.status}): ${errText}`);
-      }
+    const approvedResults = await searchMercadoPagoPayments(
+      accessToken,
+      'date_approved',
+      date_from,
+      date_to,
+    );
 
-      const body = await resp.json();
-      const results = body?.results ?? [];
-      for (const p of results) {
-        if (p.status !== 'approved') continue;
+    for (const p of approvedResults) {
+      if (p.status !== 'approved') continue;
 
-        const grossAmount = Number(p.transaction_amount ?? 0);
-        const feeDetails = Array.isArray(p.fee_details) ? p.fee_details : [];
-        const feesAmount = feeDetails.reduce(
-          (sum: number, fee: any) => sum + Number(fee?.amount ?? 0),
-          0,
-        );
-        const reportedNet = p.net_received_amount
-          ?? p.transaction_details?.net_received_amount;
-        // A zero is intentional when Mercado Pago has not reported a net yet;
-        // do not manufacture cash from an estimate.
-        const netAmount = Number(reportedNet ?? 0);
-
-        mpPayments.push({
-          id: String(p.id),
-          gross_amount: grossAmount,
-          net_amount: netAmount,
-          fees_amount: feesAmount,
-          date_approved: p.date_approved,
-          status: p.status,
-          external_reference: p.external_reference ?? null,
-          payment_method_id: p.payment_method_id ?? null,
-          payment_type_id: p.payment_type_id ?? null,
-          money_release_date: p.money_release_date ?? null,
-          raw_data: p,
-        });
-      }
-
-      const total = body?.paging?.total ?? results.length;
-      offset += limit;
-      if (offset >= total || results.length === 0 || offset > 5000) break;
-    }
-
-    if (mpPayments.length === 0) {
-      return new Response(
-        JSON.stringify({
-          success: true,
-          totalChecked: 0,
-          unmatchedCount: 0,
-          unmatchedAmount: 0,
-          ingestedCount: 0,
-          unmatched: [],
-          payments: [],
-        }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      const grossAmount = Number(p.transaction_amount ?? 0);
+      const feeDetails = Array.isArray(p.fee_details) ? p.fee_details : [];
+      const feesAmount = feeDetails.reduce(
+        (sum: number, fee: any) => sum + Number(fee?.amount ?? 0),
+        0,
       );
+      const reportedNet = p.net_received_amount
+        ?? p.transaction_details?.net_received_amount;
+      // A zero is intentional when Mercado Pago has not reported a net yet;
+      // do not manufacture cash from an estimate.
+      const netAmount = Number(reportedNet ?? 0);
+
+      mpPayments.push({
+        id: String(p.id),
+        gross_amount: grossAmount,
+        net_amount: netAmount,
+        fees_amount: feesAmount,
+        date_approved: p.date_approved,
+        status: p.status,
+        external_reference: p.external_reference ?? null,
+        payment_method_id: p.payment_method_id ?? null,
+        payment_type_id: p.payment_type_id ?? null,
+        money_release_date: p.money_release_date ?? null,
+        raw_data: p,
+      });
     }
 
     // meli_payment_details.payment_id is the real reconciliation key.
@@ -239,6 +246,123 @@ Deno.serve(async (req) => {
       ingestedCount += rows?.length ?? chunk.length;
     }
 
+    // Refunds are separate cash-out movements. Searching by date_last_updated
+    // catches a July refund even when the original sale was approved in June.
+    // Each increase in Mercado Pago's cumulative refunded amount becomes one
+    // negative, idempotent ledger movement for the delta only.
+    const updatedPayments = await searchMercadoPagoPayments(
+      accessToken,
+      'date_last_updated',
+      date_from,
+      date_to,
+    );
+    const reversalCandidates = updatedPayments.filter((payment: any) => {
+      const refunded = Number(payment.transaction_amount_refunded ?? 0);
+      return refunded > 0 || payment.status === 'charged_back';
+    });
+
+    let reversalCount = 0;
+    let reversalAmount = 0;
+
+    for (const payment of reversalCandidates) {
+      const originalPaymentId = String(payment.id);
+      const isChargeback = payment.status === 'charged_back';
+      const cumulativeAmount = Number(
+        Number(payment.transaction_amount_refunded ?? 0) > 0
+          ? payment.transaction_amount_refunded
+          : payment.transaction_amount,
+      );
+      if (!(cumulativeAmount > 0)) continue;
+
+      const ledgerType = isChargeback ? 'MP_CHARGEBACK' : 'MP_REFUND';
+      const prefix = isChargeback ? 'MP-CHARGEBACK' : 'MP-REFUND';
+      const { data: priorRows, error: priorError } = await supabase
+        .from('payments')
+        .select('id, raw_data')
+        .like('external_payment_id', `${prefix}-${originalPaymentId}-%`);
+      if (priorError) throw priorError;
+
+      const previousCumulative = (priorRows ?? []).reduce(
+        (max: number, row: any) => Math.max(
+          max,
+          Number(row.raw_data?.cumulative_reversal_amount ?? 0),
+        ),
+        0,
+      );
+      const delta = Math.round((cumulativeAmount - previousCumulative) * 100) / 100;
+      if (!(delta > 0)) continue;
+
+      const externalAdjustmentId =
+        `${prefix}-${originalPaymentId}-${cumulativeAmount.toFixed(2)}`;
+      const { data: adjustment, error: adjustmentError } = await supabase
+        .from('payments')
+        .upsert({
+          user_id: userId,
+          payment_provider: 'MERCADOPAGO',
+          external_payment_id: externalAdjustmentId,
+          payment_date: payment.date_last_updated || new Date().toISOString(),
+          gross_amount: -delta,
+          net_amount: -delta,
+          fees_amount: 0,
+          amount: -delta,
+          status: isChargeback ? 'CHARGEBACK' : 'REFUND',
+          reference: `${isChargeback ? 'Contracargo' : 'Devolución'} MP ${originalPaymentId}`,
+          raw_data: {
+            source: 'check-orphan-payments',
+            ledger_type: ledgerType,
+            account_id: meliAccount.id,
+            original_payment_id: originalPaymentId,
+            cumulative_reversal_amount: cumulativeAmount,
+            reversal_delta: delta,
+            mp_status: payment.status,
+            mp_payment: payment,
+          },
+        }, { onConflict: 'external_payment_id' })
+        .select('id')
+        .single();
+      if (adjustmentError) throw adjustmentError;
+
+      // Mirror the original payment allocation so the refund is traceable to
+      // the same sale(s). If the original payment is still orphaned, the
+      // negative movement intentionally remains orphaned too.
+      const { data: originalPayment, error: originalError } = await supabase
+        .from('payments')
+        .select('id')
+        .eq('external_payment_id', originalPaymentId)
+        .maybeSingle();
+      if (originalError) throw originalError;
+
+      if (originalPayment) {
+        const { data: originalLinks, error: linksError } = await supabase
+          .from('payment_sales')
+          .select('sale_id, allocated_amount')
+          .eq('payment_id', originalPayment.id);
+        if (linksError) throw linksError;
+
+        const allocationTotal = (originalLinks ?? []).reduce(
+          (sum: number, link: any) => sum + Math.abs(Number(link.allocated_amount ?? 0)),
+          0,
+        );
+        for (const link of originalLinks ?? []) {
+          const ratio = allocationTotal > 0
+            ? Math.abs(Number(link.allocated_amount ?? 0)) / allocationTotal
+            : 1 / Math.max(originalLinks?.length ?? 1, 1);
+          const allocated = -Math.round(delta * ratio * 100) / 100;
+          const { error: linkError } = await supabase
+            .from('payment_sales')
+            .upsert({
+              payment_id: adjustment.id,
+              sale_id: link.sale_id,
+              allocated_amount: allocated,
+            }, { onConflict: 'payment_id,sale_id' });
+          if (linkError) throw linkError;
+        }
+      }
+
+      reversalCount++;
+      reversalAmount += delta;
+    }
+
     const unmatchedAmount = unmatched.reduce(
       (sum, payment) => sum + payment.net_amount,
       0,
@@ -260,6 +384,8 @@ Deno.serve(async (req) => {
         unmatchedCount: unmatched.length,
         unmatchedAmount,
         ingestedCount,
+        reversalCount,
+        reversalAmount,
         unmatched: unmatched.slice(0, 100).map(compact),
         payments: mpPayments.slice(0, 500).map((payment) => ({
           ...compact(payment),
