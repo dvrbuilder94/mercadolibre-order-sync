@@ -175,14 +175,39 @@ Deno.serve(async (req) => {
       for (const row of rows ?? []) known.add(row.payment_id);
     }
 
-    const unmatched = mpPayments.filter((payment) => !known.has(payment.id));
+    const candidates = mpPayments.filter((payment) => !known.has(payment.id));
+
+    // Protect rows already linked through another workflow. A reconciliation
+    // may exist even if its meli_payment_details row is missing, and this sync
+    // must never downgrade ALLOCATED back to UNMATCHED.
+    const existingStatuses = new Map<string, string | null>();
+    const candidateIds = candidates.map((payment) => payment.id);
+    for (let i = 0; i < candidateIds.length; i += 200) {
+      const chunk = candidateIds.slice(i, i + 200);
+      const { data: rows, error } = await supabase
+        .from('payments')
+        .select('external_payment_id, status')
+        .in('external_payment_id', chunk);
+      if (error) throw error;
+      for (const row of rows ?? []) {
+        if (row.external_payment_id) existingStatuses.set(row.external_payment_id, row.status);
+      }
+    }
+
+    const unmatched = candidates.filter(
+      (payment) => existingStatuses.get(payment.id) !== 'ALLOCATED',
+    );
+    const persistable = unmatched.filter((payment) => {
+      const status = existingStatuses.get(payment.id);
+      return status === undefined || status === 'UNMATCHED';
+    });
 
     // Persist independent MP cash in the same provider-neutral ledger used by
     // Tesorería. Repeated syncs are safe, and sync-meli-payment-details will
     // later turn the same row into ALLOCATED when an order is found.
     let ingestedCount = 0;
-    for (let i = 0; i < unmatched.length; i += 200) {
-      const chunk = unmatched.slice(i, i + 200).map((payment) => ({
+    for (let i = 0; i < persistable.length; i += 200) {
+      const chunk = persistable.slice(i, i + 200).map((payment) => ({
         user_id: userId,
         payment_provider: 'MERCADOPAGO',
         external_payment_id: payment.id,
