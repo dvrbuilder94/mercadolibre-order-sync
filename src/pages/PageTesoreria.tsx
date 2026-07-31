@@ -11,6 +11,7 @@ import { fetchOrderDetail } from "@/lib/orderDetail";
 import { TesoreriaResumen } from "@/components/tesoreria/TesoreriaResumen";
 import { TesoreriaDetalle } from "@/components/tesoreria/TesoreriaDetalle";
 import { TesoreriaCargos } from "@/components/tesoreria/TesoreriaCargos";
+import { PeriodControl } from "@/components/PeriodControl";
 import {
   clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw, periodRange,
 } from "@/lib/tesoreria";
@@ -280,6 +281,8 @@ export default function PageTesoreria() {
             </button>
           </div>
         </div>
+
+        <PeriodControl period={period} />
 
         {/* Mercado Pago es la caja operativa del MVP. Aprobado y liberado se
             muestran separados para no llamar "caja disponible" a plata retenida. */}
