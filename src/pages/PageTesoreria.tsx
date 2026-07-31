@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
@@ -10,6 +10,7 @@ import { DetailPanel } from "@/components/DetailPanel";
 import { fetchOrderDetail } from "@/lib/orderDetail";
 import { TesoreriaResumen } from "@/components/tesoreria/TesoreriaResumen";
 import { TesoreriaDetalle } from "@/components/tesoreria/TesoreriaDetalle";
+import { TesoreriaCargos } from "@/components/tesoreria/TesoreriaCargos";
 import {
   clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw, periodRange,
 } from "@/lib/tesoreria";
@@ -35,8 +36,12 @@ const EMBED = `
 
 export default function PageTesoreria() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
-  const [tab, setTab] = useState<"resumen" | "detalle">("resumen");
+  const requestedTab = searchParams.get("tab");
+  const [tab, setTab] = useState<"resumen" | "detalle" | "cargos">(
+    requestedTab === "detalle" || requestedTab === "cargos" ? requestedTab : "resumen",
+  );
   const [matchFilter, setMatchFilter] = useState<"all" | "matched" | "partial" | "orphan">("all");
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<TesoreriaPaymentRaw[]>([]);
@@ -179,12 +184,19 @@ export default function PageTesoreria() {
     [payments],
   );
 
-  // Refunds and chargebacks are persisted as negative Mercado Pago movements,
-  // so the period total represents net cash flow rather than gross inflows.
-  const cashTotal = useMemo(
+  // Refunds and chargebacks are negative movements. Keep approved and released
+  // amounts separate: approval confirms the payment; release makes it available.
+  const approvedNetTotal = useMemo(
     () => cashMovements.reduce((sum, payment) => sum + payment.net, 0),
     [cashMovements],
   );
+  const releasedNetTotal = useMemo(
+    () => cashMovements
+      .filter((payment) => payment.liberado)
+      .reduce((sum, payment) => sum + payment.net, 0),
+    [cashMovements],
+  );
+  const pendingReleaseTotal = approvedNetTotal - releasedNetTotal;
   const unpaidTotal = useMemo(
     () => unpaidOrders.reduce((sum, order) => sum + (order.gross_amount || 0), 0),
     [unpaidOrders],
@@ -235,6 +247,13 @@ export default function PageTesoreria() {
   const jumpToDetailFiltered = (filter: "orphan" | "partial") => {
     setMatchFilter(filter);
     setTab("detalle");
+    setSearchParams({ tab: "detalle" }, { replace: true });
+  };
+
+  const changeTab = (value: string) => {
+    const next = value as "resumen" | "detalle" | "cargos";
+    setTab(next);
+    setSearchParams(next === "resumen" ? {} : { tab: next }, { replace: true });
   };
 
   return (
@@ -262,20 +281,18 @@ export default function PageTesoreria() {
           </div>
         </div>
 
-        {/* Mercado Pago es la caja operativa del MVP: estos controles
-            responden qué entró, qué falta y qué no se puede explicar todavía. */}
+        {/* Mercado Pago es la caja operativa del MVP. Aprobado y liberado se
+            muestran separados para no llamar "caja disponible" a plata retenida. */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
           <div className="bg-white border rounded-lg p-4">
-            <p className="text-[11px] uppercase tracking-wider text-slate-400">En caja Mercado Pago</p>
-            <p className="text-xl font-bold text-emerald-600 mt-1">{clp(cashTotal)}</p>
-            <p className="text-[11px] text-slate-400 mt-1">{cashMovements.length} movimientos con neto real</p>
+            <p className="text-[11px] uppercase tracking-wider text-slate-400">Neto aprobado MP</p>
+            <p className="text-xl font-bold text-slate-900 mt-1">{clp(approvedNetTotal)}</p>
+            <p className="text-[11px] text-slate-400 mt-1">{cashMovements.length} movimientos confirmados</p>
           </div>
           <div className="bg-white border rounded-lg p-4">
-            <p className="text-[11px] uppercase tracking-wider text-slate-400">Ventas sin pago confirmado</p>
-            <p className={`text-xl font-bold mt-1 ${unpaidOrders.length > 0 ? "text-amber-600" : "text-emerald-600"}`}>
-              {unpaidOrders.length}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-1">{clp(unpaidTotal)} bruto por explicar</p>
+            <p className="text-[11px] uppercase tracking-wider text-slate-400">Neto liberado por MP</p>
+            <p className="text-xl font-bold text-emerald-600 mt-1">{clp(releasedNetTotal)}</p>
+            <p className="text-[11px] text-slate-400 mt-1">{clp(pendingReleaseTotal)} pendiente de liberar</p>
           </div>
           <div className="bg-white border rounded-lg p-4">
             <p className="text-[11px] uppercase tracking-wider text-slate-400">Pagos sin venta</p>
@@ -287,23 +304,26 @@ export default function PageTesoreria() {
             </p>
           </div>
           <div className="bg-white border rounded-lg p-4">
-            <p className="text-[11px] uppercase tracking-wider text-slate-400">Pagadas sin DTE</p>
-            <p className={`text-xl font-bold mt-1 ${paidWithoutDte > 0 ? "text-red-600" : "text-emerald-600"}`}>
-              {paidWithoutDte}
+            <p className="text-[11px] uppercase tracking-wider text-slate-400">Ventas por explicar</p>
+            <p className={`text-xl font-bold mt-1 ${unpaidOrders.length > 0 ? "text-amber-600" : "text-emerald-600"}`}>
+              {unpaidOrders.length}
             </p>
-            <p className="text-[11px] text-slate-400 mt-1">ventas en caja sin boleta o factura vinculada</p>
+            <p className="text-[11px] text-slate-400 mt-1">
+              {clp(unpaidTotal)} bruto sin pago confirmado · {paidWithoutDte} pagadas sin DTE
+            </p>
           </div>
         </div>
 
-        <Tabs value={tab} onValueChange={(v) => setTab(v as any)}>
+        <Tabs value={tab} onValueChange={changeTab}>
           <TabsList className="mb-4">
             <TabsTrigger value="resumen">Resumen</TabsTrigger>
             <TabsTrigger value="detalle">
-              Detalle <span className="ml-1.5 text-[10px] text-slate-400">({payments.length})</span>
+              Movimientos <span className="ml-1.5 text-[10px] text-slate-400">({payments.length})</span>
             </TabsTrigger>
+            <TabsTrigger value="cargos">Cargos y comisiones</TabsTrigger>
           </TabsList>
 
-          {loading ? (
+          {loading && tab !== "cargos" ? (
             <div className="flex items-center justify-center py-24 text-slate-400 text-sm">
               <Loader2 className="h-4 w-4 animate-spin mr-2" /> Cargando tesorería…
             </div>
@@ -324,6 +344,9 @@ export default function PageTesoreria() {
                   initialMatchFilter={matchFilter}
                   onOpenOrder={openOrderDetail}
                 />
+              </TabsContent>
+              <TabsContent value="cargos">
+                <TesoreriaCargos period={period} />
               </TabsContent>
             </>
           )}
