@@ -13,14 +13,11 @@ import NotFound     from "./pages/NotFound";
 // New UX — 8 pages
 import Pipeline              from "./pages/Pipeline";
 import PageVentas            from "./pages/PageVentas";
-import PageConciliacion      from "./pages/PageConciliacion";
 import ConfigNew             from "./pages/ConfigNew";
-import PageDashboard         from "./pages/PageDashboard";
 import PageTesoreria         from "./pages/PageTesoreria";
 import PageDevoluciones      from "./pages/PageDevoluciones";
 import PageDocumentos        from "./pages/PageDocumentos";
 import PageWorkflow          from "./pages/PageWorkflow";
-import PageBilling           from "./pages/PageBilling";
 
 const queryClient = new QueryClient();
 
@@ -35,30 +32,30 @@ const App = () => (
           <Route path="/"     element={<Landing />} />
           <Route path="/auth" element={<Auth />} />
 
-          {/* App — 7 pages */}
-          <Route path="/resumen"      element={<PageDashboard />} />
+          {/* App — Tesorería es el resumen financiero y la puerta de entrada */}
+          <Route path="/resumen"      element={<Navigate to="/tesoreria" replace />} />
           <Route path="/ventas"       element={<PageVentas />} />
           <Route path="/documentos"   element={<PageDocumentos />} />
-          <Route path="/conciliacion" element={<PageConciliacion />} />
+          <Route path="/conciliacion" element={<Navigate to="/documentos" replace />} />
           <Route path="/tesoreria"     element={<PageTesoreria />} />
           <Route path="/liquidaciones" element={<Navigate to="/tesoreria" replace />} />
-          <Route path="/billing"       element={<PageBilling />} />
+          <Route path="/billing"       element={<Navigate to="/tesoreria?tab=cargos" replace />} />
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
           <Route path="/pipeline"     element={<Pipeline />} />
           <Route path="/workflow"     element={<PageWorkflow />} />
           <Route path="/arquitectura" element={<Navigate to="/workflow" replace />} />
-          <Route path="/asistente"    element={<Navigate to="/resumen" replace />} />
+          <Route path="/asistente"    element={<Navigate to="/tesoreria" replace />} />
           <Route path="/config"       element={<ConfigNew />} />
 
           {/* OAuth callbacks — DO NOT TOUCH */}
           <Route path="/meli-callback" element={<MeliCallback />} />
 
           {/* Legacy redirects */}
-          <Route path="/dashboard"        element={<Navigate to="/resumen" replace />} />
+          <Route path="/dashboard"        element={<Navigate to="/tesoreria" replace />} />
           <Route path="/sandbox-mp"       element={<Navigate to="/tesoreria" replace />} />
           <Route path="/mercadolibre"     element={<Navigate to="/ventas" replace />} />
           <Route path="/bsale"            element={<Navigate to="/ventas" replace />} />
-          <Route path="/flujo"            element={<Navigate to="/resumen" replace />} />
+          <Route path="/flujo"            element={<Navigate to="/tesoreria" replace />} />
           <Route path="/sales"            element={<Navigate to="/mercadolibre" replace />} />
           <Route path="/payments"         element={<Navigate to="/pipeline" replace />} />
           <Route path="/payments/:id"     element={<Navigate to="/pipeline" replace />} />

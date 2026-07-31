@@ -121,17 +121,17 @@ export function TesoreriaResumen({ payments, upcomingReleases, rangeIso, onJumpT
           <span className="text-slate-300 font-semibold">−</span>
           <BridgeItem label="Envío + cupones" value={clp(kpis.otras)} sub={`${kpis.otrasPct}%`} tone="red" />
           <span className="text-slate-300 font-semibold">=</span>
-          <BridgeItem label="Recibido" value={clp(kpis.received)} sub={`${kpis.netPct}%`} tone="green" />
+          <BridgeItem label="Neto aprobado" value={clp(kpis.received)} sub={`${kpis.netPct}%`} tone="green" />
         </div>
         <p className="text-[11px] text-slate-400 mt-2">
-          Recibes el {kpis.netPct}% del bruto. La comisión es {kpis.feesPct}%; el resto ({kpis.otrasPct}%) es
+          El neto aprobado equivale al {kpis.netPct}% del bruto. La comisión es {kpis.feesPct}%; el resto ({kpis.otrasPct}%) es
           principalmente envío (cross-docking) más cupones/cashback — descontado por MercadoPago, antes invisible.
         </p>
       </div>
 
       {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
-        <Kpi title="Recibido en el período" value={clp(kpis.received)} hint={`${kpis.count} pagos`} />
+        <Kpi title="Neto aprobado en el período" value={clp(kpis.received)} hint={`${kpis.count} pagos`} />
         <Kpi
           title="Comisiones pasarela"
           value={clp(kpis.fees)}
@@ -151,7 +151,7 @@ export function TesoreriaResumen({ payments, upcomingReleases, rangeIso, onJumpT
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <ChartCard title="Recibido por día" className="lg:col-span-2">
+        <ChartCard title="Neto aprobado por día" className="lg:col-span-2">
           {dailySeries.length === 0 ? (
             <EmptyChart />
           ) : (

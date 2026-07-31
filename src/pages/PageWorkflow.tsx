@@ -231,10 +231,9 @@ export default function PageWorkflow() {
   const stepLast = (key: string): Run | undefined => runsByStep[key]?.[0];
 
   const presentation = [
-    { to: "/resumen",      label: "Resumen mensual" },
-    { to: "/ventas",       label: "Ventas + alertas" },
-    { to: "/conciliacion", label: "Conciliación de docs" },
-    { to: "/tesoreria",    label: "Tesorería · payout" },
+    { to: "/tesoreria",   label: "Tesorería" },
+    { to: "/ventas",      label: "Ventas + alertas" },
+    { to: "/documentos",  label: "Revisar documentos" },
   ];
 
   return (
