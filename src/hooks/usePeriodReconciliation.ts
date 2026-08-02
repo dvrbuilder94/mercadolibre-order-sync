@@ -4,20 +4,13 @@ import type { PeriodReconciliation } from '@/types/reconciliation';
 import { SCORE_OK, HARD_MATCH_SOURCES } from '@/lib/constants';
 import { orderHasDoc } from '@/lib/taxDocs';
 import { NON_SALE_STATUSES_PG } from '@/lib/orderStatus';
+import { chileMonthIsoRange } from '@/lib/chileDate';
 
 const CHANNEL_LABEL: Record<string, string> = {
   meli: 'MercadoLibre', falabella: 'Falabella', paris: 'Paris',
   ripley: 'Ripley', shopify: 'Shopify', woocommerce: 'WooCommerce',
 };
 const channelLabel = (id: string) => CHANNEL_LABEL[id] ?? id;
-
-const periodRange = (periodo: string) => {
-  const [y, m] = periodo.split('-').map(Number);
-  return {
-    from: `${y}-${String(m).padStart(2, '0')}-01T00:00:00`,
-    to:   new Date(y, m, 0).toISOString().slice(0, 10) + 'T23:59:59',
-  };
-};
 
 export function usePeriodReconciliation(canalId: string, periodo: string) {
   const [data, setData]       = useState<PeriodReconciliation | null>(null);
@@ -31,7 +24,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
 
     async function load() {
       try {
-        const { from, to } = periodRange(periodo);
+        const { from, to, toExclusive } = chileMonthIsoRange(periodo);
         const PAGE = 1000;
 
         // ── 1. Paginate all non-cancelled orders in period ────────────────────
@@ -51,7 +44,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
                 order_tax_documents(id, match_score, match_source, tax_documents(status))
               `)
               .gte('order_date', from)
-              .lte('order_date', to)
+              .lt('order_date', toExclusive)
               .not('status', 'in', NON_SALE_STATUSES_PG);
             if (canalId !== 'todos') q = q.eq('channel', canalId as any);
             // .range() pagination needs a deterministic sort, otherwise Postgres
@@ -78,7 +71,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               .from('orders')
               .select('channel, gross_amount')
               .gte('order_date', from)
-              .lte('order_date', to)
+              .lt('order_date', toExclusive)
               .not('status', 'in', NON_SALE_STATUSES_PG)
               .order('order_date', { ascending: false })
               .order('id', { ascending: true })
@@ -170,8 +163,8 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
               .from('payments')
               .select('id, net_amount, payment_date')
               .in('status', ['REFUND', 'CHARGEBACK'])
-              .gte('payment_date', from.slice(0, 10))
-              .lte('payment_date', to.slice(0, 10))
+              .gte('payment_date', from)
+              .lt('payment_date', toExclusive)
               .order('payment_date', { ascending: false })
               .order('id', { ascending: true })
               .range(offset, offset + PAGE - 1);
@@ -353,7 +346,7 @@ export function usePeriodReconciliation(canalId: string, periodo: string) {
           .select('tax_document_id, orders!inner(order_date, channel)')
           .eq('status', 'pending')
           .gte('orders.order_date', from)
-          .lte('orders.order_date', to);
+          .lt('orders.order_date', toExclusive);
         if (canalId !== 'todos') candQuery = candQuery.eq('orders.channel', canalId as any);
         const { data: candRows } = await candQuery;
         const candidatosPendientes = new Set((candRows ?? []).map((r: any) => r.tax_document_id)).size;
