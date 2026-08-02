@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { chileMonthUnixRange } from "@/lib/chileDate";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
+import { isPaymentReleased, signedTaxDocumentAmount } from "@/lib/financialRules";
+import { isRealSale } from "@/lib/orderStatus";
 
 const PAGE_SIZE = 50;
 
@@ -72,8 +74,8 @@ function inferChannel(detected: string | null, rawData: any): string | null {
 const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
 // Estado consolidado de liberación de pago para las ventas (orders) de un documento.
-// "Liberado" sólo cuando TODAS las ventas tienen dato exacto de MercadoPago
-// (has_exact_data=true). "Parcial" cuando algunas sí y otras no — ese es el caso
+// "Liberado" sólo cuando TODAS las ventas tienen dato exacto de MercadoPago y
+// su fecha de liberación ya llegó. "Parcial" cuando algunas sí y otras no — ese es el caso
 // que importa al contador: boleta emitida con parte del pago aún sin liberar.
 type ReleaseInfo = { state: 'liberado' | 'parcial' | 'pendiente' | 'sin_venta' | 'cancelada'; label: string; dot: string; text: string };
 function releaseInfo(orders: any[] | undefined, cancelledMatch?: any): ReleaseInfo {
@@ -82,14 +84,14 @@ function releaseInfo(orders: any[] | undefined, cancelledMatch?: any): ReleaseIn
       return { state: 'cancelada', label: 'Venta cancelada · revisar NC', dot: 'bg-red-400', text: 'text-red-500' };
     return { state: 'sin_venta', label: 'Sin venta asociada', dot: 'bg-slate-300', text: 'text-slate-400' };
   }
-  const confirmed = orders.filter(o => o?.has_exact_data === true);
-  if (confirmed.length === orders.length) {
-    const latest = confirmed.map(o => o.money_release_date).filter(Boolean).sort().pop();
+  const released = orders.filter(o => isPaymentReleased(o));
+  if (released.length === orders.length) {
+    const latest = released.map(o => o.money_release_date).filter(Boolean).sort().pop();
     return { state: 'liberado', label: latest ? `Liberado · ${fmtDay(latest)}` : 'Liberado', dot: 'bg-emerald-500', text: 'text-emerald-600' };
   }
-  if (confirmed.length === 0)
+  if (released.length === 0)
     return { state: 'pendiente', label: 'Pendiente', dot: 'bg-slate-300', text: 'text-slate-400' };
-  return { state: 'parcial', label: `Parcial · ${confirmed.length} de ${orders.length}`, dot: 'bg-amber-500', text: 'text-amber-600' };
+  return { state: 'parcial', label: `Parcial · ${released.length} de ${orders.length}`, dot: 'bg-amber-500', text: 'text-amber-600' };
 }
 
 // Dónde quedó la plata liberada. has_exact_data sólo lo marca en true
@@ -102,13 +104,13 @@ function releaseLocation(orders: any[] | undefined): string {
   return '—';
 }
 
-// Suma de comisiones reales de las ventas de un documento. allReal=false marca
-// que al menos una venta usa comisión estimada (pago aún no liberado).
-function commissionOf(orders: any[] | undefined): { total: number; allReal: boolean; hasAny: boolean } {
-  if (!orders || orders.length === 0) return { total: 0, allReal: false, hasAny: false };
+// Suma de comisiones de las ventas de un documento. allReleased=false marca
+// que al menos una venta todavía no tiene su dinero disponible.
+function commissionOf(orders: any[] | undefined): { total: number; allReleased: boolean; hasAny: boolean } {
+  if (!orders || orders.length === 0) return { total: 0, allReleased: false, hasAny: false };
   const total = orders.reduce((s, o) => s + Math.abs(o?.commission_amount ?? 0), 0);
-  const allReal = orders.every(o => o?.has_exact_data === true);
-  return { total, allReal, hasAny: true };
+  const allReleased = orders.every(o => isPaymentReleased(o));
+  return { total, allReleased, hasAny: true };
 }
 
 const FINANCIAL_COLS = "id, order_id, order_date, gross_amount, net_amount, commission_amount, money_release_date, has_exact_data, status";
@@ -248,7 +250,7 @@ export default function PageDocumentos() {
       // lado del cliente — y de paso esto deja todos los KPIs consistentes
       // con el filtro de canal activo, en vez de cubrir siempre el período
       // completo sin importar el chip seleccionado.
-      const LIGHT_COLS = "id, document_date, total_amount, tax_amount, status, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references, order_tax_documents(order_id, orders(status))";
+      const LIGHT_COLS = "id, document_type, document_date, total_amount, tax_amount, status, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references, order_tax_documents(order_id, orders(status))";
       const allDocs: any[] = [];
       for (let page = 0; page < 20; page++) {
         const { data } = await (supabase.from("tax_documents") as any)
@@ -268,25 +270,30 @@ export default function PageDocumentos() {
 
       setDocsTotal(filtered.length);
       const issued = filtered.filter(d => d.status === "issued");
-      setDocsSum(issued.reduce((s, d) => s + (Number(d.total_amount) || 0), 0));
-      setDocsIva(issued.reduce((s, d) => s + (Number(d.tax_amount) || 0), 0));
+      setDocsSum(issued.reduce((s, d) => s + signedTaxDocumentAmount(d.document_type, d.total_amount), 0));
+      setDocsIva(issued.reduce((s, d) => s + signedTaxDocumentAmount(d.document_type, d.tax_amount), 0));
       // Un link a una orden cancelada no cuenta como "venta vinculada": la boleta
       // sigue emitida pero sin venta real detrás (ver Phase 0C/0D de auto-reconcile).
-      const isRealLink = (l: any) => l.orders?.status !== 'cancelled';
-      setDocsMeliCount(filtered.filter(d => (d.order_tax_documents ?? []).some(isRealLink)).length);
+      const linkedOrderStatus = (link: any) => {
+        const order = Array.isArray(link.orders) ? link.orders[0] : link.orders;
+        return order?.status;
+      };
+      const isRealLink = (l: any) => isRealSale(linkedOrderStatus(l));
+      const vigenteDocs = filtered.filter(d => d.status !== "voided");
+      setDocsMeliCount(vigenteDocs.filter(d => (d.order_tax_documents ?? []).some(isRealLink)).length);
 
       const linkedOrderIds = [...new Set(
-        filtered.flatMap(d => (d.order_tax_documents ?? []).filter(isRealLink).map((l: any) => l.order_id)).filter(Boolean)
+        vigenteDocs.flatMap(d => (d.order_tax_documents ?? []).filter(isRealLink).map((l: any) => l.order_id)).filter(Boolean)
       )];
-      // Sólo se suma como comisión confirmada la de órdenes con has_exact_data=true;
-      // las estimadas no se mezclan en el KPI, sólo se cuentan como pendientes.
+      // Sólo se suma como comisión cobrada la de órdenes cuyo pago ya fue
+      // liberado. Dato exacto y dinero disponible son conceptos distintos.
       let comReal = 0, pending = 0;
       for (let i = 0; i < linkedOrderIds.length; i += 300) {
         const { data: ords } = await supabase
-          .from("orders").select("commission_amount, has_exact_data")
+          .from("orders").select("commission_amount, has_exact_data, money_release_date")
           .in("id", linkedOrderIds.slice(i, i + 300));
         for (const o of (ords ?? []) as any[]) {
-          if (o.has_exact_data === true) comReal += Math.abs(o.commission_amount ?? 0);
+          if (isPaymentReleased(o)) comReal += Math.abs(o.commission_amount ?? 0);
           else pending++;
         }
       }
@@ -436,8 +443,8 @@ export default function PageDocumentos() {
                 // Una orden cancelada vinculada (Phase 0C/0D de auto-reconcile) no es
                 // venta real: se separa para que ni el conteo ni la comisión/liberación
                 // la mezclen con ventas confirmadas.
-                const realOrders = linkedOrders.filter(o => o.status !== "cancelled");
-                const cancelledLinked = linkedOrders.filter(o => o.status === "cancelled");
+                const realOrders = linkedOrders.filter(o => isRealSale(o.status));
+                const cancelledLinked = linkedOrders.filter(o => !isRealSale(o.status));
                 const cancelledForDisplay = cancelledLinked[0] ?? d._cancelledMatch;
                 const linkCount = realOrders.length;
                 const isPack = linkedOrders.length > 1;
@@ -475,7 +482,7 @@ export default function PageDocumentos() {
                       <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.net_amount)}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-xs">
                         {com.hasAny
-                          ? <span className={com.allReal ? "text-slate-700" : "text-slate-400 italic"}>{CLP(com.total)}</span>
+                          ? <span className={com.allReleased ? "text-slate-700" : "text-slate-400 italic"}>{CLP(com.total)}</span>
                           : <span className="text-slate-300">—</span>}
                       </td>
                       <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.tax_amount)}</td>
@@ -507,7 +514,7 @@ export default function PageDocumentos() {
                     </tr>
 
                     {isPack && isOpen && linkedOrders.map((o: any) => {
-                      const oCancelled = o.status === "cancelled";
+                      const oCancelled = !isRealSale(o.status);
                       const orel = oCancelled
                         ? { dot: 'bg-red-400', text: 'text-red-500', label: 'Cancelada · revisar NC' }
                         : releaseInfo([o]);
@@ -525,7 +532,7 @@ export default function PageDocumentos() {
                             {oCancelled ? (
                               <span className="text-slate-300">—</span>
                             ) : (
-                              <span className={o.has_exact_data ? "text-slate-600" : "text-slate-400 italic"}>{CLP(Math.abs(o.commission_amount ?? 0))}</span>
+                              <span className={isPaymentReleased(o) ? "text-slate-600" : "text-slate-400 italic"}>{CLP(Math.abs(o.commission_amount ?? 0))}</span>
                             )}
                           </td>
                           <td></td>

@@ -155,10 +155,9 @@ export default function PageVentas() {
       setStuckCount(stuckRows.length);
       setStuckSum(stuckRows.reduce((s, r) => s + (r.gross_amount ?? 0), 0));
 
-      const { data: sumRows } = await applyBase(supabase.from("orders").select("gross_amount.sum()"));
-      const rawSum = (sumRows as any)?.[0];
-      const parsedSum = rawSum != null ? Number(rawSum?.sum ?? rawSum?.gross_amount) : NaN;
-      setOrdersSum(Number.isFinite(parsedSum) ? parsedSum : null);
+      // PostgREST aggregates are disabled in this project. Reuse the exact same
+      // rows that feed the order count so count and amount cannot drift apart.
+      setOrdersSum(scopeRows.reduce((sum, order) => sum + (Number(order.gross_amount) || 0), 0));
 
       // Descartadas del período (mismo canal, sin filtro de búsqueda/documento):
       // se muestran como contexto pero no suman a ningún total.

@@ -134,9 +134,14 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
   const channels = Array.from(
     new Set(links.map((l) => l.orders?.channel).filter(Boolean) as string[]),
   );
+  const rawRelease =
+    p.raw_data?.money_release_date ||
+    p.raw_data?.mp_payment?.money_release_date ||
+    null;
   const releaseDates = links
     .map((l) => l.orders?.money_release_date)
     .filter(Boolean) as string[];
+  if (rawRelease) releaseDates.push(rawRelease);
   const release =
     releaseDates.length > 0
       ? releaseDates.reduce((a, b) => (new Date(a) > new Date(b) ? a : b))
@@ -160,6 +165,8 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
       ref !== 0 && Math.abs(allocatedSum - ref) <= tolerance ? "matched" : "partial";
   }
 
+  const isReversal = p.status === "REFUND" || p.status === "CHARGEBACK";
+
   return {
     id: p.id,
     paymentId: p.external_payment_id || p.id.slice(0, 8),
@@ -174,7 +181,9 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     installments,
     channels,
     releaseDate: release,
-    liberado: release ? new Date(release) <= new Date() : true,
+    // A refund/chargeback is effective when its negative ledger movement is
+    // recorded. Other movements without a confirmed release date stay pending.
+    liberado: isReversal || (release ? new Date(release) <= new Date() : false),
     exactRelease,
     sales,
     allocatedSum,
