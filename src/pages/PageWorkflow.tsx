@@ -16,7 +16,7 @@ import {
 import {
   runHealth, relativeAgo, type HealthLevel, type RunLike,
 } from "@/lib/systemHealth";
-import { chileMonthUnixRange } from "@/lib/chileDate";
+import { chileMonthIsoRange, chileMonthUnixRange, chilePeriodNow } from "@/lib/chileDate";
 
 // ── Workflow: unifica "Mapa del sistema" + "Sincronización" en un timeline
 // vertical. Cada paso muestra salud real (de pipeline_sync_runs) y un drawer
@@ -44,13 +44,6 @@ interface StepDef {
   output: string;
 }
 
-const periodRange = (p: string) => {
-  const [y, m] = p.split("-").map(Number);
-  return {
-    from: format(new Date(y, m - 1, 1), "yyyy-MM-dd"),
-    to:   format(new Date(y, m, 0),     "yyyy-MM-dd"),
-  };
-};
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
   return format(new Date(y, m - 1, 1), "MMMM yyyy", { locale: es });
@@ -65,8 +58,8 @@ const STEPS: StepDef[] = [
     fn: "sync-meli-orders",
     output: "→ orders",
     bodyBuilder: (p) => {
-      const { from, to } = periodRange(p);
-      return { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59`, max_pages: 50 };
+      const { from, to } = chileMonthIsoRange(p);
+      return { date_from: from, date_to: to, max_pages: 50 };
     },
   },
   {
@@ -77,8 +70,8 @@ const STEPS: StepDef[] = [
     fn: "sync-meli-payment-details",
     output: "→ meli_payment_details",
     bodyBuilder: (p) => {
-      const { from, to } = periodRange(p);
-      return { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59`, limit: 50 };
+      const { from, to } = chileMonthIsoRange(p);
+      return { date_from: from, date_to: to, limit: 50 };
     },
   },
   {
@@ -110,8 +103,8 @@ const STEPS: StepDef[] = [
     fn: "auto-reconcile",
     output: "→ order_tax_documents",
     bodyBuilder: (p) => {
-      const { from, to } = periodRange(p);
-      return { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59` };
+      const { from, to } = chileMonthIsoRange(p);
+      return { date_from: from, date_to: to };
     },
   },
 ];
@@ -145,7 +138,7 @@ function summarize(step: string, detail: any): string {
 
 export default function PageWorkflow() {
   const navigate = useNavigate();
-  const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [period, setPeriod] = useState(chilePeriodNow);
   const [loading, setLoading] = useState(true);
   const [runsByStep, setRunsByStep] = useState<Record<string, Run[]>>({});
   const [running, setRunning] = useState<Record<string, boolean>>({});
