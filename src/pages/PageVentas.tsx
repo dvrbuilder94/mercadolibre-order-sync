@@ -14,16 +14,13 @@ import { linkIsVigente } from "@/lib/taxDocs";
 import { NON_SALE_STATUSES, NON_SALE_STATUSES_PG } from "@/lib/orderStatus";
 import { isLiquidacionStuck, daysSince } from "@/lib/liquidacion";
 import { ORDER_DETAIL_SELECT } from "@/lib/orderDetail";
+import { chileMonthIsoRange, chilePeriodNow } from "@/lib/chileDate";
 
 const PAGE_SIZE = 50;
 
 const CLP = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
 
-const periodRange = (p: string) => {
-  const [y, m] = p.split("-").map(Number);
-  return { from: format(new Date(y, m - 1, 1), "yyyy-MM-dd"), to: format(new Date(y, m, 0), "yyyy-MM-dd") };
-};
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
   return format(new Date(y, m - 1, 1), "MMMM yyyy", { locale: es });
@@ -63,7 +60,7 @@ const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
 export default function PageVentas() {
   const navigate = useNavigate();
-  const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [period, setPeriod] = useState(chilePeriodNow);
   const [channelFilter, setChannelFilter] = useState<string>("todos");
 
   // Orders tab
@@ -104,8 +101,7 @@ export default function PageVentas() {
   const fetchOrders = useCallback(async (p: number) => {
     setOrdersLoading(true);
     try {
-      const { from, to } = periodRange(period);
-      const f = from + "T00:00:00", t = to + "T23:59:59";
+      const { from: f, toExclusive } = chileMonthIsoRange(period);
       const applyChannel = (q: any) => channelFilter !== "todos" ? q.eq("channel", channelFilter) : q;
       const applySearch = (q: any) => {
         const term = orderSearch.replace(/[,()]/g, "");
@@ -115,7 +111,7 @@ export default function PageVentas() {
       // Las ventas descartadas (canceladas, rechazadas, inválidas) no entran a
       // ningún total — la plata nunca entró. Se cuentan aparte para la tarjeta.
       const applyBase = (q: any) =>
-        applySearch(applyChannel(q.gte("order_date", f).lte("order_date", t).not("status", "in", NON_SALE_STATUSES_PG)));
+        applySearch(applyChannel(q.gte("order_date", f).lt("order_date", toExclusive).not("status", "in", NON_SALE_STATUSES_PG)));
 
       // Don't use !left(id) + is-null as an anti-join here: in PostgREST that
       // filter only restricts which NESTED rows show up, not which top-level
@@ -163,7 +159,7 @@ export default function PageVentas() {
       // se muestran como contexto pero no suman a ningún total.
       let discQ = supabase.from("orders")
         .select("gross_amount", { count: "exact" })
-        .gte("order_date", f).lte("order_date", t)
+        .gte("order_date", f).lt("order_date", toExclusive)
         .in("status", NON_SALE_STATUSES as unknown as string[]);
       if (channelFilter !== "todos") discQ = discQ.eq("channel", channelFilter as any);
       const { data: discRows, count: discCount } = await discQ;
@@ -207,9 +203,9 @@ export default function PageVentas() {
       // Sync the period currently being viewed, not the function's "last 30
       // days" default — otherwise clicking sync while looking at an older
       // month silently fetches recent orders instead and nothing changes.
-      const { from, to } = periodRange(period);
+      const { from, to } = chileMonthIsoRange(period);
       const { data, error } = await supabase.functions.invoke("sync-meli-orders", {
-        body: { date_from: from + "T00:00:00", date_to: to + "T23:59:59", max_pages: 50 },
+        body: { date_from: from, date_to: to, max_pages: 50 },
       });
       if (error) throw error;
       setOrderSyncMsg(`✅ ${data?.synced || 0} órdenes`);
