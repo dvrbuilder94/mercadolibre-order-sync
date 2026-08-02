@@ -1,49 +1,21 @@
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { chileMonthIsoRange, chileMonthUnixRange } from '../_shared/chile-date.ts';
+import { isInternalRequest, unauthorizedJson } from '../_shared/internal-request.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-cron-secret, x-client-info, apikey, content-type',
 };
 
 // Runs the Pipeline's 6 steps (Sync MeLi → Sync pagos por orden → Caja MP →
 // Sync Bsale → RUTs → Conciliar) for every connected account, on a pg_cron
-// schedule (no JWT, service role — same pattern as cron-refresh-meli-tokens).
+// schedule (internal credential + service role).
 // Scoped to the
 // current + previous month, since that's what actually needs to stay fresh.
 //
 // Each step is just the existing user-facing edge function, called with the
 // service-role key + an explicit user_id (see _shared/auth.ts) instead of a
 // user session — the business logic isn't duplicated here.
-
-// --- Chile wall-clock helpers (mirrors src/lib/chileDate.ts; duplicated
-// because edge functions can't import from src/) ---
-function chileWallToUnix(year: number, month: number, day: number, hour: number, min: number, sec: number): number {
-  let ts = Date.UTC(year, month - 1, day, hour, min, sec);
-  const target = ts;
-  for (let i = 0; i < 3; i++) {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/Santiago',
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-      hour12: false,
-    }).formatToParts(new Date(ts));
-    const get = (t: string) => Number(parts.find(p => p.type === t)!.value);
-    const curr = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'));
-    const diff = target - curr;
-    if (diff === 0) break;
-    ts += diff;
-  }
-  return Math.floor(ts / 1000);
-}
-
-function chileMonthUnixRange(period: string): { from: number; to: number } {
-  const [y, m] = period.split('-').map(Number);
-  const lastDay = new Date(y, m, 0).getDate();
-  return {
-    from: chileWallToUnix(y, m, 1, 0, 0, 0),
-    to: chileWallToUnix(y, m, lastDay, 23, 59, 59),
-  };
-}
 
 function chilePeriodNow(): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -58,13 +30,6 @@ function shiftPeriod(period: string, delta: number): string {
   const [y, m] = period.split('-').map(Number);
   const d = new Date(y, m - 1 + delta, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
-
-function periodRange(period: string): { from: string; to: string } {
-  const [y, m] = period.split('-').map(Number);
-  const lastDay = new Date(y, m, 0).getDate();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return { from: `${y}-${pad(m)}-01`, to: `${y}-${pad(m)}-${pad(lastDay)}` };
 }
 
 // --- Step invocation ---
@@ -213,6 +178,10 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
+  if (req.method !== 'POST') {
+    return new Response(null, { status: 405, headers: corsHeaders });
+  }
+  if (!await isInternalRequest(req)) return unauthorizedJson(corsHeaders);
 
   const admin = createClient(
     Deno.env.get('SUPABASE_URL') ?? '',
@@ -250,9 +219,7 @@ Deno.serve(async (req) => {
 
   outer: for (const period of periods) {
     if (!timeLeft()) { console.log('[cron-pipeline-sync] time budget exceeded, stopping'); break outer; }
-    const { from, to } = periodRange(period);
-    const dateFrom = `${from}T00:00:00`;
-    const dateTo = `${to}T23:59:59`;
+    const { from: dateFrom, to: dateTo } = chileMonthIsoRange(period);
 
     // 1 & 2: per MELI account — Sync MeLi, Sync pagos
     for (const acc of accounts) {
@@ -298,7 +265,6 @@ Deno.serve(async (req) => {
       periods,
       steps_run: results.length,
       steps_failed: failed.length,
-      results,
     }),
     { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
   );
