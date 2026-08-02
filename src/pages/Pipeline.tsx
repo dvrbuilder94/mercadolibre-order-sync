@@ -10,7 +10,7 @@ import {
   History, CheckCircle2, XCircle, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { RawApiExtractor } from "@/components/RawApiExtractor";
-import { chileMonthUnixRange } from "@/lib/chileDate";
+import { chileMonthDateRange, chileMonthIsoRange, chileMonthUnixRange, chilePeriodNow } from "@/lib/chileDate";
 import { orderHasDoc } from "@/lib/taxDocs";
 import { isRealSale } from "@/lib/orderStatus";
 
@@ -85,17 +85,9 @@ const periodLabel = (p: string) => {
 const clp = (n: number) =>
   new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n || 0);
 
-const periodRange = (p: string) => {
-  const [y, m] = p.split("-").map(Number);
-  return {
-    from: format(new Date(y, m - 1, 1), "yyyy-MM-dd"),
-    to:   format(new Date(y, m, 0),     "yyyy-MM-dd"),
-  };
-};
-
 export default function Pipeline() {
   const navigate = useNavigate();
-  const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [period, setPeriod] = useState(chilePeriodNow);
   const [stats, setStats] = useState<Stats>({
     orders: 0, total: 0, cancelled: 0,
     docs: 0, docsBoleta: 0, docsFactura: 0, docsNC: 0,
@@ -143,7 +135,8 @@ export default function Pipeline() {
   const fetchStats = useCallback(async () => {
     setLoading(true);
     try {
-      const { from, to } = periodRange(period);
+      const { from, toExclusive } = chileMonthIsoRange(period);
+      const dateRange = chileMonthDateRange(period);
       const PAGE = 1000;
       let offset = 0;
       const orders: any[] = [];
@@ -151,8 +144,8 @@ export default function Pipeline() {
         const { data, error: ordersErr } = await supabase
           .from("orders")
           .select("id, status, has_exact_data, order_tax_documents(id, tax_documents(status))")
-          .gte("order_date", from + "T00:00:00")
-          .lte("order_date", to   + "T23:59:59")
+          .gte("order_date", from)
+          .lt("order_date", toExclusive)
           .order("id", { ascending: true })
           .range(offset, offset + PAGE - 1);
         if (ordersErr) throw ordersErr;
@@ -165,8 +158,8 @@ export default function Pipeline() {
       const docBase = () => supabase
         .from("tax_documents")
         .select("*", { count: "exact", head: true })
-        .gte("document_date", from)
-        .lte("document_date", to)
+        .gte("document_date", dateRange.from)
+        .lte("document_date", dateRange.to)
         .eq("status", "issued");
       const [docTotal, docBoleta, docFactura, docNC] = await Promise.all([
         docBase(),
@@ -230,11 +223,11 @@ export default function Pipeline() {
 
   const syncML = async () => {
     setSyncingML(true);
-    const { from, to } = periodRange(period);
+    const { from, to } = chileMonthIsoRange(period);
     addLog(`› Sincronizando MercadoLibre (${periodLabel(period)})...`);
     try {
       const { data, error } = await supabase.functions.invoke("sync-meli-orders", {
-        body: { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59`, max_pages: 50 },
+        body: { date_from: from, date_to: to, max_pages: 50 },
       });
       if (error) throw error;
       const synced = data?.synced ?? 0;
@@ -259,14 +252,14 @@ export default function Pipeline() {
     // Scope to the period currently open in the UI — without date_from/date_to
     // the edge function defaults to "most recent 50 orders without exact data",
     // which silently processes the wrong month when viewing past periods.
-    const { from, to } = periodRange(period);
+    const { from, to } = chileMonthIsoRange(period);
     let totalLinked = 0;
     let round = 0;
     try {
       while (true) {
         round++;
         const { data, error } = await supabase.functions.invoke("sync-meli-payment-details", {
-          body: { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59`, limit: 50 },
+          body: { date_from: from, date_to: to, limit: 50 },
         });
         if (error) throw error;
         totalLinked += data?.paymentsLinked ?? 0;
@@ -377,11 +370,11 @@ export default function Pipeline() {
 
   const reconcile = async () => {
     setReconciling(true);
-    const { from, to } = periodRange(period);
+    const { from, to } = chileMonthIsoRange(period);
     addLog(`› Conciliando ${periodLabel(period)}...`);
     try {
       const { data, error } = await supabase.functions.invoke("auto-reconcile", {
-        body: { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59` },
+        body: { date_from: from, date_to: to },
       });
       if (error) throw error;
       const s3 = data?.stage3_order_taxdoc || {};
@@ -422,7 +415,7 @@ export default function Pipeline() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Sesión expirada");
-      const { from, to } = periodRange(period);
+      const { from, to, toExclusive } = chileMonthIsoRange(period);
       const CHUNK = 200;
       const PAGE = 1000;
 
@@ -432,7 +425,7 @@ export default function Pipeline() {
       while (true) {
         const { data, error } = await supabase
           .from("orders").select("id")
-          .gte("order_date", from + "T00:00:00").lte("order_date", to + "T23:59:59")
+          .gte("order_date", from).lt("order_date", toExclusive)
           .order("id", { ascending: true }).range(offset, offset + PAGE - 1);
         if (error) throw error;
         const batch = (data || []) as any[];
@@ -507,13 +500,13 @@ export default function Pipeline() {
     addLog("› Enriqueciendo RUTs desde API de ML...");
     // Same date-scope issue as syncPayments: without bounds this defaults to
     // the 150 most recent orders, ignoring the period shown in the UI.
-    const { from, to } = periodRange(period);
+    const { from, to } = chileMonthIsoRange(period);
     let totalEnriched = 0; let round = 0;
     try {
       while (true) {
         round++;
         const { data, error } = await supabase.functions.invoke("enrich-meli-billing", {
-          body: { date_from: `${from}T00:00:00`, date_to: `${to}T23:59:59` },
+          body: { date_from: from, date_to: to },
         });
         if (error) throw error;
         const enriched  = data?.enriched ?? 0;
