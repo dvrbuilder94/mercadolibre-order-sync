@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { HttpInputError, readJsonBody } from '../_shared/http.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -6,7 +7,7 @@ const corsHeaders = {
 }
 
 interface BsaleWebhookPayload {
-  cpnId: string
+  cpnId: string | number
   topic: string
   resourceId: number
   action: string
@@ -16,7 +17,7 @@ interface BsaleAccount {
   id: string
   user_id: string
   access_token: string
-  cpn_id: string | null
+  cpn_id: string
 }
 
 // Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
@@ -63,7 +64,7 @@ async function resolveBsaleAccount(
   supabase: ReturnType<typeof createClient>,
   cpnId: string,
   resourceId: number,
-): Promise<{ bsaleAccount: BsaleAccount | null; bsaleResponse: Response | null; resolvedBy: string }> {
+): Promise<{ bsaleAccount: BsaleAccount | null; bsaleResponse: Response | null }> {
   const normalizedCpnId = String(cpnId)
 
   const { data: exactAccount, error: accountError } = await supabase
@@ -75,68 +76,26 @@ async function resolveBsaleAccount(
 
   if (accountError) {
     console.error('Error looking up Bsale account by cpnId:', normalizedCpnId, accountError)
+    return { bsaleAccount: null, bsaleResponse: null }
   }
 
-  if (exactAccount) {
-    const exactResponse = await fetchBsaleDocument(exactAccount.access_token, resourceId)
-    if (exactResponse.ok) {
-      return { bsaleAccount: exactAccount, bsaleResponse: exactResponse, resolvedBy: 'cpn_id' }
-    }
+  if (!exactAccount) return { bsaleAccount: null, bsaleResponse: null }
 
-    console.warn('Exact cpnId match found but document fetch failed:', normalizedCpnId, exactResponse.status)
+  // Never probe a resource against other tenant tokens. The public webhook
+  // identifies its tenant exclusively by the cpnId registered at connection.
+  return {
+    bsaleAccount: exactAccount as BsaleAccount,
+    bsaleResponse: await fetchBsaleDocument(exactAccount.access_token, resourceId),
   }
-
-  const { data: candidateAccounts, error: candidatesError } = await supabase
-    .from('bsale_accounts')
-    .select('id, user_id, access_token, cpn_id')
-    .eq('status', 'connected')
-    .order('updated_at', { ascending: false })
-    .limit(10)
-
-  if (candidatesError || !candidateAccounts?.length) {
-    console.error('No fallback Bsale accounts available:', candidatesError)
-    return { bsaleAccount: null, bsaleResponse: null, resolvedBy: 'not_found' }
-  }
-
-  for (const candidate of candidateAccounts) {
-    if (exactAccount && candidate.id === exactAccount.id) continue
-
-    const candidateResponse = await fetchBsaleDocument(candidate.access_token, resourceId)
-    if (!candidateResponse.ok) continue
-
-    console.warn('Recovered Bsale webhook using fallback account lookup:', {
-      resourceId,
-      webhookCpnId: normalizedCpnId,
-      storedCpnId: candidate.cpn_id,
-      bsaleAccountId: candidate.id,
-    })
-
-    if (candidate.cpn_id !== normalizedCpnId) {
-      const { error: healError } = await supabase
-        .from('bsale_accounts')
-        .update({
-          cpn_id: normalizedCpnId,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', candidate.id)
-
-      if (healError) {
-        console.error('Failed to self-heal Bsale cpn_id mapping:', healError)
-      } else {
-        console.log('Self-healed Bsale cpn_id mapping:', candidate.id, '=>', normalizedCpnId)
-      }
-    }
-
-    return { bsaleAccount: candidate, bsaleResponse: candidateResponse, resolvedBy: 'document_probe' }
-  }
-
-  return { bsaleAccount: null, bsaleResponse: null, resolvedBy: 'not_found' }
 }
 
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
+  }
+  if (req.method !== 'POST') {
+    return new Response(null, { status: 405, headers: corsHeaders })
   }
 
   console.log('Bsale webhook received')
@@ -147,10 +106,22 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseKey)
 
     // Parse webhook payload
-    const payload: BsaleWebhookPayload = await req.json()
-    console.log('Webhook payload:', JSON.stringify(payload))
+    const payload = await readJsonBody<BsaleWebhookPayload>(req)
 
     const { cpnId, topic, resourceId, action } = payload
+    const normalizedCpnId = String(cpnId)
+
+    if (
+      !['string', 'number'].includes(typeof cpnId) || !/^\d{1,30}$/.test(normalizedCpnId) ||
+      typeof topic !== 'string' ||
+      !Number.isSafeInteger(resourceId) || resourceId <= 0 ||
+      typeof action !== 'string'
+    ) {
+      return new Response(JSON.stringify({ error: 'Invalid notification data' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
     // Only process document webhooks (POST = created, PUT = updated)
     if (topic !== 'document') {
@@ -168,17 +139,17 @@ Deno.serve(async (req) => {
       })
     }
 
-    const { bsaleAccount, bsaleResponse, resolvedBy } = await resolveBsaleAccount(supabase, String(cpnId), Number(resourceId))
+    const { bsaleAccount, bsaleResponse } = await resolveBsaleAccount(supabase, normalizedCpnId, resourceId)
 
     if (!bsaleAccount || !bsaleResponse) {
-      console.error('Bsale account not found for cpnId:', cpnId, 'resourceId:', resourceId, 'resolvedBy:', resolvedBy)
+      console.error('Bsale account not found for cpnId:', cpnId)
       return new Response(JSON.stringify({ message: 'Acknowledged' }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
 
-    console.log('Found bsale account for user:', bsaleAccount.user_id, 'resolvedBy:', resolvedBy)
+    console.log('Found exact Bsale account for webhook tenant')
 
     if (!bsaleResponse.ok) {
       console.error('Failed to fetch document from Bsale:', bsaleResponse.status)
@@ -425,8 +396,11 @@ Deno.serve(async (req) => {
 
   } catch (error) {
     console.error('Webhook error:', error)
-    return new Response(JSON.stringify({ error: 'Internal server error' }), {
-      status: 500,
+    const status = error instanceof HttpInputError ? error.status : 500
+    return new Response(JSON.stringify({
+      error: error instanceof HttpInputError ? error.message : 'Internal server error',
+    }), {
+      status,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
