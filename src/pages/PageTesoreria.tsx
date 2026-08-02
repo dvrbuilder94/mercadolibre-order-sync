@@ -12,8 +12,11 @@ import { TesoreriaResumen } from "@/components/tesoreria/TesoreriaResumen";
 import { TesoreriaDetalle } from "@/components/tesoreria/TesoreriaDetalle";
 import { TesoreriaCargos } from "@/components/tesoreria/TesoreriaCargos";
 import {
-  clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw, periodRange,
+  clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw,
 } from "@/lib/tesoreria";
+import { chileMonthIsoRange, chilePeriodNow } from "@/lib/chileDate";
+import type { MonthlyControlSnapshot } from "@/lib/monthlyControl";
+import { MonthlyControlPanel } from "@/components/tesoreria/MonthlyControlPanel";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -37,7 +40,7 @@ const EMBED = `
 export default function PageTesoreria() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [period, setPeriod] = useState(chilePeriodNow);
   const requestedTab = searchParams.get("tab");
   const [tab, setTab] = useState<"resumen" | "detalle" | "cargos">(
     requestedTab === "detalle" || requestedTab === "cargos" ? requestedTab : "resumen",
@@ -52,6 +55,7 @@ export default function PageTesoreria() {
     gross_amount: number | null;
   }>>([]);
   const [detailOrder, setDetailOrder] = useState<any | null>(null);
+  const [monthlyControl, setMonthlyControl] = useState<MonthlyControlSnapshot | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -59,14 +63,7 @@ export default function PageTesoreria() {
     });
   }, [navigate]);
 
-  const range = useMemo(() => periodRange(period), [period]);
-  const rangeIso = useMemo(
-    () => ({
-      from: format(range.from, "yyyy-MM-dd'T'00:00:00"),
-      to: format(range.to, "yyyy-MM-dd'T'23:59:59"),
-    }),
-    [range],
-  );
+  const rangeIso = useMemo(() => chileMonthIsoRange(period), [period]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -79,7 +76,7 @@ export default function PageTesoreria() {
           .from("payments")
           .select(EMBED)
           .gte("payment_date", rangeIso.from)
-          .lte("payment_date", rangeIso.to)
+          .lt("payment_date", rangeIso.toExclusive)
           .order("payment_date", { ascending: false })
           .range(offset, offset + PAGE - 1);
         if (error) throw error;
@@ -99,7 +96,7 @@ export default function PageTesoreria() {
         .eq("has_exact_data", false)
         .not("status", "in", "(cancelled,rejected,invalid)")
         .gte("order_date", rangeIso.from)
-        .lte("order_date", rangeIso.to)
+        .lt("order_date", rangeIso.toExclusive)
         .order("order_date", { ascending: false });
       if (unpaidError) throw unpaidError;
       setUnpaidOrders((unpaid || []) as Array<{
@@ -150,13 +147,22 @@ export default function PageTesoreria() {
         }
       }
       setUpcomingRows(futurePayments);
+
+      const { data: control, error: controlError } = await supabase
+        .rpc("get_monthly_control_snapshot", { p_period: period });
+      if (controlError) {
+        console.error("Error cargando control mensual:", controlError);
+        setMonthlyControl(null);
+      } else {
+        setMonthlyControl(control as unknown as MonthlyControlSnapshot);
+      }
     } catch (e) {
       console.error("Error cargando tesorería:", e);
       setRows([]); setUpcomingRows([]); setUnpaidOrders([]);
     } finally {
       setLoading(false);
     }
-  }, [rangeIso]);
+  }, [period, rangeIso]);
 
   const refreshTreasury = useCallback(async () => {
     setLoading(true);
@@ -280,6 +286,8 @@ export default function PageTesoreria() {
             </button>
           </div>
         </div>
+
+        {monthlyControl && <MonthlyControlPanel snapshot={monthlyControl} />}
 
         {/* Mercado Pago es la caja operativa del MVP. Aprobado y liberado se
             muestran separados para no llamar "caja disponible" a plata retenida. */}
