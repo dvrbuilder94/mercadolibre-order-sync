@@ -8,7 +8,7 @@ import { es } from "date-fns/locale";
 import {
   ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Loader2, Info, FileText,
 } from "lucide-react";
-import { chileMonthUnixRange } from "@/lib/chileDate";
+import { chileMonthDateRange, chileMonthUnixRange, chilePeriodNow } from "@/lib/chileDate";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 import { isPaymentReleased, signedTaxDocumentAmount } from "@/lib/financialRules";
 import { isRealSale } from "@/lib/orderStatus";
@@ -18,10 +18,6 @@ const PAGE_SIZE = 50;
 const CLP = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
 
-const periodRange = (p: string) => {
-  const [y, m] = p.split("-").map(Number);
-  return { from: format(new Date(y, m - 1, 1), "yyyy-MM-dd"), to: format(new Date(y, m, 0), "yyyy-MM-dd") };
-};
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
   return format(new Date(y, m - 1, 1), "MMMM yyyy", { locale: es });
@@ -117,7 +113,7 @@ const FINANCIAL_COLS = "id, order_id, order_date, gross_amount, net_amount, comm
 
 export default function PageDocumentos() {
   const navigate = useNavigate();
-  const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [period, setPeriod] = useState(chilePeriodNow);
   const [channelFilter, setChannelFilter] = useState<string>("todos");
 
   const [docs, setDocs] = useState<any[]>([]);
@@ -240,7 +236,7 @@ export default function PageDocumentos() {
   const fetchDocs = useCallback(async (p: number) => {
     setDocsLoading(true);
     try {
-      const { from, to } = periodRange(period);
+      const { from, to } = chileMonthDateRange(period);
 
       // Trae todos los documentos del período con los campos livianos que
       // hacen falta para: total facturado / IVA del período, conteo de
