@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { Nav } from "@/components/Nav";
 import { supabase } from "@/integrations/supabase/client";
+import { chilePeriodNow } from "@/lib/chileDate";
 import { clp } from "@/lib/tesoreria";
 
 const periodLabel = (p: string) => {
@@ -33,7 +34,7 @@ const COLORS = ["#0ea5e9", "#14b8a6", "#f59e0b", "#a855f7", "#ef4444", "#64748b"
 
 export default function PageBilling() {
   const navigate = useNavigate();
-  const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [period, setPeriod] = useState(chilePeriodNow);
   const [loading, setLoading] = useState(true);
   const [rubros, setRubros] = useState<Rubro[]>([]);
   const [totals, setTotals] = useState<Totals | null>(null);
