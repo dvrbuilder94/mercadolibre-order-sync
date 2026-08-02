@@ -1,6 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { mapMeliOrderStatus } from '../_shared/order-status.ts';
 import { getFreshAccessToken } from '../_shared/meli-account.ts';
+import { HttpInputError, readJsonBody } from '../_shared/http.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,6 +12,9 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
+  if (req.method !== 'POST') {
+    return new Response(null, { status: 405, headers: corsHeaders });
+  }
 
   try {
     const supabaseClient = createClient(
@@ -18,8 +22,11 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
 
-    const notification = await req.json();
-    console.log('Received Mercado Libre notification:', notification);
+    const notification = await readJsonBody<{
+      topic?: unknown;
+      resource?: unknown;
+      user_id?: unknown;
+    }>(req);
 
     // Mercado Libre envía notificaciones con esta estructura:
     // { topic: "orders_v2", resource: "/orders/123456789", user_id: 123456 }
@@ -32,10 +39,13 @@ Deno.serve(async (req) => {
     }
 
     // Extraer el ID de la orden de la URL del resource
-    const orderId = notification.resource?.split('/').pop();
-    const sellerId = notification.user_id?.toString();
+    const resource = typeof notification.resource === 'string' ? notification.resource : '';
+    const orderId = resource.match(/^\/orders\/(\d{1,30})$/)?.[1];
+    const sellerId = typeof notification.user_id === 'number' || typeof notification.user_id === 'string'
+      ? String(notification.user_id)
+      : '';
 
-    if (!orderId || !sellerId) {
+    if (!orderId || !/^\d{1,30}$/.test(sellerId)) {
       console.error('Missing order ID or seller ID in notification');
       return new Response(
         JSON.stringify({ error: 'Invalid notification data' }),
@@ -129,9 +139,10 @@ Deno.serve(async (req) => {
 
   } catch (error: any) {
     console.error('Error processing webhook:', error);
+    const status = error instanceof HttpInputError ? error.status : 500;
     return new Response(
-      JSON.stringify({ error: error?.message || 'Unknown error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ error: error instanceof HttpInputError ? error.message : 'Internal server error' }),
+      { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });
