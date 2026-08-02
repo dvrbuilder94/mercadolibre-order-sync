@@ -9,18 +9,11 @@ import { SCORE_OK, CHANNEL_LABEL, CHANNEL_COLOR, HARD_MATCH_SOURCES as HARD_SOUR
 import { NON_SALE_STATUSES_PG } from "@/lib/orderStatus";
 import { DetailPanel } from "@/components/DetailPanel";
 import { fetchOrderDetail } from "@/lib/orderDetail";
+import { chileMonthIsoRange, chilePeriodNow } from "@/lib/chileDate";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
   return format(new Date(y, m - 1, 1), "MMMM yyyy", { locale: es });
-};
-
-const periodRange = (p: string) => {
-  const [y, m] = p.split("-").map(Number);
-  return {
-    from: format(new Date(y, m - 1, 1), "yyyy-MM-dd"),
-    to:   format(new Date(y, m, 0),     "yyyy-MM-dd"),
-  };
 };
 
 const clp = (n: number | null | undefined) =>
@@ -196,7 +189,7 @@ const FILTER_VALUES = new Set<Filter>(["attention", "candidates", "nodoc", "delt
 export default function PageConciliacion() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [period, setPeriod] = useState(chilePeriodNow);
   const [rows, setRows] = useState<OrderRow[]>([]);
   const [docLinks, setDocLinks] = useState<DocLinkRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -239,7 +232,7 @@ export default function PageConciliacion() {
   const fetchRows = useCallback(async () => {
     setLoading(true);
     try {
-      const { from, to } = periodRange(period);
+      const { from, toExclusive } = chileMonthIsoRange(period);
       const PAGE = 1000;
 
       // 1) Órdenes del período (con sus vínculos) — para detectar "sin doc",
@@ -257,8 +250,8 @@ export default function PageConciliacion() {
               tax_documents ( id, document_number, document_type, total_amount, external_url )
             )
           `)
-          .gte("order_date", from + "T00:00:00")
-          .lte("order_date", to + "T23:59:59")
+          .gte("order_date", from)
+          .lt("order_date", toExclusive)
           .not("status", "in", NON_SALE_STATUSES_PG)
           .order("order_date", { ascending: false })
           .range(offset, offset + PAGE - 1);
@@ -470,9 +463,9 @@ export default function PageConciliacion() {
   const retryReconcile = async () => {
     setRetrying(true);
     try {
-      const { from, to } = periodRange(period);
+      const { from, to } = chileMonthIsoRange(period);
       const { error } = await supabase.functions.invoke("auto-reconcile", {
-        body: { date_from: from + "T00:00:00", date_to: to + "T23:59:59" },
+        body: { date_from: from, date_to: to },
       });
       if (error) throw error;
       await fetchRows();
