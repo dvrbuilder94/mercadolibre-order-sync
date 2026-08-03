@@ -8,17 +8,11 @@ import {
   ChevronLeft, ChevronRight, RefreshCw, Loader2, ChevronDown, ChevronUp, Undo2,
 } from "lucide-react";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
+import { chileMonthIsoRange, chilePeriodNow } from "@/lib/chileDate";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
   return format(new Date(y, m - 1, 1), "MMMM yyyy", { locale: es });
-};
-const periodRange = (p: string) => {
-  const [y, m] = p.split("-").map(Number);
-  return {
-    from: format(new Date(y, m - 1, 1), "yyyy-MM-dd"),
-    to:   format(new Date(y, m, 0),     "yyyy-MM-dd"),
-  };
 };
 const clp = (n: number | null | undefined) =>
   new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 })
@@ -74,7 +68,7 @@ interface CreditNoteState {
 
 export default function PageDevoluciones() {
   const navigate = useNavigate();
-  const [period, setPeriod] = useState(format(new Date(), "yyyy-MM"));
+  const [period, setPeriod] = useState(chilePeriodNow);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<ClaimRow[]>([]);
@@ -91,12 +85,12 @@ export default function PageDevoluciones() {
     });
   }, []);
 
-  const range = useMemo(() => periodRange(period), [period]);
+  const range = useMemo(() => chileMonthIsoRange(period), [period]);
 
   const fetchRows = useCallback(async () => {
     setLoading(true);
     try {
-      const { from, to } = range;
+      const { from, toExclusive } = range;
       const { data, error } = await supabase
         .from("meli_claims")
         .select(`
@@ -104,8 +98,8 @@ export default function PageDevoluciones() {
           date_created, last_updated, raw_data,
           orders ( id, order_id, channel, product_title, customer_name, gross_amount )
         `)
-        .gte("date_created", from + "T00:00:00")
-        .lte("date_created", to + "T23:59:59")
+        .gte("date_created", from)
+        .lt("date_created", toExclusive)
         .order("date_created", { ascending: false });
       if (error) throw error;
       const claims = (data || []) as unknown as ClaimRow[];
@@ -122,8 +116,8 @@ export default function PageDevoluciones() {
           )
         `)
         .in("payments.status", ["REFUND", "CHARGEBACK"])
-        .gte("payments.payment_date", from + "T00:00:00")
-        .lte("payments.payment_date", to + "T23:59:59");
+        .gte("payments.payment_date", from)
+        .lt("payments.payment_date", toExclusive);
       if (refundError) throw refundError;
 
       const refundMap = new Map<string, RefundMovement>();
@@ -327,8 +321,8 @@ export default function PageDevoluciones() {
       // Post-Purchase API is not enabled for the application.
       const { data: cashData, error: cashError } = await supabase.functions.invoke("check-orphan-payments", {
         body: {
-          date_from: range.from + "T00:00:00",
-          date_to: range.to + "T23:59:59",
+          date_from: range.from,
+          date_to: range.to,
         },
       });
       if (cashError) throw cashError;

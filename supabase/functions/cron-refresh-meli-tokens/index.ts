@@ -1,17 +1,23 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { refreshMeliAccountToken } from '../_shared/meli-account.ts';
+import { isInternalRequest, unauthorizedJson } from '../_shared/internal-request.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-cron-secret, x-client-info, apikey, content-type',
 };
 
 // Refresh ALL Mercado Libre tokens that expire within the next 12 hours.
-// Runs on a pg_cron schedule (no JWT required, uses service role).
+// Runs on a scheduler and uses service role. The request itself must also carry
+// an internal credential; verify_jwt=false only allows the dedicated secret.
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
+  if (req.method !== 'POST') {
+    return new Response(null, { status: 405, headers: corsHeaders });
+  }
+  if (!await isInternalRequest(req)) return unauthorizedJson(corsHeaders);
 
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL') ?? '',
@@ -66,7 +72,6 @@ Deno.serve(async (req) => {
       total: results.length,
       refreshed: results.length - failed.length,
       failed: failed.length,
-      details: results,
     }),
     { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
   );

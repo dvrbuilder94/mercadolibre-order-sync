@@ -193,10 +193,3 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
 };
 
 export const channelLabel = (ch: string) => CHANNEL_LABEL[ch] ?? ch;
-
-export const periodRange = (period: string) => {
-  const [y, m] = period.split("-").map(Number);
-  const from = new Date(y, m - 1, 1);
-  const to = new Date(y, m, 0, 23, 59, 59);
-  return { from, to };
-};
