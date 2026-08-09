@@ -197,6 +197,30 @@ export type Database = {
         }
         Relationships: []
       }
+      early_access_leads: {
+        Row: {
+          created_at: string
+          email: string
+          id: string
+          source: string
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          id?: string
+          source?: string
+          status?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          id?: string
+          source?: string
+          status?: string
+        }
+        Relationships: []
+      }
       falabella_accounts: {
         Row: {
           access_token: string | null

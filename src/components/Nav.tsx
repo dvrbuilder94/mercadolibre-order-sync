@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   ShoppingBag, Activity, Settings, LogOut,
-  Wrench, Landmark, FileText, Undo2, Workflow,
+  Wrench, Landmark, FileText, Undo2, Workflow, GitMerge,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +13,7 @@ const primary = [
   { to: "/tesoreria",     label: "Tesorería",     icon: Landmark },
   { to: "/ventas",        label: "Ventas",        icon: ShoppingBag },
   { to: "/documentos",    label: "Documentos",    icon: FileText },
+  { to: "/conciliacion", label: "Revisión",      icon: GitMerge },
   { to: "/devoluciones",  label: "Devoluciones",  icon: Undo2 },
   { to: "/config",        label: "Conexiones",    icon: Settings },
 ];

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Loader2 } from "lucide-react";
@@ -9,11 +9,7 @@ const MeliCallback = () => {
   const [searchParams] = useSearchParams();
   const [processing, setProcessing] = useState(true);
 
-  useEffect(() => {
-    handleCallback();
-  }, []);
-
-  const handleCallback = async () => {
+  const handleCallback = useCallback(async () => {
     const code = searchParams.get('code');
     const state = searchParams.get('state');
     
@@ -23,7 +19,7 @@ const MeliCallback = () => {
         title: "Error",
         description: "No se recibió el código de autorización o el token de estado",
       });
-      navigate("/settings");
+      navigate("/config");
       return;
     }
 
@@ -39,19 +35,23 @@ const MeliCallback = () => {
         description: "Tu cuenta de Mercado Libre ha sido autenticada correctamente.",
       });
 
-      navigate("/dashboard");
-    } catch (error: any) {
+      navigate("/config");
+    } catch (error: unknown) {
       console.error('Error in callback:', error);
       toast({
         variant: "destructive",
         title: "Error al autenticar",
-        description: error.message,
+        description: error instanceof Error ? error.message : "No se pudo completar la autenticación",
       });
-      navigate("/settings");
+      navigate("/config");
     } finally {
       setProcessing(false);
     }
-  };
+  }, [navigate, searchParams]);
+
+  useEffect(() => {
+    void handleCallback();
+  }, [handleCallback]);
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-background">
