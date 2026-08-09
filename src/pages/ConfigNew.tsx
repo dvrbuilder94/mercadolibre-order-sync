@@ -58,8 +58,6 @@ export default function ConfigNew() {
   const [shopifyDomain, setShopifyDomain] = useState("");
   const [shopifyClientId, setShopifyClientId] = useState("");
   const [shopifyClientSecret, setShopifyClientSecret] = useState("");
-  const [shopifyToken, setShopifyToken] = useState("");
-  const [shopifyAdvanced, setShopifyAdvanced] = useState(false);
   const [connectingShopify, setConnectingShopify] = useState(false);
   const [shopifyError, setShopifyError] = useState<string | null>(null);
   const [mercadopago, setMercadopago] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
@@ -216,27 +214,22 @@ export default function ConfigNew() {
       setShopifyError("Completa el shop domain (mitienda.myshopify.com)");
       return;
     }
-    if (!shopifyAdvanced && !shopifyToken.trim()) {
-      setShopifyError("Pegá el token de la Admin API (empieza con shpat_)");
+    if (!shopifyClientId.trim()) {
+      setShopifyError("Completa el Client ID de la app");
       return;
     }
-    if (shopifyAdvanced && !shopifyClientId.trim()) {
-      setShopifyError("Completa el Client ID de la app");
+    if (!shopifyClientSecret.trim()) {
+      setShopifyError("Completa el Client Secret de la app (empieza con shpss_)");
       return;
     }
     setConnectingShopify(true);
     try {
       const { data, error } = await supabase.functions.invoke("connect-shopify", {
-        body: shopifyAdvanced
-          ? {
-              shop_domain: shopifyDomain.trim(),
-              client_id: shopifyClientId.trim(),
-              client_secret: shopifyClientSecret.trim(),
-            }
-          : {
-              shop_domain: shopifyDomain.trim(),
-              access_token: shopifyToken.trim(),
-            },
+        body: {
+          shop_domain: shopifyDomain.trim(),
+          client_id: shopifyClientId.trim(),
+          client_secret: shopifyClientSecret.trim(),
+        },
       });
       if (error || !data?.success) {
         setShopifyError(data?.error || "Error al conectar con Shopify");
@@ -244,7 +237,6 @@ export default function ConfigNew() {
       }
       setShopifyClientId("");
       setShopifyClientSecret("");
-      setShopifyToken("");
       setShowShopifyForm(false);
       await fetchConnections();
     } catch (e) {
@@ -497,56 +489,31 @@ export default function ConfigNew() {
                 />
                 <p className="text-xs text-muted-foreground">Debe terminar en <code className="rounded bg-muted px-1">.myshopify.com</code>.</p>
               </div>
-              {!shopifyAdvanced ? (
-                <div className="space-y-1.5">
-                  <label htmlFor="shopify-token" className="text-xs text-slate-600">Admin API access token</label>
-                  <input
-                    id="shopify-token"
-                    type="password"
-                    value={shopifyToken}
-                    onChange={(e) => setShopifyToken(e.target.value)}
-                    placeholder="shpat_..."
-                    autoComplete="off"
-                    className="w-full rounded-md border px-3 py-1.5 text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground">Empieza con <code className="rounded bg-muted px-1">shpat_</code>. No es el Client Secret.</p>
-                </div>
-              ) : (
-                <>
-                  <div className="space-y-1.5">
-                    <label htmlFor="shopify-client-id" className="text-xs text-slate-600">Client ID</label>
-                    <input
-                      id="shopify-client-id"
-                      type="text"
-                      value={shopifyClientId}
-                      onChange={(e) => setShopifyClientId(e.target.value)}
-                      placeholder="Client ID de la app"
-                      autoComplete="off"
-                      className="w-full rounded-md border px-3 py-1.5 text-sm"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label htmlFor="shopify-client-secret" className="text-xs text-slate-600">Client Secret</label>
-                    <input
-                      id="shopify-client-secret"
-                      type="password"
-                      value={shopifyClientSecret}
-                      onChange={(e) => setShopifyClientSecret(e.target.value)}
-                      placeholder="Client secret de la app"
-                      autoComplete="off"
-                      className="w-full rounded-md border px-3 py-1.5 text-sm"
-                    />
-                    <p className="text-xs text-muted-foreground">Si ya guardaste el secreto en el backend, dejalo vacío.</p>
-                  </div>
-                </>
-              )}
-              <button
-                type="button"
-                onClick={() => { setShopifyAdvanced((v) => !v); setShopifyError(null); }}
-                className="text-xs text-muted-foreground underline underline-offset-2"
-              >
-                {shopifyAdvanced ? "Usar token de app privada (recomendado)" : "Tengo una app del Dev Dashboard (Client ID / Secret)"}
-              </button>
+              <div className="space-y-1.5">
+                <label htmlFor="shopify-client-id" className="text-xs text-slate-600">Client ID</label>
+                <input
+                  id="shopify-client-id"
+                  type="text"
+                  value={shopifyClientId}
+                  onChange={(e) => setShopifyClientId(e.target.value)}
+                  placeholder="Client ID de la app"
+                  autoComplete="off"
+                  className="w-full rounded-md border px-3 py-1.5 text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="shopify-client-secret" className="text-xs text-slate-600">Client Secret</label>
+                <input
+                  id="shopify-client-secret"
+                  type="password"
+                  value={shopifyClientSecret}
+                  onChange={(e) => setShopifyClientSecret(e.target.value)}
+                  placeholder="shpss_..."
+                  autoComplete="off"
+                  className="w-full rounded-md border px-3 py-1.5 text-sm"
+                />
+                <p className="text-xs text-muted-foreground">Pegá aquí el valor <code className="rounded bg-muted px-1">shpss_…</code>. Quadra obtiene automáticamente el access token de 24 horas; no tenés que buscar ni pegar un <code className="rounded bg-muted px-1">shpat_</code>.</p>
+              </div>
             </>
           }
         />
