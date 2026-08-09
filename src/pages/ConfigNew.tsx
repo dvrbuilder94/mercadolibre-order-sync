@@ -536,6 +536,7 @@ export default function ConfigNew() {
                       autoComplete="off"
                       className="w-full rounded-md border px-3 py-1.5 text-sm"
                     />
+                    <p className="text-xs text-muted-foreground">Si ya guardaste el secreto en el backend, dejalo vacío.</p>
                   </div>
                 </>
               )}
