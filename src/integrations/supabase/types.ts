@@ -197,30 +197,6 @@ export type Database = {
         }
         Relationships: []
       }
-      early_access_leads: {
-        Row: {
-          created_at: string
-          email: string
-          id: string
-          source: string
-          status: string
-        }
-        Insert: {
-          created_at?: string
-          email: string
-          id?: string
-          source?: string
-          status?: string
-        }
-        Update: {
-          created_at?: string
-          email?: string
-          id?: string
-          source?: string
-          status?: string
-        }
-        Relationships: []
-      }
       falabella_accounts: {
         Row: {
           access_token: string | null
@@ -1446,14 +1422,6 @@ export type Database = {
       }
     }
     Functions: {
-      resolve_match_candidates: {
-        Args: {
-          p_action: string
-          p_candidate_ids: string[]
-          p_tax_document_id: string
-        }
-        Returns: Json
-      }
       calculate_accounting_period: {
         Args: { order_date: string }
         Returns: string
@@ -1494,10 +1462,6 @@ export type Database = {
           net: number
           tx_count: number
         }[]
-      }
-      get_monthly_control_snapshot: {
-        Args: { p_period: string }
-        Returns: Json
       }
       get_pending_sales: {
         Args: {
