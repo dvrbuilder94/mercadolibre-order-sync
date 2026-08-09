@@ -34,15 +34,25 @@ begin
     raise exception 'Candidate IDs must be a non-empty unique list';
   end if;
 
+  -- Serialize all review decisions for the same document. This also verifies
+  -- ownership before any candidate rows are inspected or changed.
+  perform 1
+  from public.tax_documents
+  where id = p_tax_document_id
+    and user_id = v_user_id
+  for update;
+
+  if not found then
+    raise exception 'Tax document not found or not owned by this user';
+  end if;
+
   -- Lock and validate every selected candidate before changing anything.
   with locked_candidates as materialized (
     select c.id
     from public.order_tax_match_candidates c
-    join public.tax_documents d on d.id = c.tax_document_id
     where c.id = any(p_candidate_ids)
       and c.tax_document_id = p_tax_document_id
       and c.status = 'pending'
-      and d.user_id = v_user_id
     for update of c
   )
   select count(*) into v_candidates from locked_candidates;
