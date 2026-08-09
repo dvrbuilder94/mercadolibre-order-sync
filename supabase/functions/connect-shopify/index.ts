@@ -65,6 +65,28 @@ Deno.serve(async (req) => {
     const shopDomain = normalizeShopDomain(shop_domain)
     const accessToken = access_token.trim()
 
+    // El Admin API solo responde en el dominio interno *.myshopify.com; un
+    // dominio público (ej: www.mitienda.cl) devuelve 401 y confunde al usuario.
+    if (!shopDomain.endsWith('.myshopify.com')) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `El shop domain debe ser el dominio interno de Shopify (ej: mitienda.myshopify.com), no "${shopDomain}". Lo encontrás en la URL del admin: admin.shopify.com/store/mitienda.`,
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    if (!accessToken.startsWith('shpat_')) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'El token debe ser el Admin API access token (empieza con shpat_), que se revela una sola vez en API credentials → Install app. No sirve el ID de cliente ni el secreto de la API.',
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
     // Validate credentials against Shopify before saving anything.
     console.log(`Validating Shopify credentials for ${shopDomain}...`)
     const shopifyResponse = await fetch(`https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
