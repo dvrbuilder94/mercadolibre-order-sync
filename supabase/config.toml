@@ -95,3 +95,6 @@ verify_jwt = false
 
 [functions.cron-refresh-mercadopago-tokens]
 verify_jwt = false
+
+[functions.sync-shopify-products]
+verify_jwt = true
