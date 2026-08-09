@@ -45,9 +45,10 @@ export async function mintAccessToken(shopDomain: string, clientId: string, clie
 
   if (!res.ok) {
     // Never log the response body: it can echo back credentials.
+    console.error('Shopify token exchange HTTP status:', res.status);
     throw new ShopifyAuthError(
       res.status === 401 || res.status === 400
-        ? 'Credenciales de Shopify inválidas (client_id / client_secret).'
+        ? 'Shopify rechazó el client_id / client_secret (HTTP ' + res.status + '). Copiá de nuevo ambos valores desde Settings de la app en el Dev Dashboard y pegá el secret completo (shpss_…).'
         : `Shopify no entregó el token (HTTP ${res.status}).`,
     );
   }

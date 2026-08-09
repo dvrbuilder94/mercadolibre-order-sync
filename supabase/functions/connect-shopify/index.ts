@@ -45,7 +45,6 @@ Deno.serve(async (req) => {
     // El secret puede venir del formulario o estar guardado como secreto del backend.
     const clientSecret = (typeof body.client_secret === 'string' && body.client_secret.trim())
       || Deno.env.get('SHOPIFY_CLIENT_SECRET')
-      || Deno.env.get('SHOPIFY_ACCESS_TOKEN')
       || ''
     const pastedToken = typeof body.access_token === 'string' ? body.access_token.trim() : ''
 
