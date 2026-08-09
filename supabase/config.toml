@@ -77,3 +77,21 @@ verify_jwt = true
 
 [functions.connect-mercadopago]
 verify_jwt = true
+
+[functions.get-mercadopago-auth-url]
+verify_jwt = true
+
+[functions.mercadopago-callback]
+verify_jwt = false
+
+[functions.sync-mercadopago-payments]
+verify_jwt = true
+
+[functions.sync-mercadopago-settlements]
+verify_jwt = true
+
+[functions.mercadopago-webhook]
+verify_jwt = false
+
+[functions.cron-refresh-mercadopago-tokens]
+verify_jwt = false
