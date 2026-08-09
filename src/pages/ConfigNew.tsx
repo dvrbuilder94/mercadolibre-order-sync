@@ -495,32 +495,26 @@ export default function ConfigNew() {
           open={showMpForm}
           onOpenChange={(o) => { setShowMpForm(o); if (!o) setMpError(null); }}
           title="Conectar Mercado Pago"
-          subtitle="Copiá el access token de producción de tu aplicación y pegalo aquí."
+          subtitle="Autorizá a Quadra a leer los datos de tu cuenta. No pedimos credenciales."
           docsUrl="https://www.mercadopago.cl/developers/es/docs"
           docsLabel="Ver documentación de Mercado Pago"
           steps={[
-            { title: "Entrá al panel de desarrolladores", body: <>Ingresá a <code className="rounded bg-muted px-1">mercadopago.cl/developers</code> con el usuario dueño de la cuenta que recibe los pagos.</> },
-            { title: "Abrí “Tus integraciones”", body: <>Creá una aplicación (o usá una existente) y entrá a <strong>Credenciales de producción</strong>.</> },
-            { title: "Copiá el Access Token", body: <>Empieza con <code className="rounded bg-muted px-1">APP_USR-</code>. El token de prueba (<code className="rounded bg-muted px-1">TEST-</code>) no sirve: no trae tus pagos reales.</> },
-            { title: "Pegalo abajo", body: <>Validamos el token contra <code className="rounded bg-muted px-1">api.mercadopago.com/users/me</code> antes de guardarlo.</> },
+            { title: "Presioná “Autorizar en Mercado Pago”", body: <>Te llevamos al sitio oficial de Mercado Pago para que inicies sesión con la cuenta que recibe los pagos.</> },
+            { title: "Revisá y aceptá la autorización", body: <>Mercado Pago te muestra qué aplicación pide acceso. Confirmá con <strong>Permitir</strong>.</> },
+            { title: "Volvés solo", body: <>Te devolvemos a Conexiones con la cuenta ya vinculada. Nunca vemos tu usuario ni tu contraseña.</> },
+            { title: "Sincronización automática", body: <>Renovamos la autorización sola cada pocas horas, así la lectura de pagos no se corta.</> },
           ]}
-          note={<>Quadra usa Mercado Pago en <strong>modo solo lectura</strong>: leemos pagos, comisiones, devoluciones, contracargos y liquidaciones. Nunca cobramos, reembolsamos ni movemos dinero.</>}
+          note={<>Quadra usa Mercado Pago en <strong>modo solo lectura</strong>: leemos pagos, comisiones, devoluciones, contracargos y liquidaciones. Nunca cobramos, reembolsamos ni movemos dinero — el sistema solo ejecuta consultas de lectura contra la API.</>}
           error={mpError}
           submitting={connectingMp}
+          submitLabel="Autorizar en Mercado Pago"
           onSubmit={connectMercadoPago}
           form={
-            <div className="space-y-1.5">
-              <label htmlFor="mp-token" className="text-xs text-slate-600">Access token de producción</label>
-              <input
-                id="mp-token"
-                type="password"
-                value={mpToken}
-                onChange={(e) => setMpToken(e.target.value)}
-                placeholder="APP_USR-..."
-                autoComplete="off"
-                className="w-full rounded-md border px-3 py-1.5 text-sm"
-              />
-            </div>
+            <p className="text-xs text-slate-600">
+              Al continuar vas a salir a <code className="rounded bg-muted px-1">mercadopago.cl</code> para
+              aprobar el acceso. Podés revocarlo cuando quieras desde “Tus integraciones” en tu cuenta
+              de Mercado Pago.
+            </p>
           }
         />
       </main>
