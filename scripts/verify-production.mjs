@@ -1,5 +1,6 @@
 const baseUrl = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const cronSecret = process.env.CRON_SECRET || "";
+const runCron = process.env.RUN_CRON === "1";
 
 if (!baseUrl) {
   console.error("Set SUPABASE_URL=https://<project-ref>.supabase.co");
@@ -23,7 +24,7 @@ const checks = [
   { name: "Bsale webhook validates payload", endpoint: "bsale-webhook", method: "POST", body: {}, expected: 400 },
 ];
 
-if (cronSecret) {
+if (cronSecret && runCron) {
   checks.push(
     {
       name: "pipeline cron accepts configured secret",
@@ -32,6 +33,7 @@ if (cronSecret) {
       body: {},
       expected: 200,
       headers: { "x-cron-secret": cronSecret },
+      validateJson: (body) => body?.success === true,
     },
     {
       name: "token cron accepts configured secret",
@@ -40,6 +42,7 @@ if (cronSecret) {
       body: {},
       expected: 200,
       headers: { "x-cron-secret": cronSecret },
+      validateJson: (body) => body?.success === true,
     },
   );
 }
@@ -56,8 +59,23 @@ for (const check of checks) {
       body: check.body ? JSON.stringify(check.body) : undefined,
       signal: AbortSignal.timeout(130_000),
     });
-    const ok = response.status === check.expected;
-    console.log(`${ok ? "PASS" : "FAIL"} ${check.name}: HTTP ${response.status} (expected ${check.expected})`);
+    const responseText = await response.text();
+    let responseJson = null;
+    if (responseText) {
+      try {
+        responseJson = JSON.parse(responseText);
+      } catch {
+        // Some method-rejection responses intentionally have no JSON body.
+      }
+    }
+
+    const statusOk = response.status === check.expected;
+    const bodyOk = !check.validateJson || check.validateJson(responseJson);
+    const ok = statusOk && bodyOk;
+    const bodyDetail = statusOk && !bodyOk
+      ? `; response=${JSON.stringify(responseJson)}`
+      : "";
+    console.log(`${ok ? "PASS" : "FAIL"} ${check.name}: HTTP ${response.status} (expected ${check.expected})${bodyDetail}`);
     if (!ok) failed++;
   } catch (error) {
     failed++;
@@ -65,9 +83,8 @@ for (const check of checks) {
   }
 }
 
-if (!cronSecret) {
-  console.log("SKIP authenticated cron execution: set CRON_SECRET to test it.");
+if (!cronSecret || !runCron) {
+  console.log("SKIP authenticated cron execution: set CRON_SECRET and RUN_CRON=1 to run the real jobs.");
 }
 
 process.exitCode = failed ? 1 : 0;
-

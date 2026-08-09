@@ -57,13 +57,18 @@ order by created desc
 limit 20;
 ```
 
-Y desde una terminal, sin imprimir el secreto:
+Y desde una terminal, sin imprimir el secreto. La bandera `RUN_CRON=1` es
+obligatoria porque esta prueba ejecuta sincronizaciones contra datos reales:
 
 ```bash
 SUPABASE_URL=https://<project-ref>.supabase.co \
 CRON_SECRET=<valor-configurado> \
+RUN_CRON=1 \
 npm run verify:production
 ```
+
+El verificador falla si el endpoint responde HTTP 200 pero informa
+`success: false` en el cuerpo.
 
 ## Confirmar migraciones y funciones desplegadas
 

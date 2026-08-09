@@ -1446,6 +1446,14 @@ export type Database = {
       }
     }
     Functions: {
+      resolve_match_candidates: {
+        Args: {
+          p_action: string
+          p_candidate_ids: string[]
+          p_tax_document_id: string
+        }
+        Returns: Json
+      }
       calculate_accounting_period: {
         Args: { order_date: string }
         Returns: string
