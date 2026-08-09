@@ -148,7 +148,7 @@ export default function PageTesoreria() {
       }
       setUpcomingRows(futurePayments);
 
-      const { data: control, error: controlError } = await supabase
+      const { data: control, error: controlError } = await (supabase as any)
         .rpc("get_monthly_control_snapshot", { p_period: period });
       if (controlError) {
         console.error("Error cargando control mensual:", controlError);
