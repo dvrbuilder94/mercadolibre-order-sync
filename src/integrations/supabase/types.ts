@@ -1348,35 +1348,44 @@ export type Database = {
       }
       shopify_accounts: {
         Row: {
-          access_token: string
+          access_token: string | null
           api_key: string | null
           api_secret: string | null
+          client_id: string | null
+          client_secret: string | null
           created_at: string
           id: string
           shop_domain: string
           status: string | null
+          token_expires_at: string | null
           updated_at: string
           user_id: string
         }
         Insert: {
-          access_token: string
+          access_token?: string | null
           api_key?: string | null
           api_secret?: string | null
+          client_id?: string | null
+          client_secret?: string | null
           created_at?: string
           id?: string
           shop_domain: string
           status?: string | null
+          token_expires_at?: string | null
           updated_at?: string
           user_id: string
         }
         Update: {
-          access_token?: string
+          access_token?: string | null
           api_key?: string | null
           api_secret?: string | null
+          client_id?: string | null
+          client_secret?: string | null
           created_at?: string
           id?: string
           shop_domain?: string
           status?: string | null
+          token_expires_at?: string | null
           updated_at?: string
           user_id?: string
         }
