@@ -8,6 +8,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Landing      from "./pages/Landing";
 import Auth         from "./pages/Auth";
 import MeliCallback from "./pages/MeliCallback";
+import MercadoPagoCallback from "./pages/MercadoPagoCallback";
 import NotFound     from "./pages/NotFound";
 
 // New UX — 8 pages
@@ -50,6 +51,7 @@ const App = () => (
 
           {/* OAuth callbacks — DO NOT TOUCH */}
           <Route path="/meli-callback" element={<MeliCallback />} />
+          <Route path="/mercadopago/callback" element={<MercadoPagoCallback />} />
 
           {/* Legacy redirects */}
           <Route path="/dashboard"        element={<Navigate to="/tesoreria" replace />} />
