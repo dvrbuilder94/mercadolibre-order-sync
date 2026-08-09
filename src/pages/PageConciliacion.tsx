@@ -423,7 +423,7 @@ export default function PageConciliacion() {
   const vincularOption = async (group: CandidateDocGroup, option: CandidateOption) => {
     setActingKey(option.groupKey);
     try {
-      const { error } = await supabase.rpc("resolve_match_candidates", {
+      const { error } = await (supabase as any).rpc("resolve_match_candidates", {
         p_tax_document_id: group.doc.id,
         p_candidate_ids: option.candidateIds,
         p_action: "accept",
@@ -445,7 +445,7 @@ export default function PageConciliacion() {
     try {
       const candidate = candidates.find((item) => option.candidateIds.includes(item.id));
       if (!candidate) throw new Error("Candidate not found");
-      const { error } = await supabase.rpc("resolve_match_candidates", {
+      const { error } = await (supabase as any).rpc("resolve_match_candidates", {
         p_tax_document_id: candidate.tax_document_id,
         p_candidate_ids: option.candidateIds,
         p_action: "reject",

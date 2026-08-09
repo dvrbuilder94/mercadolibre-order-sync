@@ -20,7 +20,7 @@ export const LandingEarlyAccess = () => {
 
     setIsLoading(true);
     try {
-      const { error } = await supabase
+      const { error } = await (supabase as any)
         .from("early_access_leads")
         .insert({ email: normalizedEmail, source: "landing" });
 
