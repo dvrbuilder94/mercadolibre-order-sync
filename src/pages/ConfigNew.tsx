@@ -494,6 +494,40 @@ export default function ConfigNew() {
             </>
           }
         />
+
+        {/* Mercado Pago — access token de producción (developers.mercadopago.cl) */}
+        <ConnectGuideDialog
+          open={showMpForm}
+          onOpenChange={(o) => { setShowMpForm(o); if (!o) setMpError(null); }}
+          title="Conectar Mercado Pago"
+          subtitle="Copiá el access token de producción de tu aplicación y pegalo aquí."
+          docsUrl="https://www.mercadopago.cl/developers/es/docs"
+          docsLabel="Ver documentación de Mercado Pago"
+          steps={[
+            { title: "Entrá al panel de desarrolladores", body: <>Ingresá a <code className="rounded bg-muted px-1">mercadopago.cl/developers</code> con el usuario dueño de la cuenta que recibe los pagos.</> },
+            { title: "Abrí “Tus integraciones”", body: <>Creá una aplicación (o usá una existente) y entrá a <strong>Credenciales de producción</strong>.</> },
+            { title: "Copiá el Access Token", body: <>Empieza con <code className="rounded bg-muted px-1">APP_USR-</code>. El token de prueba (<code className="rounded bg-muted px-1">TEST-</code>) no sirve: no trae tus pagos reales.</> },
+            { title: "Pegalo abajo", body: <>Validamos el token contra <code className="rounded bg-muted px-1">api.mercadopago.com/users/me</code> antes de guardarlo.</> },
+          ]}
+          note={<>Quadra usa Mercado Pago en <strong>modo solo lectura</strong>: leemos pagos, comisiones, devoluciones, contracargos y liquidaciones. Nunca cobramos, reembolsamos ni movemos dinero.</>}
+          error={mpError}
+          submitting={connectingMp}
+          onSubmit={connectMercadoPago}
+          form={
+            <div className="space-y-1.5">
+              <label htmlFor="mp-token" className="text-xs text-slate-600">Access token de producción</label>
+              <input
+                id="mp-token"
+                type="password"
+                value={mpToken}
+                onChange={(e) => setMpToken(e.target.value)}
+                placeholder="APP_USR-..."
+                autoComplete="off"
+                className="w-full rounded-md border px-3 py-1.5 text-sm"
+              />
+            </div>
+          }
+        />
       </main>
     </div>
   );
