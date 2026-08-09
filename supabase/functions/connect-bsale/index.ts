@@ -94,22 +94,22 @@ Deno.serve(async (req) => {
     const bsaleData = await bsaleResponse.json()
     console.log('Bsale API response received, keys:', Object.keys(bsaleData))
 
-    // Extract company info from response
-    // Bsale /v1/users.json returns user info with company details
+    // Extract a display name from the validated user response. Do not use the
+    // user ID as cpn_id: Bsale webhooks send the company ID, and confusing the
+    // two makes every valid webhook look as if it belonged to another tenant.
     let companyName: string | null = null
     let cpnId: string | null = null
 
-    // The response structure may vary, try to extract useful info
     if (bsaleData.items && Array.isArray(bsaleData.items) && bsaleData.items.length > 0) {
       const firstUser = bsaleData.items[0]
       companyName = firstUser.firstName || firstUser.name || null
-      cpnId = firstUser.id?.toString() || null
-    } else if (bsaleData.id) {
-      cpnId = bsaleData.id.toString()
+      cpnId = firstUser.cpnId?.toString() || firstUser.company?.id?.toString() || null
+    } else {
       companyName = bsaleData.firstName || bsaleData.name || null
+      cpnId = bsaleData.cpnId?.toString() || bsaleData.company?.id?.toString() || null
     }
 
-    // If we couldn't get cpn_id, try to get it from another endpoint
+    // The canonical fallback is the company endpoint, never a generated ID.
     if (!cpnId) {
       console.log('Trying to get company info from /v1/companies.json...')
       const companiesResponse = await fetch('https://api.bsale.io/v1/companies.json', {
@@ -130,11 +130,14 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Use a fallback cpn_id if still null
-    if (!cpnId) {
-      // Generate a unique identifier based on the token hash
-      cpnId = `bsale_${Date.now()}`
-      console.log('Using fallback cpn_id:', cpnId)
+    if (!cpnId || !/^\d{1,30}$/.test(cpnId)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'El token es válido, pero Bsale no informó el ID de empresa necesario para configurar los webhooks.',
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
     }
 
     console.log('Company info extracted:', { cpnId, companyName })

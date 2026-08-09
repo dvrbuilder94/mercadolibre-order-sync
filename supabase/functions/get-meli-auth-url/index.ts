@@ -37,16 +37,79 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({} as Record<string, unknown>));
     const accountId = (body as { account_id?: string })?.account_id ?? null;
 
-    // Get user's Mercado Libre account configuration
-    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
+    // Existing installations keep their per-account credentials. For a new
+    // user, bootstrap a pending row from the application credentials stored as
+    // Edge Function secrets. End users should never have to paste the Quadra
+    // MercadoLibre app secret into the browser.
+    let { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
       accountId,
       columns: 'id, client_id, redirect_uri, site_id',
+      maybeSingle: true,
     });
 
-    if (accountError || !meliAccount) {
+    if (accountError) {
       return new Response(
-        JSON.stringify({ error: 'No Mercado Libre account configured. Please configure your account first.' }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: 'No se pudo leer la configuración de MercadoLibre' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!meliAccount && !accountId) {
+      const clientId = Deno.env.get('MELI_CLIENT_ID') || Deno.env.get('MELI_APP_ID') || '';
+      const clientSecret = Deno.env.get('MELI_CLIENT_SECRET') || '';
+      const redirectUri = Deno.env.get('MELI_REDIRECT_URI') || '';
+      const siteId = Deno.env.get('MELI_SITE_ID') || 'MLC';
+
+      if (!clientId || !clientSecret || !redirectUri) {
+        return new Response(
+          JSON.stringify({
+            error: 'La conexión de MercadoLibre no está configurada para este entorno',
+            missing: ['MELI_CLIENT_ID', 'MELI_CLIENT_SECRET', 'MELI_REDIRECT_URI'],
+          }),
+          { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const admin = createClient(
+        Deno.env.get('SUPABASE_URL') ?? '',
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      );
+
+      // Reuse a pending row if a previous OAuth attempt was abandoned.
+      const { data: pending } = await admin
+        .from('meli_accounts')
+        .select('id, client_id, redirect_uri, site_id')
+        .eq('user_id', user.id)
+        .is('seller_id', null)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (pending) {
+        const { data: refreshed, error: refreshError } = await admin
+          .from('meli_accounts')
+          .update({ client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, site_id: siteId })
+          .eq('id', pending.id)
+          .eq('user_id', user.id)
+          .select('id, client_id, redirect_uri, site_id')
+          .single();
+        if (refreshError) throw refreshError;
+        meliAccount = refreshed;
+      } else {
+        const { data: created, error: createError } = await admin
+          .from('meli_accounts')
+          .insert({ user_id: user.id, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, site_id: siteId })
+          .select('id, client_id, redirect_uri, site_id')
+          .single();
+        if (createError) throw createError;
+        meliAccount = created;
+      }
+    }
+
+    if (!meliAccount) {
+      return new Response(
+        JSON.stringify({ error: 'La cuenta MercadoLibre solicitada no existe' }),
+        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
@@ -81,7 +144,7 @@ Deno.serve(async (req) => {
     console.log('Generated auth URL for user:', user.id, 'domain:', domain, 'client_id:', meliAccount.client_id);
 
     return new Response(
-      JSON.stringify({ authUrl }),
+      JSON.stringify({ authUrl, auth_url: authUrl }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 

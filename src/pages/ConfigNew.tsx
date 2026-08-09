@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import { toast } from "sonner";
 
 // ── Conexiones ───────────────────────────────────────────────────────────────
 // Catálogo agrupado por categoría: marketplaces, ERPs y bancos. Las conexiones
@@ -45,6 +46,10 @@ export default function ConfigNew() {
   const [bsale, setBsale] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
   const [shopify, setShopify] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
   const [connectingMeli, setConnectingMeli] = useState(false);
+  const [showBsaleForm, setShowBsaleForm] = useState(false);
+  const [bsaleToken, setBsaleToken] = useState("");
+  const [connectingBsale, setConnectingBsale] = useState(false);
+  const [bsaleError, setBsaleError] = useState<string | null>(null);
   const [showShopifyForm, setShowShopifyForm] = useState(false);
   const [shopifyDomain, setShopifyDomain] = useState("");
   const [shopifyToken, setShopifyToken] = useState("");
@@ -57,7 +62,7 @@ export default function ConfigNew() {
       if (!session) navigate("/auth");
       else fetchConnections();
     });
-  }, []);
+  }, [navigate]);
 
   const fetchConnections = async () => {
     setLoading(true);
@@ -121,19 +126,38 @@ export default function ConfigNew() {
     try {
       const { data, error } = await supabase.functions.invoke("get-meli-auth-url");
       if (error) throw error;
-      window.location.href = data.auth_url;
-    } catch (e) {
+      const authUrl = data?.authUrl || data?.auth_url;
+      if (!authUrl) throw new Error(data?.error || "MercadoLibre no devolvió una URL de autorización");
+      window.location.assign(authUrl);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "No se pudo iniciar la conexión con MercadoLibre");
       setConnectingMeli(false);
     }
   };
 
   const connectBsale = async () => {
+    setBsaleError(null);
+    if (!bsaleToken.trim()) {
+      setBsaleError("Ingresa el access token de Bsale");
+      return;
+    }
+    setConnectingBsale(true);
     try {
-      const { data, error } = await supabase.functions.invoke("get-bsale-auth-url");
-      if (error) throw error;
-      window.location.href = data.url || data.auth_url;
-    } catch (e) {
-      alert("Error al obtener URL de Bsale");
+      const { data, error } = await supabase.functions.invoke("connect-bsale", {
+        body: { accessToken: bsaleToken.trim() },
+      });
+      if (error || !data?.success) {
+        setBsaleError(data?.error || "No se pudo validar el token de Bsale");
+        return;
+      }
+      setBsaleToken("");
+      setShowBsaleForm(false);
+      toast.success("Cuenta Bsale conectada");
+      await fetchConnections();
+    } catch (e: unknown) {
+      setBsaleError(e instanceof Error ? e.message : "No se pudo conectar Bsale");
+    } finally {
+      setConnectingBsale(false);
     }
   };
 
@@ -204,7 +228,7 @@ export default function ConfigNew() {
       brand: { bg: "bg-blue-600", fg: "text-white", initial: "B" },
       status: bsale.connected ? "connected" : "disconnected",
       detail: bsale.detail,
-      action: connectBsale,
+      action: () => setShowBsaleForm(v => !v), loading: connectingBsale,
     },
     {
       id: "defontana", name: "Defontana", category: "erp",
@@ -302,6 +326,37 @@ export default function ConfigNew() {
                           Guardar y validar
                         </button>
                         <button onClick={() => setShowShopifyForm(false)}
+                          className="px-3 py-1.5 text-sm border rounded-md hover:bg-slate-50">
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {cat === "erp" && showBsaleForm && (
+                    <div className="mt-4 bg-white border rounded-lg p-4 space-y-3">
+                      <p className="text-xs text-slate-500">
+                        Pega el access token entregado por Bsale. Quadra lo valida en modo solo lectura antes de guardarlo.
+                      </p>
+                      <div>
+                        <label className="text-xs text-slate-600">Access token de Bsale</label>
+                        <input
+                          type="password"
+                          value={bsaleToken}
+                          onChange={(e) => setBsaleToken(e.target.value)}
+                          placeholder="Token de acceso"
+                          autoComplete="off"
+                          className="mt-1 w-full border rounded-md px-3 py-1.5 text-sm"
+                        />
+                      </div>
+                      {bsaleError && <p className="text-sm text-red-500">{bsaleError}</p>}
+                      <div className="flex gap-2">
+                        <button onClick={connectBsale} disabled={connectingBsale}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-900 text-white rounded-md hover:bg-slate-700 disabled:opacity-50">
+                          {connectingBsale && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                          Guardar y validar
+                        </button>
+                        <button onClick={() => { setShowBsaleForm(false); setBsaleError(null); }}
                           className="px-3 py-1.5 text-sm border rounded-md hover:bg-slate-50">
                           Cancelar
                         </button>

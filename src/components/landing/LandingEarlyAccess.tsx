@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
 
 export const LandingEarlyAccess = () => {
   const [email, setEmail] = useState("");
@@ -11,19 +12,29 @@ export const LandingEarlyAccess = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!email) {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
       toast.error("Por favor ingresa tu email");
       return;
     }
 
     setIsLoading(true);
-    
-    // Simulate API call - in production, this would save to a database
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    toast.success("¡Gracias! Te contactaremos pronto.");
-    setEmail("");
-    setIsLoading(false);
+    try {
+      const { error } = await supabase
+        .from("early_access_leads")
+        .insert({ email: normalizedEmail, source: "landing" });
+
+      // A repeated request is already safely persisted, so keep the public
+      // response idempotent and avoid revealing whether an address exists.
+      if (error && error.code !== "23505") throw error;
+
+      toast.success("¡Gracias! Te contactaremos pronto.");
+      setEmail("");
+    } catch {
+      toast.error("No pudimos guardar tu solicitud. Intenta nuevamente.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -42,6 +53,8 @@ export const LandingEarlyAccess = () => {
           <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-3 sm:flex-row sm:gap-2">
             <Input
               type="email"
+              name="email"
+              autoComplete="email"
               placeholder="tu@email.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
