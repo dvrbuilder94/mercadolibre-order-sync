@@ -235,23 +235,18 @@ export default function ConfigNew() {
 
   const connectMercadoPago = async () => {
     setMpError(null);
-    if (!mpToken.trim()) {
-      setMpError("Ingresa el access token de producción de Mercado Pago");
-      return;
-    }
     setConnectingMp(true);
     try {
-      const { data, error } = await supabase.functions.invoke("connect-mercadopago", {
-        body: { access_token: mpToken.trim() },
-      });
-      if (error || !data?.success) {
-        setMpError(data?.error || "No se pudo validar el token de Mercado Pago");
+      const { data, error } = await supabase.functions.invoke("get-mercadopago-auth-url");
+      const authUrl = data?.authUrl;
+      if (error || !authUrl) {
+        setMpError(
+          data?.error ||
+          "No se pudo iniciar la autorización. Verificá que la aplicación de Mercado Pago esté configurada.",
+        );
         return;
       }
-      setMpToken("");
-      setShowMpForm(false);
-      toast.success("Cuenta de Mercado Pago conectada");
-      await fetchConnections();
+      window.location.assign(authUrl);
     } catch (e: unknown) {
       setMpError(e instanceof Error ? e.message : "No se pudo conectar Mercado Pago");
     } finally {
