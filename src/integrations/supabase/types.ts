@@ -435,12 +435,18 @@ export type Database = {
       mercadopago_accounts: {
         Row: {
           access_token: string
+          connection_method: string
           created_at: string
           email: string | null
+          expires_at: string | null
           id: string
+          last_settlement_sync_at: string | null
           last_sync_at: string | null
           mp_user_id: string | null
           nickname: string | null
+          public_key: string | null
+          refresh_token: string | null
+          scope: string | null
           site_id: string | null
           status: string
           updated_at: string
@@ -448,12 +454,18 @@ export type Database = {
         }
         Insert: {
           access_token: string
+          connection_method?: string
           created_at?: string
           email?: string | null
+          expires_at?: string | null
           id?: string
+          last_settlement_sync_at?: string | null
           last_sync_at?: string | null
           mp_user_id?: string | null
           nickname?: string | null
+          public_key?: string | null
+          refresh_token?: string | null
+          scope?: string | null
           site_id?: string | null
           status?: string
           updated_at?: string
@@ -461,15 +473,48 @@ export type Database = {
         }
         Update: {
           access_token?: string
+          connection_method?: string
           created_at?: string
           email?: string | null
+          expires_at?: string | null
           id?: string
+          last_settlement_sync_at?: string | null
           last_sync_at?: string | null
           mp_user_id?: string | null
           nickname?: string | null
+          public_key?: string | null
+          refresh_token?: string | null
+          scope?: string | null
           site_id?: string | null
           status?: string
           updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      mercadopago_oauth_states: {
+        Row: {
+          code_verifier: string
+          created_at: string
+          expires_at: string
+          redirect_uri: string
+          state: string
+          user_id: string
+        }
+        Insert: {
+          code_verifier: string
+          created_at?: string
+          expires_at?: string
+          redirect_uri: string
+          state: string
+          user_id: string
+        }
+        Update: {
+          code_verifier?: string
+          created_at?: string
+          expires_at?: string
+          redirect_uri?: string
+          state?: string
           user_id?: string
         }
         Relationships: []
