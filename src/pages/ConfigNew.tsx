@@ -415,6 +415,8 @@ export default function ConfigNew() {
             )}
           </DialogContent>
         </Dialog>
+
+        <MeliConnectWizard open={meliWizardOpen} onOpenChange={setMeliWizardOpen} />
       </main>
     </div>
   );
