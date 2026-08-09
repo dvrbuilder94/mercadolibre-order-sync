@@ -469,14 +469,14 @@ export default function ConfigNew() {
           open={showShopifyForm}
           onOpenChange={(o) => { setShowShopifyForm(o); if (!o) setShopifyError(null); }}
           title="Conectar Shopify"
-          subtitle="Creá una app privada en el admin de tu tienda y pegá el token. Toma 2 minutos."
-          docsUrl="https://help.shopify.com/es/manual/apps/app-types/custom-apps"
-          docsLabel="Ver guía oficial de apps privadas (Custom apps)"
+          subtitle="Creá la app en el Dev Dashboard, instalala en tu tienda y pegá el Client ID + Secret."
+          docsUrl="https://shopify.dev/docs/apps/build/authentication-authorization/client-credentials"
+          docsLabel="Ver guía oficial (client credentials)"
           steps={[
-            { title: "Entrá al admin de tu tienda", body: <>Abrí <code className="rounded bg-muted px-1">admin.shopify.com/store/<strong>mitienda</strong></code> (no el Partner Dashboard).</> },
-            { title: "Configuración → Apps y canales de venta", body: <>Arriba a la derecha hacé clic en <strong>Desarrollar apps</strong> (Develop apps) → <strong>Crear app</strong> y ponele “Quadra”.</> },
-            { title: "Permisos de solo lectura", body: <>En <strong>Configuración → Admin API</strong> marcá:<CopyableValue label="Copiar scopes" value="read_orders, read_all_orders, read_products, read_customers, read_fulfillments" /></> },
-            { title: "Instalar y copiar el token", body: <>Guardá → <strong>Instalar app</strong>. Shopify muestra el <strong>Admin API access token</strong> (empieza con <code className="rounded bg-muted px-1">shpat_</code>) <strong>una sola vez</strong>. Copialo y pegalo abajo.</> },
+            { title: "Creá la app", body: <>En el <strong>Dev Dashboard</strong> de Shopify creá una app y ponele “Quadra”.</> },
+            { title: "Permisos de solo lectura", body: <>En <strong>Configuration → Admin API scopes</strong> marcá:<CopyableValue label="Copiar scopes" value="read_orders, read_all_orders, read_products, read_customers, read_fulfillments" /></> },
+            { title: "Instalá la app en la tienda", body: <>Paso obligatorio: en la app, elegí tu tienda y hacé clic en <strong>Install</strong>. Sin instalar, Shopify devuelve un token pero rechaza todas las consultas. Si te redirige a otra página, volvé acá: la instalación ya quedó hecha.</> },
+            { title: "Copiá Client ID y Client Secret", body: <>Están en <strong>Overview / API credentials</strong>. El secret empieza con <code className="rounded bg-muted px-1">shpss_</code>. Quadra genera solo el token de 24 h.</> },
             { title: "Usá el dominio .myshopify.com", body: <>En el shop domain va el dominio interno (<code className="rounded bg-muted px-1">mitienda.myshopify.com</code>), no tu dominio público.</> },
           ]}
           note={<>El token se envía directo al backend, que es el único que habla con Shopify, y nunca vuelve al navegador. La conexión se marca <strong>Conectada</strong> solo después de una consulta real a la tienda.</>}
