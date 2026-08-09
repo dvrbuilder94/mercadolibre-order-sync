@@ -56,7 +56,8 @@ export default function ConfigNew() {
   const [bsaleError, setBsaleError] = useState<string | null>(null);
   const [showShopifyForm, setShowShopifyForm] = useState(false);
   const [shopifyDomain, setShopifyDomain] = useState("");
-  const [shopifyToken, setShopifyToken] = useState("");
+  const [shopifyClientId, setShopifyClientId] = useState("");
+  const [shopifyClientSecret, setShopifyClientSecret] = useState("");
   const [connectingShopify, setConnectingShopify] = useState(false);
   const [shopifyError, setShopifyError] = useState<string | null>(null);
   const [mercadopago, setMercadopago] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
@@ -209,20 +210,25 @@ export default function ConfigNew() {
 
   const connectShopify = async () => {
     setShopifyError(null);
-    if (!shopifyDomain.trim() || !shopifyToken.trim()) {
-      setShopifyError("Completa el shop domain y el access token");
+    if (!shopifyDomain.trim() || !shopifyClientId.trim() || !shopifyClientSecret.trim()) {
+      setShopifyError("Completa el shop domain, el Client ID y el Client Secret");
       return;
     }
     setConnectingShopify(true);
     try {
       const { data, error } = await supabase.functions.invoke("connect-shopify", {
-        body: { shop_domain: shopifyDomain.trim(), access_token: shopifyToken.trim() },
+        body: {
+          shop_domain: shopifyDomain.trim(),
+          client_id: shopifyClientId.trim(),
+          client_secret: shopifyClientSecret.trim(),
+        },
       });
       if (error || !data?.success) {
         setShopifyError(data?.error || "Error al conectar con Shopify");
         return;
       }
-      setShopifyToken("");
+      setShopifyClientId("");
+      setShopifyClientSecret("");
       setShowShopifyForm(false);
       await fetchConnections();
     } catch (e) {
@@ -447,17 +453,17 @@ export default function ConfigNew() {
           open={showShopifyForm}
           onOpenChange={(o) => { setShowShopifyForm(o); if (!o) setShopifyError(null); }}
           title="Conectar Shopify"
-          subtitle="Creá una app personalizada en tu tienda y pegá el Admin API access token."
-          docsUrl="https://help.shopify.com/en/manual/apps/app-types/custom-apps"
-          docsLabel="Ver guía oficial de custom apps de Shopify"
+          subtitle="Creá la app en el Dev Dashboard y pegá su Client ID y Client Secret. El token lo genera Quadra en el backend."
+          docsUrl="https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/client-credentials-grant"
+          docsLabel="Ver documentación oficial del client credentials grant"
           steps={[
-            { title: "Habilitá el desarrollo de apps", body: <>En el admin de Shopify: <strong>Settings → Apps and sales channels → Develop apps</strong> → <em>Allow custom app development</em>.</> },
-            { title: "Creá la app", body: <><strong>Create an app</strong>, ponele un nombre (por ejemplo “Quadra”) y confirmá.</> },
-            { title: "Configurá los permisos", body: <>En <strong>Configuration → Admin API integration</strong> activá los scopes:<CopyableValue label="Copiar scopes" value="read_orders, read_all_orders, read_products, read_customers, read_fulfillments" /></> },
-            { title: "Instalá y revelá el token", body: <>Pestaña <strong>API credentials</strong> → <strong>Install app</strong> → <strong>Reveal token once</strong>. Empieza con <code className="rounded bg-muted px-1">shpat_</code> y se muestra una sola vez. <strong>No uses</strong> el “ID de cliente” ni el “Secreto de la API”: esos no sirven para leer las órdenes.</> },
-            { title: "Usá el dominio .myshopify.com", body: <>En el shop domain va el dominio interno de la tienda (<code className="rounded bg-muted px-1">mitienda.myshopify.com</code>), no tu dominio público. Lo ves en la barra de direcciones del admin: <code className="rounded bg-muted px-1">admin.shopify.com/store/<strong>mitienda</strong></code>.</> },
+            { title: "Creá la app en el Dev Dashboard", body: <>Entrá a <strong>shopify.dev → Dev Dashboard → Apps → Create app</strong> y ponele un nombre (por ejemplo “Quadra”).</> },
+            { title: "Asociá la app a tu tienda", body: <>En la app: <strong>Overview → Install app</strong> y elegí tu tienda. Solo esa tienda queda habilitada (la app permanece privada).</> },
+            { title: "Activá los permisos de solo lectura", body: <>En <strong>Configuration → Access scopes</strong> habilitá:<CopyableValue label="Copiar scopes" value="read_orders, read_all_orders, read_products, read_customers, read_fulfillments" /></> },
+            { title: "Copiá las credenciales de la app", body: <>En <strong>Overview → Client credentials</strong> copiá el <strong>Client ID</strong> y el <strong>Client secret</strong>. Ya no hace falta ningún token <code className="rounded bg-muted px-1">shpat_</code>: Quadra genera un token de 24 h en el backend y lo renueva solo.</> },
+            { title: "Usá el dominio .myshopify.com", body: <>En el shop domain va el dominio interno (<code className="rounded bg-muted px-1">mitienda.myshopify.com</code>), no tu dominio público. Lo ves en <code className="rounded bg-muted px-1">admin.shopify.com/store/<strong>mitienda</strong></code>.</> },
           ]}
-          note={<><strong>read_orders</strong> solo entrega los últimos 60 días. Para el histórico completo pedí el permiso <strong>read_all_orders</strong> a Shopify desde la misma pantalla de scopes.</>}
+          note={<>El Client Secret nunca viaja al navegador ni se guarda en tu equipo: se envía cifrado al backend, que es el único que habla con Shopify. La conexión se marca <strong>Conectada</strong> solo después de una consulta real a la tienda.</>}
           error={shopifyError}
           submitting={connectingShopify}
           onSubmit={connectShopify}
@@ -476,13 +482,25 @@ export default function ConfigNew() {
                 <p className="text-xs text-muted-foreground">Debe terminar en <code className="rounded bg-muted px-1">.myshopify.com</code>.</p>
               </div>
               <div className="space-y-1.5">
-                <label htmlFor="shopify-token" className="text-xs text-slate-600">Admin API access token</label>
+                <label htmlFor="shopify-client-id" className="text-xs text-slate-600">Client ID</label>
                 <input
-                  id="shopify-token"
+                  id="shopify-client-id"
+                  type="text"
+                  value={shopifyClientId}
+                  onChange={(e) => setShopifyClientId(e.target.value)}
+                  placeholder="Client ID de la app"
+                  autoComplete="off"
+                  className="w-full rounded-md border px-3 py-1.5 text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="shopify-client-secret" className="text-xs text-slate-600">Client Secret</label>
+                <input
+                  id="shopify-client-secret"
                   type="password"
-                  value={shopifyToken}
-                  onChange={(e) => setShopifyToken(e.target.value)}
-                  placeholder="shpat_..."
+                  value={shopifyClientSecret}
+                  onChange={(e) => setShopifyClientSecret(e.target.value)}
+                  placeholder="Client secret de la app"
                   autoComplete="off"
                   className="w-full rounded-md border px-3 py-1.5 text-sm"
                 />

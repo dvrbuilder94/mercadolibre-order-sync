@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveUserId } from '../_shared/auth.ts';
+import { loadShopifyAccount, shopifyGraphQL, type ShopifyAccount } from '../_shared/shopify-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -7,18 +8,14 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-// Quarterly Shopify API version (YYYY-MM). Keep in sync with connect-shopify.
-const SHOPIFY_API_VERSION = '2026-04';
-const FETCH_TIMEOUT_MS = 20_000;
 const TIME_BUDGET_MS = 100_000; // margen bajo el límite (~150s) de Edge Functions
 const PAGE_SIZE = 50;
 const MAX_PAGES_PER_INVOCATION = 20;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// REST Admin API is legacy (since Oct 2024); GraphQL is what Shopify steers
-// all new development to, including custom apps, so the sync uses it
-// exclusively rather than mixing both.
+// GraphQL Admin API (la REST es legacy desde oct-2024). Traemos además
+// transacciones (pagos/gateway/fees) y reembolsos para tesorería.
 const ORDERS_QUERY = `
   query SyncOrders($first: Int!, $after: String, $query: String) {
     orders(first: $first, after: $after, query: $query, sortKey: CREATED_AT) {
@@ -39,8 +36,31 @@ const ORDERS_QUERY = `
           totalShippingPriceSet { shopMoney { amount } }
           totalTaxSet { shopMoney { amount } }
           totalDiscountsSet { shopMoney { amount } }
-          lineItems(first: 5) {
-            edges { node { title sku } }
+          totalRefundedSet { shopMoney { amount } }
+          transactions(first: 10) {
+            id
+            kind
+            status
+            gateway
+            processedAt
+            amountSet { shopMoney { amount currencyCode } }
+            fees { id rate type flatFee { amount } amount { amount } }
+          }
+          refunds(first: 10) {
+            id
+            createdAt
+            totalRefundedSet { shopMoney { amount } }
+          }
+          lineItems(first: 50) {
+            edges {
+              node {
+                title
+                sku
+                quantity
+                variant { id sku title inventoryItem { id } }
+                product { id title }
+              }
+            }
           }
         }
       }
@@ -48,74 +68,6 @@ const ORDERS_QUERY = `
     }
   }
 `;
-
-async function fetchShopifyGraphQL(shopDomain: string, accessToken: string, query: string, variables: Record<string, unknown>) {
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-    try {
-      const response = await fetch(`https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
-        method: 'POST',
-        headers: {
-          'X-Shopify-Access-Token': accessToken,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ query, variables }),
-        signal: controller.signal,
-      });
-
-      const rawText = await response.text().catch(() => '');
-
-      if (response.status === 429) {
-        if (attempt < 2) {
-          console.warn('Shopify rate limit (429), retrying...');
-          await sleep(1500 * attempt);
-          continue;
-        }
-        return { ok: false as const, error: 'Shopify rate limit (429)' };
-      }
-
-      if (!response.ok) {
-        return { ok: false as const, error: `Shopify API ${response.status}`, detail: rawText.slice(0, 300) };
-      }
-
-      let data: any;
-      try {
-        data = JSON.parse(rawText);
-      } catch {
-        return { ok: false as const, error: 'Shopify API invalid JSON', detail: rawText.slice(0, 300) };
-      }
-
-      if (data.errors) {
-        const throttled = data.errors.some((e: any) => e.extensions?.code === 'THROTTLED');
-        if (throttled && attempt < 2) {
-          console.warn('Shopify GraphQL THROTTLED, retrying...');
-          await sleep(1500 * attempt);
-          continue;
-        }
-        return { ok: false as const, error: 'Shopify GraphQL error', detail: JSON.stringify(data.errors).slice(0, 300) };
-      }
-
-      return { ok: true as const, data: data.data };
-    } catch (e: any) {
-      const error = e?.name === 'AbortError'
-        ? `Shopify fetch timeout (${FETCH_TIMEOUT_MS}ms)`
-        : `fetch failed: ${e?.message || 'network'}`;
-
-      if (attempt < 2) {
-        console.warn(`${error}, retrying...`);
-        await sleep(500 * attempt);
-        continue;
-      }
-      return { ok: false as const, error };
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
-  return { ok: false as const, error: 'Shopify fetch failed' };
-}
 
 // Maps a Shopify Order (GraphQL) node to our multi-channel `orders` schema.
 // Unlike MELI, Shopify isn't a marketplace that takes a per-order commission
@@ -136,6 +88,14 @@ function transformOrder(order: any, shopifyAccountId: string) {
   else if (order.displayFulfillmentStatus === 'PARTIALLY_FULFILLED' || order.displayFulfillmentStatus === 'IN_PROGRESS') status = 'shipped';
   else if (order.displayFinancialStatus === 'PAID' || order.displayFinancialStatus === 'PARTIALLY_PAID') status = 'confirmed';
 
+  const refundedAmount = parseFloat(order.totalRefundedSet?.shopMoney?.amount ?? '0');
+  const transactions: any[] = order.transactions || [];
+  const gatewayFees = transactions.reduce((acc: number, t: any) => {
+    const fees = (t?.fees || []).reduce((s: number, f: any) => s + parseFloat(f?.amount?.amount ?? '0'), 0);
+    return acc + fees;
+  }, 0);
+  const gateway = transactions.find((t: any) => t?.kind === 'SALE' || t?.kind === 'CAPTURE')?.gateway || null;
+
   const firstLineItem = order.lineItems?.edges?.[0]?.node;
   const orderId = order.legacyResourceId?.toString() || order.id;
 
@@ -152,10 +112,10 @@ function transformOrder(order: any, shopifyAccountId: string) {
     raw_data: order,
 
     gross_amount: amount,
-    net_amount: amount,
-    commission_percentage: 0,
-    commission_amount: 0,
-    payment_method: 'shopify_payments',
+    net_amount: Math.round((amount - gatewayFees - refundedAmount) * 100) / 100,
+    commission_percentage: amount > 0 ? Math.round((gatewayFees / amount) * 10000) / 100 : 0,
+    commission_amount: gatewayFees,
+    payment_method: gateway || 'shopify_payments',
     payment_approved_at: order.createdAt,
     expected_payment_date: order.createdAt,
     has_exact_data: false,
@@ -169,7 +129,7 @@ function transformOrder(order: any, shopifyAccountId: string) {
     tax_amount: taxAmount,
 
     product_title: firstLineItem?.title || null,
-    seller_sku: firstLineItem?.sku || null,
+    seller_sku: firstLineItem?.sku || firstLineItem?.variant?.sku || null,
   };
 }
 
@@ -209,17 +169,10 @@ Deno.serve(async (req) => {
     }
     const user = { id: userId };
 
-    let accountQuery = supabaseClient
-      .from('shopify_accounts')
-      .select('id, shop_domain, access_token, status')
-      .eq('user_id', user.id)
-      .eq('status', 'connected');
-    if (accountIdParam) accountQuery = accountQuery.eq('id', accountIdParam);
+    const shopifyAccount: ShopifyAccount | null = await loadShopifyAccount(supabaseClient, user.id, accountIdParam);
 
-    const { data: shopifyAccount, error: accountError } = await accountQuery.maybeSingle();
-
-    if (accountError || !shopifyAccount) {
-      console.error('Shopify account not found or not connected:', accountError);
+    if (!shopifyAccount) {
+      console.error('Shopify account not found or not connected');
       return new Response(
         JSON.stringify({
           error: 'Shopify no conectado',
@@ -261,7 +214,7 @@ Deno.serve(async (req) => {
         break;
       }
 
-      const result = await fetchShopifyGraphQL(shopifyAccount.shop_domain, shopifyAccount.access_token, ORDERS_QUERY, {
+      const result = await shopifyGraphQL(supabaseClient, shopifyAccount, ORDERS_QUERY, {
         first: PAGE_SIZE,
         after: afterCursor,
         query: searchQuery,

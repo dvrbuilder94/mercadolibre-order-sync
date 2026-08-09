@@ -1348,39 +1348,116 @@ export type Database = {
       }
       shopify_accounts: {
         Row: {
-          access_token: string
+          access_token: string | null
           api_key: string | null
           api_secret: string | null
+          client_id: string | null
+          client_secret: string | null
           created_at: string
           id: string
           shop_domain: string
           status: string | null
+          token_expires_at: string | null
           updated_at: string
           user_id: string
         }
         Insert: {
-          access_token: string
+          access_token?: string | null
           api_key?: string | null
           api_secret?: string | null
+          client_id?: string | null
+          client_secret?: string | null
           created_at?: string
           id?: string
           shop_domain: string
           status?: string | null
+          token_expires_at?: string | null
           updated_at?: string
           user_id: string
         }
         Update: {
-          access_token?: string
+          access_token?: string | null
           api_key?: string | null
           api_secret?: string | null
+          client_id?: string | null
+          client_secret?: string | null
           created_at?: string
           id?: string
           shop_domain?: string
           status?: string | null
+          token_expires_at?: string | null
           updated_at?: string
           user_id?: string
         }
         Relationships: []
+      }
+      shopify_products: {
+        Row: {
+          barcode: string | null
+          channel_account_id: string
+          created_at: string
+          id: string
+          inventory_quantity: number | null
+          price: number | null
+          product_id: string
+          product_title: string | null
+          product_type: string | null
+          raw_data: Json | null
+          sku: string | null
+          status: string | null
+          updated_at: string
+          user_id: string
+          variant_id: string
+          variant_title: string | null
+          vendor: string | null
+        }
+        Insert: {
+          barcode?: string | null
+          channel_account_id: string
+          created_at?: string
+          id?: string
+          inventory_quantity?: number | null
+          price?: number | null
+          product_id: string
+          product_title?: string | null
+          product_type?: string | null
+          raw_data?: Json | null
+          sku?: string | null
+          status?: string | null
+          updated_at?: string
+          user_id: string
+          variant_id: string
+          variant_title?: string | null
+          vendor?: string | null
+        }
+        Update: {
+          barcode?: string | null
+          channel_account_id?: string
+          created_at?: string
+          id?: string
+          inventory_quantity?: number | null
+          price?: number | null
+          product_id?: string
+          product_title?: string | null
+          product_type?: string | null
+          raw_data?: Json | null
+          sku?: string | null
+          status?: string | null
+          updated_at?: string
+          user_id?: string
+          variant_id?: string
+          variant_title?: string | null
+          vendor?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shopify_products_channel_account_id_fkey"
+            columns: ["channel_account_id"]
+            isOneToOne: false
+            referencedRelation: "shopify_accounts"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       tax_documents: {
         Row: {

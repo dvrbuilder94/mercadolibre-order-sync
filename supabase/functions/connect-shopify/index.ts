@@ -1,182 +1,121 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import {
+  SHOPIFY_API_VERSION,
+  normalizeShopDomain,
+  mintAccessToken,
+  ShopifyAuthError,
+} from '../_shared/shopify-account.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// Quarterly Shopify API version (YYYY-MM, e.g. 2026-04/07/10). Bump
-// periodically — Shopify keeps each version live for ~1 year after release.
-const SHOPIFY_API_VERSION = '2026-04'
-
-function normalizeShopDomain(input: string): string {
-  let domain = input.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '')
-  if (!domain.includes('.')) domain = `${domain}.myshopify.com`
-  return domain
-}
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders })
-  }
+  if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
 
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    const supabase = createClient(supabaseUrl, supabaseKey)
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    )
 
     const authHeader = req.headers.get('Authorization')
     if (!authHeader?.startsWith('Bearer ')) {
-      return new Response(JSON.stringify({ success: false, error: 'No authorization header' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
+      return json({ success: false, error: 'No authorization header' }, 401)
     }
 
-    const token = authHeader.replace('Bearer ', '')
-    const { data: claimsData, error: claimsError } = await supabase.auth.getUser(token)
-
+    const { data: claimsData, error: claimsError } = await supabase.auth.getUser(
+      authHeader.replace('Bearer ', ''),
+    )
     if (claimsError || !claimsData.user) {
-      console.error('Auth error:', claimsError)
-      return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
+      return json({ success: false, error: 'Unauthorized' }, 401)
     }
-
     const userId = claimsData.user.id
 
     const body = await req.json().catch(() => ({}))
-    const { shop_domain, access_token } = body
+    const shopDomainRaw = typeof body.shop_domain === 'string' ? body.shop_domain : ''
+    const clientId = typeof body.client_id === 'string' ? body.client_id.trim() : ''
+    const clientSecret = typeof body.client_secret === 'string' ? body.client_secret.trim() : ''
 
-    if (!shop_domain || typeof shop_domain !== 'string' || !shop_domain.trim()) {
-      return new Response(JSON.stringify({ success: false, error: 'shop_domain es requerido' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
-    }
-    if (!access_token || typeof access_token !== 'string' || !access_token.trim()) {
-      return new Response(JSON.stringify({ success: false, error: 'access_token es requerido' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
-    }
+    if (!shopDomainRaw.trim()) return json({ success: false, error: 'shop_domain es requerido' }, 400)
+    if (!clientId) return json({ success: false, error: 'client_id es requerido' }, 400)
+    if (!clientSecret) return json({ success: false, error: 'client_secret es requerido' }, 400)
 
-    const shopDomain = normalizeShopDomain(shop_domain)
-    const accessToken = access_token.trim()
-
-    // El Admin API solo responde en el dominio interno *.myshopify.com; un
-    // dominio público (ej: www.mitienda.cl) devuelve 401 y confunde al usuario.
+    const shopDomain = normalizeShopDomain(shopDomainRaw)
     if (!shopDomain.endsWith('.myshopify.com')) {
-      return new Response(JSON.stringify({
+      return json({
         success: false,
         error: `El shop domain debe ser el dominio interno de Shopify (ej: mitienda.myshopify.com), no "${shopDomain}". Lo encontrás en la URL del admin: admin.shopify.com/store/mitienda.`,
-      }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
+      }, 400)
     }
 
-    if (!accessToken.startsWith('shpat_')) {
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'El token debe ser el Admin API access token (empieza con shpat_), que se revela una sola vez en API credentials → Install app. No sirve el ID de cliente ni el secreto de la API.',
-      }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
+    // 1) Token de 24h vía client_credentials (nunca sale del backend).
+    let minted: { accessToken: string; expiresAt: string }
+    try {
+      minted = await mintAccessToken(shopDomain, clientId, clientSecret)
+    } catch (e) {
+      const message = e instanceof ShopifyAuthError
+        ? e.message
+        : 'No se pudo obtener el token de Shopify. Verificá el dominio y las credenciales.'
+      console.error('Shopify token exchange failed for shop:', shopDomain)
+      return json({ success: false, error: message }, 400)
     }
 
-    // Validate credentials against Shopify before saving anything.
-    console.log(`Validating Shopify credentials for ${shopDomain}...`)
-    const shopifyResponse = await fetch(`https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+    // 2) Validación real: consulta GraphQL de solo lectura.
+    const probe = await fetch(`https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
       method: 'POST',
-      headers: {
-        'X-Shopify-Access-Token': accessToken,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'X-Shopify-Access-Token': minted.accessToken, 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: '{ shop { name myshopifyDomain } }' }),
     })
 
-    if (!shopifyResponse.ok) {
-      const detail = await shopifyResponse.text().catch(() => '')
-      console.error('Shopify API error:', shopifyResponse.status, detail)
-
-      if (shopifyResponse.status === 401 || shopifyResponse.status === 403) {
-        return new Response(JSON.stringify({
-          success: false,
-          error: 'Token inválido o sin permisos. Verifica el Admin API access token y que la app tenga el scope read_orders.',
-        }), {
-          status: 400,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        })
-      }
-
-      return new Response(JSON.stringify({
+    if (!probe.ok) {
+      console.error('Shopify shop query failed with status', probe.status)
+      return json({
         success: false,
-        error: 'No se pudo conectar con Shopify. Verifica el shop domain (ej: mitienda.myshopify.com).',
-      }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
+        error: probe.status === 401 || probe.status === 403
+          ? 'La app no tiene permisos de lectura. Habilitá los scopes read_orders / read_products en el Dev Dashboard.'
+          : 'No se pudo consultar la tienda en Shopify.',
+      }, 400)
     }
 
-    const shopifyData = await shopifyResponse.json()
-
-    if (shopifyData.errors || !shopifyData.data?.shop) {
-      console.error('Shopify GraphQL errors:', shopifyData.errors)
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Token inválido o sin permisos en Shopify.',
-      }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
+    const probeData = await probe.json().catch(() => null)
+    if (probeData?.errors || !probeData?.data?.shop) {
+      console.error('Shopify GraphQL rejected the shop query')
+      return json({ success: false, error: 'La app no tiene permisos de lectura sobre la tienda.' }, 400)
     }
 
-    const shopName = shopifyData.data.shop.name || shopDomain
-    console.log(`Shopify shop validated: ${shopName}`)
+    const shopName = probeData.data.shop.name || shopDomain
 
+    // 3) Recién con la consulta OK persistimos y marcamos conectado.
     const { error: upsertError } = await supabase
       .from('shopify_accounts')
       .upsert({
         user_id: userId,
         shop_domain: shopDomain,
-        access_token: accessToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+        access_token: minted.accessToken,
+        token_expires_at: minted.expiresAt,
         status: 'connected',
         updated_at: new Date().toISOString(),
-      }, {
-        onConflict: 'user_id',
-      })
+      }, { onConflict: 'user_id' })
 
     if (upsertError) {
-      console.error('Error saving to database:', upsertError)
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Error al guardar credenciales. Intenta nuevamente.',
-      }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
+      console.error('Error saving Shopify account:', upsertError.message)
+      return json({ success: false, error: 'Error al guardar la conexión. Intentá nuevamente.' }, 500)
     }
 
-    console.log('Shopify account saved successfully for user:', userId)
-
-    return new Response(JSON.stringify({
-      success: true,
-      shopName,
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
-
+    console.log('Shopify connected for user:', userId, '| shop:', shopDomain)
+    return json({ success: true, shopName })
   } catch (error) {
-    console.error('Unexpected error:', error)
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Error interno del servidor',
-    }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    console.error('Unexpected error in connect-shopify')
+    return json({ success: false, error: 'Error interno del servidor' }, 500)
   }
 })
