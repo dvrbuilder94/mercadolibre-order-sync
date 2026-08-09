@@ -1391,6 +1391,74 @@ export type Database = {
         }
         Relationships: []
       }
+      shopify_products: {
+        Row: {
+          barcode: string | null
+          channel_account_id: string
+          created_at: string
+          id: string
+          inventory_quantity: number | null
+          price: number | null
+          product_id: string
+          product_title: string | null
+          product_type: string | null
+          raw_data: Json | null
+          sku: string | null
+          status: string | null
+          updated_at: string
+          user_id: string
+          variant_id: string
+          variant_title: string | null
+          vendor: string | null
+        }
+        Insert: {
+          barcode?: string | null
+          channel_account_id: string
+          created_at?: string
+          id?: string
+          inventory_quantity?: number | null
+          price?: number | null
+          product_id: string
+          product_title?: string | null
+          product_type?: string | null
+          raw_data?: Json | null
+          sku?: string | null
+          status?: string | null
+          updated_at?: string
+          user_id: string
+          variant_id: string
+          variant_title?: string | null
+          vendor?: string | null
+        }
+        Update: {
+          barcode?: string | null
+          channel_account_id?: string
+          created_at?: string
+          id?: string
+          inventory_quantity?: number | null
+          price?: number | null
+          product_id?: string
+          product_title?: string | null
+          product_type?: string | null
+          raw_data?: Json | null
+          sku?: string | null
+          status?: string | null
+          updated_at?: string
+          user_id?: string
+          variant_id?: string
+          variant_title?: string | null
+          vendor?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shopify_products_channel_account_id_fkey"
+            columns: ["channel_account_id"]
+            isOneToOne: false
+            referencedRelation: "shopify_accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tax_documents: {
         Row: {
           client_name: string | null
