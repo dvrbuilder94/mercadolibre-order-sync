@@ -74,3 +74,6 @@ verify_jwt = true
 
 [functions.check-orphan-payments]
 verify_jwt = true
+
+[functions.connect-mercadopago]
+verify_jwt = true

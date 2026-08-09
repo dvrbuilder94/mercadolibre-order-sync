@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import {
   CheckCircle2, Loader2, Plug, Sparkles,
-  ShoppingBag, FileText, Landmark, Lock,
+  ShoppingBag, FileText, Landmark, Lock, Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -21,7 +21,7 @@ import { ConnectGuideDialog, CopyableValue } from "@/components/ConnectGuideDial
 // visuales — no llaman a ningún edge function aún.
 
 type Status = "connected" | "disconnected" | "coming_soon";
-type Category = "marketplace" | "erp" | "bank";
+type Category = "marketplace" | "payment" | "erp" | "bank";
 
 interface ConnectorCard {
   id: string;
@@ -37,6 +37,7 @@ interface ConnectorCard {
 
 const CAT_LABEL: Record<Category, { title: string; sub: string; Icon: typeof ShoppingBag }> = {
   marketplace: { title: "Marketplaces",  sub: "De dónde vienen las ventas",   Icon: ShoppingBag },
+  payment:     { title: "Pasarelas de pago", sub: "De dónde viene la plata",  Icon: Wallet },
   erp:         { title: "ERP / Facturación", sub: "De dónde vienen los DTE",  Icon: FileText },
   bank:        { title: "Bancos",         sub: "Para conciliar el payout",    Icon: Landmark },
 };
@@ -58,6 +59,11 @@ export default function ConfigNew() {
   const [shopifyToken, setShopifyToken] = useState("");
   const [connectingShopify, setConnectingShopify] = useState(false);
   const [shopifyError, setShopifyError] = useState<string | null>(null);
+  const [mercadopago, setMercadopago] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
+  const [showMpForm, setShowMpForm] = useState(false);
+  const [mpToken, setMpToken] = useState("");
+  const [connectingMp, setConnectingMp] = useState(false);
+  const [mpError, setMpError] = useState<string | null>(null);
   const [comingSoonOpen, setComingSoonOpen] = useState<ConnectorCard | null>(null);
 
   useEffect(() => {
@@ -118,6 +124,22 @@ export default function ConfigNew() {
         });
       } else {
         setShopify({ connected: false, detail: "No conectado" });
+      }
+
+      const { data: mpData } = await supabase
+        .from("mercadopago_accounts")
+        .select("nickname, mp_user_id, site_id, updated_at")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (mpData) {
+        setMercadopago({
+          connected: true,
+          detail: `${mpData.nickname || `Cuenta ${mpData.mp_user_id}`} · ${mpData.site_id || "MLC"} · actualizada ${mpData.updated_at?.slice(0, 10) || "—"}`,
+        });
+      } else {
+        setMercadopago({ connected: false, detail: "No conectado" });
       }
     } finally {
       setLoading(false);
@@ -211,6 +233,32 @@ export default function ConfigNew() {
     }
   };
 
+  const connectMercadoPago = async () => {
+    setMpError(null);
+    if (!mpToken.trim()) {
+      setMpError("Ingresa el access token de producción de Mercado Pago");
+      return;
+    }
+    setConnectingMp(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("connect-mercadopago", {
+        body: { access_token: mpToken.trim() },
+      });
+      if (error || !data?.success) {
+        setMpError(data?.error || "No se pudo validar el token de Mercado Pago");
+        return;
+      }
+      setMpToken("");
+      setShowMpForm(false);
+      toast.success("Cuenta de Mercado Pago conectada");
+      await fetchConnections();
+    } catch (e: unknown) {
+      setMpError(e instanceof Error ? e.message : "No se pudo conectar Mercado Pago");
+    } finally {
+      setConnectingMp(false);
+    }
+  };
+
   const connectors: ConnectorCard[] = [
     // Marketplaces
     {
@@ -247,6 +295,19 @@ export default function ConfigNew() {
       brand: { bg: "bg-slate-900", fg: "text-amber-400", initial: "A" },
       status: "coming_soon", detail: "Próximamente",
     },
+    // Pasarelas de pago
+    {
+      id: "mercadopago", name: "Mercado Pago", category: "payment",
+      brand: { bg: "bg-sky-500", fg: "text-white", initial: "MP" },
+      status: mercadopago.connected ? "connected" : "disconnected",
+      detail: mercadopago.detail,
+      action: () => { setMpError(null); setShowMpForm(true); }, loading: connectingMp,
+    },
+    {
+      id: "transbank", name: "Transbank / Webpay", category: "payment",
+      brand: { bg: "bg-orange-500", fg: "text-white", initial: "T" },
+      status: "coming_soon", detail: "Próximamente",
+    },
     // ERPs
     {
       id: "bsale", name: "Bsale", category: "erp",
@@ -275,6 +336,7 @@ export default function ConfigNew() {
 
   const grouped: Record<Category, ConnectorCard[]> = {
     marketplace: connectors.filter(c => c.category === "marketplace"),
+    payment: connectors.filter(c => c.category === "payment"),
     erp: connectors.filter(c => c.category === "erp"),
     bank: connectors.filter(c => c.category === "bank"),
   };
@@ -430,6 +492,40 @@ export default function ConfigNew() {
                 />
               </div>
             </>
+          }
+        />
+
+        {/* Mercado Pago — access token de producción (developers.mercadopago.cl) */}
+        <ConnectGuideDialog
+          open={showMpForm}
+          onOpenChange={(o) => { setShowMpForm(o); if (!o) setMpError(null); }}
+          title="Conectar Mercado Pago"
+          subtitle="Copiá el access token de producción de tu aplicación y pegalo aquí."
+          docsUrl="https://www.mercadopago.cl/developers/es/docs"
+          docsLabel="Ver documentación de Mercado Pago"
+          steps={[
+            { title: "Entrá al panel de desarrolladores", body: <>Ingresá a <code className="rounded bg-muted px-1">mercadopago.cl/developers</code> con el usuario dueño de la cuenta que recibe los pagos.</> },
+            { title: "Abrí “Tus integraciones”", body: <>Creá una aplicación (o usá una existente) y entrá a <strong>Credenciales de producción</strong>.</> },
+            { title: "Copiá el Access Token", body: <>Empieza con <code className="rounded bg-muted px-1">APP_USR-</code>. El token de prueba (<code className="rounded bg-muted px-1">TEST-</code>) no sirve: no trae tus pagos reales.</> },
+            { title: "Pegalo abajo", body: <>Validamos el token contra <code className="rounded bg-muted px-1">api.mercadopago.com/users/me</code> antes de guardarlo.</> },
+          ]}
+          note={<>Quadra usa Mercado Pago en <strong>modo solo lectura</strong>: leemos pagos, comisiones, devoluciones, contracargos y liquidaciones. Nunca cobramos, reembolsamos ni movemos dinero.</>}
+          error={mpError}
+          submitting={connectingMp}
+          onSubmit={connectMercadoPago}
+          form={
+            <div className="space-y-1.5">
+              <label htmlFor="mp-token" className="text-xs text-slate-600">Access token de producción</label>
+              <input
+                id="mp-token"
+                type="password"
+                value={mpToken}
+                onChange={(e) => setMpToken(e.target.value)}
+                placeholder="APP_USR-..."
+                autoComplete="off"
+                className="w-full rounded-md border px-3 py-1.5 text-sm"
+              />
+            </div>
           }
         />
       </main>
