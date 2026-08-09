@@ -220,8 +220,8 @@ export default function ConfigNew() {
       setShopifyError("Pegá el token de la Admin API (empieza con shpat_)");
       return;
     }
-    if (shopifyAdvanced && (!shopifyClientId.trim() || !shopifyClientSecret.trim())) {
-      setShopifyError("Completa el Client ID y el Client Secret");
+    if (shopifyAdvanced && !shopifyClientId.trim()) {
+      setShopifyError("Completa el Client ID de la app");
       return;
     }
     setConnectingShopify(true);
