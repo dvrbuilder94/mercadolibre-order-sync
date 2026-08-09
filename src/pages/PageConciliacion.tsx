@@ -10,6 +10,7 @@ import { NON_SALE_STATUSES_PG } from "@/lib/orderStatus";
 import { DetailPanel } from "@/components/DetailPanel";
 import { fetchOrderDetail } from "@/lib/orderDetail";
 import { chileMonthIsoRange, chilePeriodNow } from "@/lib/chileDate";
+import { toast } from "sonner";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -89,6 +90,16 @@ interface DocLinkRow {
 // ya son la cifra correcta por venta (sumar allocated_amount entre órdenes
 // de un mismo pago compartido duplicaría el monto).
 interface PaymentRef { external_payment_id: string | null }
+interface PaymentJoinRow {
+  sale_id: string;
+  payments: {
+    external_payment_id: string | null;
+    raw_data: { ledger_type?: string } | null;
+  } | {
+    external_payment_id: string | null;
+    raw_data: { ledger_type?: string } | null;
+  }[] | null;
+}
 
 const firstDoc = (l: Link): Doc | null =>
   Array.isArray(l.tax_documents) ? (l.tax_documents[0] || null) : l.tax_documents;
@@ -204,7 +215,7 @@ export default function PageConciliacion() {
   const [retrying, setRetrying] = useState(false);
   // Detalle de orden — mismo panel de cadena (Venta→Documento→Liquidación→Banco)
   // que usa PageVentas, traído on-demand para no cargar raw_data en cada fila.
-  const [detailOrder, setDetailOrder] = useState<any | null>(null);
+  const [detailOrder, setDetailOrder] = useState<Awaited<ReturnType<typeof fetchOrderDetail>>>(null);
   const openOrderDetail = useCallback(async (id: string) => {
     try { setDetailOrder(await fetchOrderDetail(id)); } catch { /* ignore */ }
   }, []);
@@ -216,7 +227,7 @@ export default function PageConciliacion() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) navigate("/auth");
     });
-  }, []);
+  }, [navigate]);
 
   // Cuánto avanzó la sincronización de Bsale en general — para distinguir,
   // en las filas "Sin doc", entre "boleta todavía no emitida/sincronizada"
@@ -315,7 +326,7 @@ export default function PageConciliacion() {
           .select("sale_id, payments ( external_payment_id, raw_data )")
           .in("sale_id", chunk);
         if (error) throw error;
-        for (const r of (data || []) as any[]) {
+        for (const r of (data || []) as unknown as PaymentJoinRow[]) {
           const ref = Array.isArray(r.payments) ? r.payments[0] : r.payments;
           // sync-meli-settlements (sin botón en el frontend hoy, pero igual
           // desplegado y alcanzable) fabrica filas en payments re-empaquetando
@@ -412,30 +423,18 @@ export default function PageConciliacion() {
   const vincularOption = async (group: CandidateDocGroup, option: CandidateOption) => {
     setActingKey(option.groupKey);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const links = option.orders.map((o) => ({
-        order_id: o.id, tax_document_id: group.doc.id, allocated_amount: o.amount,
-        match_source: "MANUAL_REVIEWED", match_score: option.score, created_by: user.id,
-      }));
-      const { error: insErr } = await supabase.from("order_tax_documents").insert(links);
-      if (insErr) throw insErr;
-
-      const siblingIds = candidates
-        .filter((c) => c.tax_document_id === group.doc.id && !option.candidateIds.includes(c.id))
-        .map((c) => c.id);
-      if (siblingIds.length > 0) {
-        await supabase.from("order_tax_match_candidates")
-          .update({ status: "rejected", reviewed_by: user.id, reviewed_at: new Date().toISOString() })
-          .in("id", siblingIds);
-      }
-      await supabase.from("order_tax_match_candidates")
-        .update({ status: "accepted", reviewed_by: user.id, reviewed_at: new Date().toISOString() })
-        .in("id", option.candidateIds);
+      const { error } = await supabase.rpc("resolve_match_candidates", {
+        p_tax_document_id: group.doc.id,
+        p_candidate_ids: option.candidateIds,
+        p_action: "accept",
+      });
+      if (error) throw error;
 
       await Promise.all([fetchCandidates(), fetchRows()]);
+      toast.success("Candidato vinculado correctamente");
     } catch (e) {
       console.error("Error vinculando candidato:", e);
+      toast.error("No se pudo vincular. No se guardaron cambios parciales.");
     } finally {
       setActingKey(null);
     }
@@ -444,14 +443,19 @@ export default function PageConciliacion() {
   const descartarOption = async (option: CandidateOption) => {
     setActingKey(option.groupKey);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { error } = await supabase.from("order_tax_match_candidates")
-        .update({ status: "rejected", reviewed_by: user?.id, reviewed_at: new Date().toISOString() })
-        .in("id", option.candidateIds);
+      const candidate = candidates.find((item) => option.candidateIds.includes(item.id));
+      if (!candidate) throw new Error("Candidate not found");
+      const { error } = await supabase.rpc("resolve_match_candidates", {
+        p_tax_document_id: candidate.tax_document_id,
+        p_candidate_ids: option.candidateIds,
+        p_action: "reject",
+      });
       if (error) throw error;
       await fetchCandidates();
+      toast.success("Candidato descartado");
     } catch (e) {
       console.error("Error descartando candidato:", e);
+      toast.error("No se pudo descartar el candidato");
     } finally {
       setActingKey(null);
     }
