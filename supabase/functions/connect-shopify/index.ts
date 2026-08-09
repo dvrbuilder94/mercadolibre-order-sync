@@ -42,7 +42,11 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}))
     const shopDomainRaw = typeof body.shop_domain === 'string' ? body.shop_domain : ''
     const clientId = typeof body.client_id === 'string' ? body.client_id.trim() : ''
-    const clientSecret = typeof body.client_secret === 'string' ? body.client_secret.trim() : ''
+    // El secret puede venir del formulario o estar guardado como secreto del backend.
+    const clientSecret = (typeof body.client_secret === 'string' && body.client_secret.trim())
+      || Deno.env.get('SHOPIFY_CLIENT_SECRET')
+      || Deno.env.get('SHOPIFY_ACCESS_TOKEN')
+      || ''
     const pastedToken = typeof body.access_token === 'string' ? body.access_token.trim() : ''
 
     if (!shopDomainRaw.trim()) return json({ success: false, error: 'shop_domain es requerido' }, 400)
