@@ -454,7 +454,8 @@ export default function ConfigNew() {
             { title: "Habilitá el desarrollo de apps", body: <>En el admin de Shopify: <strong>Settings → Apps and sales channels → Develop apps</strong> → <em>Allow custom app development</em>.</> },
             { title: "Creá la app", body: <><strong>Create an app</strong>, ponele un nombre (por ejemplo “Quadra”) y confirmá.</> },
             { title: "Configurá los permisos", body: <>En <strong>Configuration → Admin API integration</strong> activá los scopes:<CopyableValue label="Copiar scopes" value="read_orders, read_all_orders, read_products, read_customers, read_fulfillments" /></> },
-            { title: "Instalá y revelá el token", body: <>Pestaña <strong>API credentials</strong> → <strong>Install app</strong> → <strong>Reveal token once</strong>. Empieza con <code className="rounded bg-muted px-1">shpat_</code> y se muestra una sola vez.</> },
+            { title: "Instalá y revelá el token", body: <>Pestaña <strong>API credentials</strong> → <strong>Install app</strong> → <strong>Reveal token once</strong>. Empieza con <code className="rounded bg-muted px-1">shpat_</code> y se muestra una sola vez. <strong>No uses</strong> el “ID de cliente” ni el “Secreto de la API”: esos no sirven para leer las órdenes.</> },
+            { title: "Usá el dominio .myshopify.com", body: <>En el shop domain va el dominio interno de la tienda (<code className="rounded bg-muted px-1">mitienda.myshopify.com</code>), no tu dominio público. Lo ves en la barra de direcciones del admin: <code className="rounded bg-muted px-1">admin.shopify.com/store/<strong>mitienda</strong></code>.</> },
           ]}
           note={<><strong>read_orders</strong> solo entrega los últimos 60 días. Para el histórico completo pedí el permiso <strong>read_all_orders</strong> a Shopify desde la misma pantalla de scopes.</>}
           error={shopifyError}
@@ -472,6 +473,7 @@ export default function ConfigNew() {
                   placeholder="mitienda.myshopify.com"
                   className="w-full rounded-md border px-3 py-1.5 text-sm"
                 />
+                <p className="text-xs text-muted-foreground">Debe terminar en <code className="rounded bg-muted px-1">.myshopify.com</code>.</p>
               </div>
               <div className="space-y-1.5">
                 <label htmlFor="shopify-token" className="text-xs text-slate-600">Admin API access token</label>
