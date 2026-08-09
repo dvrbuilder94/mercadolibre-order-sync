@@ -61,7 +61,6 @@ export default function ConfigNew() {
   const [shopifyError, setShopifyError] = useState<string | null>(null);
   const [mercadopago, setMercadopago] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
   const [showMpForm, setShowMpForm] = useState(false);
-  const [mpToken, setMpToken] = useState("");
   const [connectingMp, setConnectingMp] = useState(false);
   const [mpError, setMpError] = useState<string | null>(null);
   const [comingSoonOpen, setComingSoonOpen] = useState<ConnectorCard | null>(null);
