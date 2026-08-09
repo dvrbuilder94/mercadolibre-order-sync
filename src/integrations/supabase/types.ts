@@ -432,6 +432,48 @@ export type Database = {
           },
         ]
       }
+      mercadopago_accounts: {
+        Row: {
+          access_token: string
+          created_at: string
+          email: string | null
+          id: string
+          last_sync_at: string | null
+          mp_user_id: string | null
+          nickname: string | null
+          site_id: string | null
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          access_token: string
+          created_at?: string
+          email?: string | null
+          id?: string
+          last_sync_at?: string | null
+          mp_user_id?: string | null
+          nickname?: string | null
+          site_id?: string | null
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          access_token?: string
+          created_at?: string
+          email?: string | null
+          id?: string
+          last_sync_at?: string | null
+          mp_user_id?: string | null
+          nickname?: string | null
+          site_id?: string | null
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       monthly_closings: {
         Row: {
           closed_at: string | null
