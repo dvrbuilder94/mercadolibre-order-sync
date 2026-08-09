@@ -43,10 +43,15 @@ Deno.serve(async (req) => {
     const shopDomainRaw = typeof body.shop_domain === 'string' ? body.shop_domain : ''
     const clientId = typeof body.client_id === 'string' ? body.client_id.trim() : ''
     const clientSecret = typeof body.client_secret === 'string' ? body.client_secret.trim() : ''
+    const pastedToken = typeof body.access_token === 'string' ? body.access_token.trim() : ''
 
     if (!shopDomainRaw.trim()) return json({ success: false, error: 'shop_domain es requerido' }, 400)
-    if (!clientId) return json({ success: false, error: 'client_id es requerido' }, 400)
-    if (!clientSecret) return json({ success: false, error: 'client_secret es requerido' }, 400)
+    if (!pastedToken && (!clientId || !clientSecret)) {
+      return json({ success: false, error: 'Pegá el token de la app (shpat_…) o el Client ID + Client Secret' }, 400)
+    }
+    if (pastedToken && !/^shp(at|ca|ss)_/.test(pastedToken)) {
+      return json({ success: false, error: 'El token de la Admin API debe empezar con shpat_ (lo copiás al instalar la Custom App).' }, 400)
+    }
 
     const shopDomain = normalizeShopDomain(shopDomainRaw)
     if (!shopDomain.endsWith('.myshopify.com')) {
@@ -56,16 +61,20 @@ Deno.serve(async (req) => {
       }, 400)
     }
 
-    // 1) Token de 24h vía client_credentials (nunca sale del backend).
-    let minted: { accessToken: string; expiresAt: string }
-    try {
-      minted = await mintAccessToken(shopDomain, clientId, clientSecret)
-    } catch (e) {
-      const message = e instanceof ShopifyAuthError
-        ? e.message
-        : 'No se pudo obtener el token de Shopify. Verificá el dominio y las credenciales.'
-      console.error('Shopify token exchange failed for shop:', shopDomain)
-      return json({ success: false, error: message }, 400)
+    // 1) Token: pegado (Custom App, permanente) o generado vía client_credentials (24h).
+    let minted: { accessToken: string; expiresAt: string | null }
+    if (pastedToken) {
+      minted = { accessToken: pastedToken, expiresAt: null }
+    } else {
+      try {
+        minted = await mintAccessToken(shopDomain, clientId, clientSecret)
+      } catch (e) {
+        const message = e instanceof ShopifyAuthError
+          ? e.message
+          : 'No se pudo obtener el token de Shopify. Verificá el dominio y las credenciales.'
+        console.error('Shopify token exchange failed for shop:', shopDomain)
+        return json({ success: false, error: message }, 400)
+      }
     }
 
     // 2) Validación real: consulta GraphQL de solo lectura.
@@ -99,8 +108,8 @@ Deno.serve(async (req) => {
       .upsert({
         user_id: userId,
         shop_domain: shopDomain,
-        client_id: clientId,
-        client_secret: clientSecret,
+        client_id: pastedToken ? null : clientId,
+        client_secret: pastedToken ? null : clientSecret,
         access_token: minted.accessToken,
         token_expires_at: minted.expiresAt,
         status: 'connected',
