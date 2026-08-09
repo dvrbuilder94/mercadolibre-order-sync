@@ -11,6 +11,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { MeliConnectWizard } from "@/components/MeliConnectWizard";
 
 // ── Conexiones ───────────────────────────────────────────────────────────────
 // Catálogo agrupado por categoría: marketplaces, ERPs y bancos. Las conexiones
@@ -46,6 +47,7 @@ export default function ConfigNew() {
   const [bsale, setBsale] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
   const [shopify, setShopify] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
   const [connectingMeli, setConnectingMeli] = useState(false);
+  const [meliWizardOpen, setMeliWizardOpen] = useState(false);
   const [showBsaleForm, setShowBsaleForm] = useState(false);
   const [bsaleToken, setBsaleToken] = useState("");
   const [connectingBsale, setConnectingBsale] = useState(false);
@@ -121,16 +123,38 @@ export default function ConfigNew() {
     }
   };
 
+  // MercadoLibre exige credenciales propias por vendedor (App ID + clave secreta
+  // del DevCenter). Si la cuenta ya las tiene guardadas vamos directo al OAuth;
+  // si no, abrimos el asistente que guía la creación de la aplicación.
   const connectMeli = async () => {
     setConnectingMeli(true);
     try {
+      const { data: account } = await supabase
+        .from("meli_accounts")
+        .select("client_id, client_secret")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!account?.client_id || !account?.client_secret) {
+        setMeliWizardOpen(true);
+        return;
+      }
+
       const { data, error } = await supabase.functions.invoke("get-meli-auth-url");
-      if (error) throw error;
+      if (error) {
+        setMeliWizardOpen(true);
+        return;
+      }
       const authUrl = data?.authUrl || data?.auth_url;
-      if (!authUrl) throw new Error(data?.error || "MercadoLibre no devolvió una URL de autorización");
+      if (!authUrl) {
+        setMeliWizardOpen(true);
+        return;
+      }
       window.location.assign(authUrl);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "No se pudo iniciar la conexión con MercadoLibre");
+    } finally {
       setConnectingMeli(false);
     }
   };
