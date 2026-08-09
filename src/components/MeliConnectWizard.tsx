@@ -124,12 +124,24 @@ export function MeliConnectWizard({ open, onOpenChange }: Props) {
                 </div>
               </li>
               <li>
+                En <strong>Scopes</strong> deja marcados <code className="rounded bg-muted px-1">read</code>,{" "}
+                <code className="rounded bg-muted px-1">offline_access</code> y{" "}
+                <code className="rounded bg-muted px-1">write</code>: sin{" "}
+                <code className="rounded bg-muted px-1">offline_access</code> MercadoLibre no entrega el
+                refresh token y la conexión se cae cada 6 horas.
+              </li>
+              <li>
                 En <strong>Tópicos de notificación</strong> puedes dejar todo sin marcar por ahora.
               </li>
               <li>
                 Guarda y copia el <strong>App ID</strong> y la <strong>Clave secreta</strong>.
               </li>
             </ol>
+
+            <p className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+              La URI de redirect debe coincidir carácter por carácter (incluido https y sin barra final),
+              o MercadoLibre responde <code>invalid_grant</code> al autorizar.
+            </p>
 
             <a
               href="https://developers.mercadolibre.cl/devcenter/create-app"

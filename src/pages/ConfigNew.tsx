@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { MeliConnectWizard } from "@/components/MeliConnectWizard";
+import { ConnectGuideDialog, CopyableValue } from "@/components/ConnectGuideDialog";
 
 // ── Conexiones ───────────────────────────────────────────────────────────────
 // Catálogo agrupado por categoría: marketplaces, ERPs y bancos. Las conexiones
@@ -224,7 +225,7 @@ export default function ConfigNew() {
       brand: { bg: "bg-emerald-500", fg: "text-white", initial: "S" },
       status: shopify.connected ? "connected" : "disconnected",
       detail: shopify.detail,
-      action: () => setShowShopifyForm(v => !v),
+      action: () => { setShopifyError(null); setShowShopifyForm(true); },
     },
     {
       id: "falabella", name: "Falabella", category: "marketplace",
@@ -252,7 +253,7 @@ export default function ConfigNew() {
       brand: { bg: "bg-blue-600", fg: "text-white", initial: "B" },
       status: bsale.connected ? "connected" : "disconnected",
       detail: bsale.detail,
-      action: () => setShowBsaleForm(v => !v), loading: connectingBsale,
+      action: () => { setBsaleError(null); setShowBsaleForm(true); }, loading: connectingBsale,
     },
     {
       id: "defontana", name: "Defontana", category: "erp",
@@ -320,73 +321,6 @@ export default function ConfigNew() {
                     ))}
                   </div>
 
-                  {/* Shopify inline form */}
-                  {cat === "marketplace" && showShopifyForm && (
-                    <div className="mt-4 bg-white border rounded-lg p-4 space-y-3">
-                      <p className="text-xs text-slate-500">
-                        Creá una app personalizada en tu admin de Shopify (Settings → Apps → Develop apps),
-                        dale el scope <code className="bg-slate-100 px-1 rounded">read_orders</code> e instalala
-                        para obtener el Admin API access token.
-                      </p>
-                      <div>
-                        <label className="text-xs text-slate-600">Shop domain</label>
-                        <input type="text" value={shopifyDomain}
-                          onChange={(e) => setShopifyDomain(e.target.value)}
-                          placeholder="mitienda.myshopify.com"
-                          className="mt-1 w-full border rounded-md px-3 py-1.5 text-sm" />
-                      </div>
-                      <div>
-                        <label className="text-xs text-slate-600">Admin API access token</label>
-                        <input type="password" value={shopifyToken}
-                          onChange={(e) => setShopifyToken(e.target.value)}
-                          placeholder="shpat_..."
-                          className="mt-1 w-full border rounded-md px-3 py-1.5 text-sm" />
-                      </div>
-                      {shopifyError && <p className="text-sm text-red-500">{shopifyError}</p>}
-                      <div className="flex gap-2">
-                        <button onClick={connectShopify} disabled={connectingShopify}
-                          className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-900 text-white rounded-md hover:bg-slate-700 disabled:opacity-50">
-                          {connectingShopify && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                          Guardar y validar
-                        </button>
-                        <button onClick={() => setShowShopifyForm(false)}
-                          className="px-3 py-1.5 text-sm border rounded-md hover:bg-slate-50">
-                          Cancelar
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {cat === "erp" && showBsaleForm && (
-                    <div className="mt-4 bg-white border rounded-lg p-4 space-y-3">
-                      <p className="text-xs text-slate-500">
-                        Pega el access token entregado por Bsale. Quadra lo valida en modo solo lectura antes de guardarlo.
-                      </p>
-                      <div>
-                        <label className="text-xs text-slate-600">Access token de Bsale</label>
-                        <input
-                          type="password"
-                          value={bsaleToken}
-                          onChange={(e) => setBsaleToken(e.target.value)}
-                          placeholder="Token de acceso"
-                          autoComplete="off"
-                          className="mt-1 w-full border rounded-md px-3 py-1.5 text-sm"
-                        />
-                      </div>
-                      {bsaleError && <p className="text-sm text-red-500">{bsaleError}</p>}
-                      <div className="flex gap-2">
-                        <button onClick={connectBsale} disabled={connectingBsale}
-                          className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-900 text-white rounded-md hover:bg-slate-700 disabled:opacity-50">
-                          {connectingBsale && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                          Guardar y validar
-                        </button>
-                        <button onClick={() => { setShowBsaleForm(false); setBsaleError(null); }}
-                          className="px-3 py-1.5 text-sm border rounded-md hover:bg-slate-50">
-                          Cancelar
-                        </button>
-                      </div>
-                    </div>
-                  )}
                 </section>
               );
             })}
@@ -417,6 +351,87 @@ export default function ConfigNew() {
         </Dialog>
 
         <MeliConnectWizard open={meliWizardOpen} onOpenChange={setMeliWizardOpen} />
+
+        {/* Bsale — pasos según la documentación oficial (docs.bsale.dev) */}
+        <ConnectGuideDialog
+          open={showBsaleForm}
+          onOpenChange={(o) => { setShowBsaleForm(o); if (!o) setBsaleError(null); }}
+          title="Conectar Bsale"
+          subtitle="Generá un token de acceso en tu cuenta Bsale y pegalo aquí."
+          docsUrl="https://docs.bsale.dev/"
+          docsLabel="Ver documentación de la API de Bsale"
+          steps={[
+            { title: "Entrá a tu cuenta Bsale", body: <>Ingresá a <code className="rounded bg-muted px-1">app.bsale.io</code> con un usuario administrador.</> },
+            { title: "Abrí Configuración → Integraciones", body: <>En el menú de configuración buscá la sección <strong>Integraciones</strong> y luego <strong>Token de acceso / API</strong>.</> },
+            { title: "Generá el token", body: <>Presioná <strong>Generar token</strong>. Bsale muestra el token una sola vez: copialo antes de cerrar la ventana.</> },
+            { title: "Pegalo abajo", body: <>Validamos el token contra <code className="rounded bg-muted px-1">api.bsale.io/v1/users.json</code> antes de guardarlo.</> },
+          ]}
+          note={<>Quadra usa Bsale en <strong>modo solo lectura</strong>: nunca emitimos ni anulamos documentos. Si el token se revoca en Bsale, la sincronización se detiene y hay que generar uno nuevo.</>}
+          error={bsaleError}
+          submitting={connectingBsale}
+          onSubmit={connectBsale}
+          form={
+            <div className="space-y-1.5">
+              <label htmlFor="bsale-token" className="text-xs text-slate-600">Access token de Bsale</label>
+              <input
+                id="bsale-token"
+                type="password"
+                value={bsaleToken}
+                onChange={(e) => setBsaleToken(e.target.value)}
+                placeholder="Token de acceso"
+                autoComplete="off"
+                className="w-full rounded-md border px-3 py-1.5 text-sm"
+              />
+            </div>
+          }
+        />
+
+        {/* Shopify — pasos según shopify.dev (custom app + Admin API token) */}
+        <ConnectGuideDialog
+          open={showShopifyForm}
+          onOpenChange={(o) => { setShowShopifyForm(o); if (!o) setShopifyError(null); }}
+          title="Conectar Shopify"
+          subtitle="Creá una app personalizada en tu tienda y pegá el Admin API access token."
+          docsUrl="https://help.shopify.com/en/manual/apps/app-types/custom-apps"
+          docsLabel="Ver guía oficial de custom apps de Shopify"
+          steps={[
+            { title: "Habilitá el desarrollo de apps", body: <>En el admin de Shopify: <strong>Settings → Apps and sales channels → Develop apps</strong> → <em>Allow custom app development</em>.</> },
+            { title: "Creá la app", body: <><strong>Create an app</strong>, ponele un nombre (por ejemplo “Quadra”) y confirmá.</> },
+            { title: "Configurá los permisos", body: <>En <strong>Configuration → Admin API integration</strong> activá los scopes:<CopyableValue label="Copiar scopes" value="read_orders, read_all_orders, read_products, read_customers, read_fulfillments" /></> },
+            { title: "Instalá y revelá el token", body: <>Pestaña <strong>API credentials</strong> → <strong>Install app</strong> → <strong>Reveal token once</strong>. Empieza con <code className="rounded bg-muted px-1">shpat_</code> y se muestra una sola vez.</> },
+          ]}
+          note={<><strong>read_orders</strong> solo entrega los últimos 60 días. Para el histórico completo pedí el permiso <strong>read_all_orders</strong> a Shopify desde la misma pantalla de scopes.</>}
+          error={shopifyError}
+          submitting={connectingShopify}
+          onSubmit={connectShopify}
+          form={
+            <>
+              <div className="space-y-1.5">
+                <label htmlFor="shopify-domain" className="text-xs text-slate-600">Shop domain</label>
+                <input
+                  id="shopify-domain"
+                  type="text"
+                  value={shopifyDomain}
+                  onChange={(e) => setShopifyDomain(e.target.value)}
+                  placeholder="mitienda.myshopify.com"
+                  className="w-full rounded-md border px-3 py-1.5 text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="shopify-token" className="text-xs text-slate-600">Admin API access token</label>
+                <input
+                  id="shopify-token"
+                  type="password"
+                  value={shopifyToken}
+                  onChange={(e) => setShopifyToken(e.target.value)}
+                  placeholder="shpat_..."
+                  autoComplete="off"
+                  className="w-full rounded-md border px-3 py-1.5 text-sm"
+                />
+              </div>
+            </>
+          }
+        />
       </main>
     </div>
   );
