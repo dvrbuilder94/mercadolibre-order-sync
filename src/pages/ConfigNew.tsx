@@ -233,6 +233,32 @@ export default function ConfigNew() {
     }
   };
 
+  const connectMercadoPago = async () => {
+    setMpError(null);
+    if (!mpToken.trim()) {
+      setMpError("Ingresa el access token de producción de Mercado Pago");
+      return;
+    }
+    setConnectingMp(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("connect-mercadopago", {
+        body: { access_token: mpToken.trim() },
+      });
+      if (error || !data?.success) {
+        setMpError(data?.error || "No se pudo validar el token de Mercado Pago");
+        return;
+      }
+      setMpToken("");
+      setShowMpForm(false);
+      toast.success("Cuenta de Mercado Pago conectada");
+      await fetchConnections();
+    } catch (e: unknown) {
+      setMpError(e instanceof Error ? e.message : "No se pudo conectar Mercado Pago");
+    } finally {
+      setConnectingMp(false);
+    }
+  };
+
   const connectors: ConnectorCard[] = [
     // Marketplaces
     {
@@ -269,6 +295,19 @@ export default function ConfigNew() {
       brand: { bg: "bg-slate-900", fg: "text-amber-400", initial: "A" },
       status: "coming_soon", detail: "Próximamente",
     },
+    // Pasarelas de pago
+    {
+      id: "mercadopago", name: "Mercado Pago", category: "payment",
+      brand: { bg: "bg-sky-500", fg: "text-white", initial: "MP" },
+      status: mercadopago.connected ? "connected" : "disconnected",
+      detail: mercadopago.detail,
+      action: () => { setMpError(null); setShowMpForm(true); }, loading: connectingMp,
+    },
+    {
+      id: "transbank", name: "Transbank / Webpay", category: "payment",
+      brand: { bg: "bg-orange-500", fg: "text-white", initial: "T" },
+      status: "coming_soon", detail: "Próximamente",
+    },
     // ERPs
     {
       id: "bsale", name: "Bsale", category: "erp",
@@ -297,6 +336,7 @@ export default function ConfigNew() {
 
   const grouped: Record<Category, ConnectorCard[]> = {
     marketplace: connectors.filter(c => c.category === "marketplace"),
+    payment: connectors.filter(c => c.category === "payment"),
     erp: connectors.filter(c => c.category === "erp"),
     bank: connectors.filter(c => c.category === "bank"),
   };
