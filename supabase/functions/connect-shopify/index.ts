@@ -93,7 +93,7 @@ Deno.serve(async (req) => {
       return json({
         success: false,
         error: probe.status === 401 || probe.status === 403
-          ? 'La app no tiene permisos de lectura. Habilitá los scopes read_orders / read_products en el Dev Dashboard.'
+          ? `Shopify entregó el token pero rechazó la consulta (${probe.status}). Casi siempre es porque la app todavía no está instalada en ${shopDomain}: abrí la app en el Dev Dashboard, elegí esa tienda y hacé clic en "Install". Verificá también los scopes read_orders y read_products.`
           : 'No se pudo consultar la tienda en Shopify.',
       }, 400)
     }
