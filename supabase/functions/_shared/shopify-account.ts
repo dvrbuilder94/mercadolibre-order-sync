@@ -68,13 +68,19 @@ export async function getValidAccessToken(
   account: ShopifyAccount,
   force = false,
 ): Promise<string> {
+  // Token permanente de Custom App (shpat_): no expira ni se renueva.
+  if (account.access_token && !account.token_expires_at && !account.client_id) {
+    return account.access_token;
+  }
+
   const notExpired = account.access_token && account.token_expires_at &&
     new Date(account.token_expires_at).getTime() - TOKEN_SKEW_MS > Date.now();
 
   if (!force && notExpired) return account.access_token as string;
 
   if (!account.client_id || !account.client_secret) {
-    throw new ShopifyAuthError('La conexión de Shopify no tiene client_id/client_secret. Reconectá la tienda.');
+    if (account.access_token) return account.access_token;
+    throw new ShopifyAuthError('La conexión de Shopify no tiene credenciales. Reconectá la tienda.');
   }
 
   const { accessToken, expiresAt } = await mintAccessToken(account.shop_domain, account.client_id, account.client_secret);
