@@ -58,6 +58,8 @@ export default function ConfigNew() {
   const [shopifyDomain, setShopifyDomain] = useState("");
   const [shopifyClientId, setShopifyClientId] = useState("");
   const [shopifyClientSecret, setShopifyClientSecret] = useState("");
+  const [shopifyToken, setShopifyToken] = useState("");
+  const [shopifyAdvanced, setShopifyAdvanced] = useState(false);
   const [connectingShopify, setConnectingShopify] = useState(false);
   const [shopifyError, setShopifyError] = useState<string | null>(null);
   const [mercadopago, setMercadopago] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
@@ -210,18 +212,31 @@ export default function ConfigNew() {
 
   const connectShopify = async () => {
     setShopifyError(null);
-    if (!shopifyDomain.trim() || !shopifyClientId.trim() || !shopifyClientSecret.trim()) {
-      setShopifyError("Completa el shop domain, el Client ID y el Client Secret");
+    if (!shopifyDomain.trim()) {
+      setShopifyError("Completa el shop domain (mitienda.myshopify.com)");
+      return;
+    }
+    if (!shopifyAdvanced && !shopifyToken.trim()) {
+      setShopifyError("Pegá el token de la Admin API (empieza con shpat_)");
+      return;
+    }
+    if (shopifyAdvanced && (!shopifyClientId.trim() || !shopifyClientSecret.trim())) {
+      setShopifyError("Completa el Client ID y el Client Secret");
       return;
     }
     setConnectingShopify(true);
     try {
       const { data, error } = await supabase.functions.invoke("connect-shopify", {
-        body: {
-          shop_domain: shopifyDomain.trim(),
-          client_id: shopifyClientId.trim(),
-          client_secret: shopifyClientSecret.trim(),
-        },
+        body: shopifyAdvanced
+          ? {
+              shop_domain: shopifyDomain.trim(),
+              client_id: shopifyClientId.trim(),
+              client_secret: shopifyClientSecret.trim(),
+            }
+          : {
+              shop_domain: shopifyDomain.trim(),
+              access_token: shopifyToken.trim(),
+            },
       });
       if (error || !data?.success) {
         setShopifyError(data?.error || "Error al conectar con Shopify");
@@ -229,6 +244,7 @@ export default function ConfigNew() {
       }
       setShopifyClientId("");
       setShopifyClientSecret("");
+      setShopifyToken("");
       setShowShopifyForm(false);
       await fetchConnections();
     } catch (e) {
