@@ -20,6 +20,7 @@ import PageDevoluciones      from "./pages/PageDevoluciones";
 import PageDocumentos        from "./pages/PageDocumentos";
 import PageWorkflow          from "./pages/PageWorkflow";
 import PageConciliacion      from "./pages/PageConciliacion";
+import PageFeedback          from "./pages/PageFeedback";
 
 const queryClient = new QueryClient();
 
@@ -48,6 +49,7 @@ const App = () => (
           <Route path="/arquitectura" element={<Navigate to="/workflow" replace />} />
           <Route path="/asistente"    element={<Navigate to="/tesoreria" replace />} />
           <Route path="/config"       element={<ConfigNew />} />
+          <Route path="/feedback"     element={<PageFeedback />} />
 
           {/* OAuth callbacks — DO NOT TOUCH */}
           <Route path="/meli-callback" element={<MeliCallback />} />
