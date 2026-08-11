@@ -3,9 +3,11 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   ShoppingBag, Activity, Settings, LogOut,
-  Wrench, Landmark, FileText, Undo2, Workflow, GitMerge,
+  Wrench, Landmark, FileText, Undo2, Workflow, GitMerge, MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { FeedbackWidget } from "@/components/FeedbackWidget";
+import { useIsAdmin } from "@/hooks/useIsAdmin";
 
 const ADV_KEY = "quadra.advancedMode";
 
@@ -26,6 +28,7 @@ const advanced = [
 export function Nav() {
   const navigate = useNavigate();
   const [adv, setAdv] = useState(false);
+  const { isAdmin } = useIsAdmin();
 
   useEffect(() => {
     setAdv(localStorage.getItem(ADV_KEY) === "1");
@@ -60,6 +63,7 @@ export function Nav() {
   );
 
   return (
+    <>
     <aside className="w-52 min-h-screen border-r bg-white flex flex-col py-6 px-3 shrink-0">
       <div className="px-3 mb-1">
         <p className="font-bold text-lg leading-none">Quadra</p>
@@ -70,6 +74,8 @@ export function Nav() {
 
       <nav className="flex flex-col gap-1 flex-1 mt-6">
         {primary.map(renderLink)}
+
+        {isAdmin && renderLink({ to: "/feedback", label: "Comentarios", icon: MessageSquare })}
 
         {adv && (
           <>
@@ -101,5 +107,7 @@ export function Nav() {
         Salir
       </button>
     </aside>
+    <FeedbackWidget />
+    </>
   );
 }
