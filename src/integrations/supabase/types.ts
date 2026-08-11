@@ -242,6 +242,45 @@ export type Database = {
         }
         Relationships: []
       }
+      feedback: {
+        Row: {
+          admin_note: string | null
+          created_at: string
+          id: string
+          message: string
+          module: string
+          route: string | null
+          status: Database["public"]["Enums"]["feedback_status"]
+          updated_at: string
+          user_email: string | null
+          user_id: string
+        }
+        Insert: {
+          admin_note?: string | null
+          created_at?: string
+          id?: string
+          message: string
+          module: string
+          route?: string | null
+          status?: Database["public"]["Enums"]["feedback_status"]
+          updated_at?: string
+          user_email?: string | null
+          user_id: string
+        }
+        Update: {
+          admin_note?: string | null
+          created_at?: string
+          id?: string
+          message?: string
+          module?: string
+          route?: string | null
+          status?: Database["public"]["Enums"]["feedback_status"]
+          updated_at?: string
+          user_email?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       meli_accounts: {
         Row: {
           access_token: string | null
@@ -1554,6 +1593,27 @@ export type Database = {
           },
         ]
       }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       v_ledger: {
@@ -1668,9 +1728,17 @@ export type Database = {
           total_count: number
         }[]
       }
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
       user_owns_order: { Args: { _order_id: string }; Returns: boolean }
     }
     Enums: {
+      app_role: "admin" | "user"
       channel_type: "meli" | "falabella" | "amazon" | "shopify"
       document_type:
         | "boleta"
@@ -1678,6 +1746,7 @@ export type Database = {
         | "nota_credito"
         | "nota_debito"
         | "factura_exenta"
+      feedback_status: "pendiente" | "en_revision" | "resuelto" | "descartado"
       reconciliation_status:
         | "pending"
         | "reconciled"
@@ -1818,6 +1887,7 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
+      app_role: ["admin", "user"],
       channel_type: ["meli", "falabella", "amazon", "shopify"],
       document_type: [
         "boleta",
@@ -1826,6 +1896,7 @@ export const Constants = {
         "nota_debito",
         "factura_exenta",
       ],
+      feedback_status: ["pendiente", "en_revision", "resuelto", "descartado"],
       reconciliation_status: [
         "pending",
         "reconciled",
