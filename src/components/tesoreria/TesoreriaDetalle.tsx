@@ -123,15 +123,16 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
   const exportCsv = () => {
     const headers = [
       "fecha_pago", "payment_id", "pasarela", "medio", "marca", "cuotas",
-      "canal", "bruto", "comision", "neto", "liberacion", "liberacion_estimada", "ventas", "documentos", "estado_match",
+      "canal", "bruto", "comision", "iva", "neto", "liberacion", "liberacion_estimada", "ventas", "documentos", "links_documentos", "estado_match",
     ];
     const rows = filtered.map((p) => [
       p.paymentDate, p.paymentId, p.provider, p.method, p.methodBrand || "",
       p.installments ?? "", p.channels.join("|"),
-      p.gross, p.fees, p.net, p.releaseDate || "",
+      p.gross, p.fees, p.vat, p.net, p.releaseDate || "",
       p.exactRelease ? "" : "estimada",
       p.sales.map((s) => s.orderId).join("|"),
-      `${p.docsOk}/${p.sales.length}`,
+      p.docs.map((d) => `${docTypeLabel(d.type)} ${d.number ?? ""}`.trim()).join("|"),
+      p.docs.map((d) => d.url || "").filter(Boolean).join("|"),
       p.matchState,
     ]);
     const csv = [headers, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
