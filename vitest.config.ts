@@ -6,7 +6,10 @@ import path from "path";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    include: [
+      "src/**/*.{test,spec}.{ts,tsx}",
+      "supabase/functions/**/*.{test,spec}.ts",
+    ],
   },
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
