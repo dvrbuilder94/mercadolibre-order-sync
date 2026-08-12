@@ -362,8 +362,8 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                                     <td className="py-1.5 text-right tabular-nums text-slate-500">{clp(s.gross)}</td>
                                     <td className="py-1.5 text-right tabular-nums font-medium">{clp(s.allocated)}</td>
                                     <td className="py-1.5">
-                                      {s.hasDoc
-                                        ? <span className="text-emerald-600">✓ Con doc</span>
+                                      {s.docs.length > 0
+                                        ? docLinks(s.docs)
                                         : <span className="text-red-600">Sin doc</span>}
                                     </td>
                                   </tr>
