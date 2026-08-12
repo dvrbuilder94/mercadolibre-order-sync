@@ -9,7 +9,6 @@ import {
   validateGrossOwnership,
 } from '../_shared/payment-allocation.ts';
 
-// CORS configuration - MUST be present on ALL responses
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -17,75 +16,51 @@ const corsHeaders = {
 };
 
 Deno.serve(async (req) => {
-  // CRITICAL: Always handle OPTIONS first, before any other logic
   if (req.method === 'OPTIONS') {
-    console.log('🔓 CORS preflight request received');
-    return new Response('ok', { 
-      status: 200,
-      headers: corsHeaders 
-    });
+    return new Response('ok', { status: 200, headers: corsHeaders });
   }
-  
-  console.log(`🌐 ${req.method} request from ${req.headers.get('origin')}`);
 
   try {
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      {
-        global: {
-          headers: { Authorization: req.headers.get('Authorization')! },
-        },
-      }
+      { global: { headers: { Authorization: req.headers.get('Authorization')! } } },
     );
 
-    const { date_from, date_to, days_back, limit = 50, account_id: accountIdParam, user_id: userIdParam } = await req.json().catch(() => ({}));
-    const effectiveLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+    const {
+      date_from,
+      date_to,
+      days_back,
+      limit = 50,
+      account_id: accountIdParam,
+      user_id: userIdParam,
+    } = await req.json().catch(() => ({}));
 
+    const effectiveLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
     const userId = await resolveUserId(req, supabase, userIdParam);
+
     if (!userId) {
-      console.error('❌ Authentication failed');
       return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'No autorizado. Por favor, recarga la página e inicia sesión nuevamente.'
-        }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        }
+        JSON.stringify({ success: false, error: 'No autorizado' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
-    const user = { id: userId };
 
-    console.log(`🚀 Fetching exact payment details (limit: ${effectiveLimit}, date_from: ${date_from ?? '-'}, date_to: ${date_to ?? '-'}, days_back: ${days_back ?? 'sin límite — backfill completo'})`);
-
-    // 1. Get MELI account
-    const { data: meliAccount, error: accountError } = await getMeliAccount(supabase, user.id, {
+    const { data: meliAccount, error: accountError } = await getMeliAccount(supabase, userId, {
       accountId: accountIdParam,
       orderBy: 'created_at',
       maybeSingle: true,
     });
 
     if (accountError || !meliAccount) {
-      console.error('❌ No MELI account found:', accountError);
       return new Response(
-        JSON.stringify({ 
-          success: false,
-          error: 'No se encontró cuenta de MercadoLibre conectada'
-        }),
-        { 
-          status: 400,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        }
+        JSON.stringify({ success: false, error: 'No se encontró cuenta de MercadoLibre conectada' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    // 2. Get access token — refresh is centralized in cron-refresh-meli-tokens
-    // (MELI rotates refresh_token on every use, so refreshing here too would race it)
     const accessToken = await getFreshAccessToken(supabase, meliAccount);
 
-    // 3. Get orders without exact data (most recent first; self-chains until none remain)
     let ordersQuery = supabase
       .from('orders')
       .select('id, order_id, amount, raw_data')
@@ -95,9 +70,6 @@ Deno.serve(async (req) => {
       .order('order_date', { ascending: false })
       .limit(effectiveLimit);
 
-    // An explicit date_from/date_to (e.g. the period the user has open in the
-    // UI) takes priority over days_back, which can only express "from N days
-    // ago until now" and can't target an arbitrary past month.
     if (date_from && date_to) {
       ordersQuery = ordersQuery.gte('order_date', date_from).lte('order_date', date_to);
     } else if (days_back) {
@@ -106,418 +78,316 @@ Deno.serve(async (req) => {
     }
 
     const { data: orders, error: ordersError } = await ordersQuery;
-
     if (ordersError) throw ordersError;
 
     const totalOrders = orders?.length || 0;
-    console.log(`📦 Found ${totalOrders} orders without exact data. Processing in batches of 10...`);
-
     if (totalOrders === 0) {
       return new Response(
-        JSON.stringify({
-          success: true,
-          processed: 0,
-          updated: 0,
-          skipped: 0,
-          errors: 0,
-          message: 'No hay órdenes pendientes de sincronizar'
-        }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ success: true, processed: 0, updated: 0, skipped: 0, errors: 0, paymentsLinked: 0 }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    // Stats tracking
     let processed = 0;
     let updated = 0;
     let errors = 0;
     let skipped = 0;
     let paymentsLinked = 0;
 
-    // 4. Process orders in batches of 10
-    const BATCH_SIZE = 10;
-    const batches = [];
-    for (let i = 0; i < (orders || []).length; i += BATCH_SIZE) {
-      batches.push((orders || []).slice(i, i + BATCH_SIZE));
-    }
+    for (const order of orders || []) {
+      const declaredPayments = Array.isArray(order.raw_data?.payments) ? order.raw_data.payments : [];
 
-    console.log(`📊 Processing ${totalOrders} orders in ${batches.length} batches of ${BATCH_SIZE}`);
+      if (declaredPayments.length === 0) {
+        skipped++;
+        processed++;
+        continue;
+      }
 
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
-      console.log(`\n🔄 Batch ${batchIndex + 1}/${batches.length} - Processing ${batch.length} orders...`);
+      const processedPayments: Array<{
+        paymentRowId: string;
+        externalId: string;
+        gross: number;
+        net: number;
+        fees: number;
+        releaseDate: string | null;
+      }> = [];
 
-      for (const order of batch) {
-        const payments = order.raw_data?.payments || [];
-        
-        if (payments.length === 0) {
-          console.log(`  ⚠️ Order ${order.order_id} has no payment IDs, skipping`);
-          skipped++;
-          processed++;
-          continue;
-        }
+      for (const declaredPayment of declaredPayments) {
+        const paymentId = declaredPayment?.id;
+        if (!paymentId) continue;
 
-        console.log(`  📝 Processing order ${order.order_id} with ${payments.length} payment(s)`);
-        
-        let orderHasValidPayment = false;
-        let totalNetReceived = 0;
-        let totalFees = 0;
-        let latestMoneyReleaseDate = null;
-        // Pagos reales de MP procesados en esta orden. La atribución a órdenes
-        // se decide DESPUÉS del loop, con el motor de evidencia
-        // (_shared/payment-allocation.ts). Nunca por pertenecer al mismo pack.
-        const processedPayments: {
-          paymentRowId: string;
-          externalId: string;
-          gross: number;
-          net: number;
-          fees: number;
-        }[] = [];
+        try {
+          const response = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+          });
 
-        // Process all payments for this order
-        for (const payment of payments) {
-          const paymentId = payment.id;
-          
-          if (!paymentId) {
-            console.log(`    ⚠️ Payment without ID in order ${order.order_id}, skipping`);
+          if (response.status === 429) {
+            errors++;
+            await new Promise((resolve) => setTimeout(resolve, 5000));
             continue;
           }
 
-          try {
-            console.log(`    🔍 Fetching payment details for ${paymentId}...`);
-          
-            const response = await fetch(
-              `https://api.mercadopago.com/v1/payments/${paymentId}`,
-              {
-                headers: {
-                  'Authorization': `Bearer ${accessToken}`,
-                  'Content-Type': 'application/json'
-                }
-              }
-            );
-
-            if (response.status === 429) {
-              console.log(`    ⏱️ Rate limit hit, waiting 5 seconds...`);
-              await new Promise(resolve => setTimeout(resolve, 5000));
-              errors++;
-              continue;
-            }
-
-            if (!response.ok) {
-              console.error(`    ❌ Error fetching payment ${paymentId}: ${response.status}`);
-              errors++;
-              continue;
-            }
-
-            const paymentDetails = await response.json();
-
-            console.log(`    📊 Payment ${paymentId} response:`, JSON.stringify({
-              id: paymentDetails.id,
-              status: paymentDetails.status,
-              transaction_amount: paymentDetails.transaction_amount,
-              net_received_amount: paymentDetails.net_received_amount,
-              transaction_details: paymentDetails.transaction_details,
-              fee_details: paymentDetails.fee_details
-            }));
-
-            // MercadoLibre payments API returns transaction_details with net_received_amount
-            const transactionAmount = paymentDetails.transaction_amount || 0;
-            const netReceived = paymentDetails.net_received_amount ||
-                               paymentDetails.transaction_details?.net_received_amount ||
-                               0;
-
-            if (transactionAmount > 0 || netReceived > 0) {
-              // fee_details can legitimately sum to 0 (e.g. account_money with no
-              // commission) — `||` would wrongly fall through to the difference
-              // calc in that case, so check array length instead.
-              const feeDetailsList: any[] = Array.isArray(paymentDetails.fee_details) ? paymentDetails.fee_details : [];
-              const paymentFees = feeDetailsList.length > 0
-                ? feeDetailsList.reduce((sum: number, f: any) => sum + (f.amount || 0), 0)
-                : (transactionAmount - netReceived);
-
-              // Save the raw detail regardless of status — useful for audit/
-              // Sandbox MP visibility even when we don't fold it into the
-              // order's exact totals below.
-              const { error: insertError } = await supabase.from('meli_payment_details').upsert({
-                order_id: order.id,
-                payment_id: paymentId.toString(),
-                transaction_amount: transactionAmount,
-                net_received_amount: netReceived,
-                total_fees: paymentFees,
-                marketplace_fee: feeDetailsList.find((f: any) => f.type === 'marketplace_fee')?.amount ?? paymentFees,
-                financing_fee: feeDetailsList.find((f: any) => f.type === 'financing_fee')?.amount || 0,
-                shipping_fee: feeDetailsList.find((f: any) => f.type === 'shipping_fee')?.amount || 0,
-                fee_details: paymentDetails.fee_details,
-                payment_method: paymentDetails.payment_method_id,
-                date_approved: paymentDetails.date_approved,
-                money_release_date: paymentDetails.money_release_date || paymentDetails.date_approved,
-                status: paymentDetails.status,
-                raw_data: paymentDetails
-              }, { onConflict: 'payment_id' });
-
-              if (insertError) {
-                console.error(`    ❌ Error saving payment details: ${insertError.message}`);
-                errors++;
-              } else if (paymentDetails.status !== 'approved') {
-                // Not settled money (refunded, charged_back, in_mediation,
-                // rejected, pending, ...) — recorded above for visibility, but
-                // excluded from the order's net/exact totals.
-                console.log(`    ⚠️ Payment ${paymentId} status is '${paymentDetails.status}' (not approved), excluded from exact totals`);
-              } else if (netReceived <= 0) {
-                // Approved but MercadoPago hasn't populated net_received_amount
-                // yet (e.g. money not released). Don't guess — leave the order
-                // out of "exact" until a later sync sees the real figure.
-                console.log(`    ⚠️ Payment ${paymentId} is approved but has no net_received_amount yet, skipping (no fabricated estimate)`);
-              } else {
-                console.log(`    ✅ Saved payment ${paymentId} details (net: ${netReceived})`);
-                orderHasValidPayment = true;
-                totalNetReceived += netReceived;
-                totalFees += paymentFees;
-
-                // Track latest money release date
-                const releaseDate = paymentDetails.money_release_date || paymentDetails.date_approved;
-                if (releaseDate) {
-                  if (!latestMoneyReleaseDate || new Date(releaseDate) > new Date(latestMoneyReleaseDate)) {
-                    latestMoneyReleaseDate = releaseDate;
-                  }
-                }
-
-                // Mirror the real MP payment into the ledger (payments + payment_sales),
-                // replacing the synthetic rows that sync-meli-settlements used to fabricate.
-                const { data: paymentRow, error: paymentUpsertError } = await supabase
-                  .from('payments')
-                  .upsert({
-                    user_id: user.id,
-                    payment_provider: 'MERCADOPAGO',
-                    external_payment_id: paymentId.toString(),
-                    payment_date: paymentDetails.date_approved || releaseDate || new Date().toISOString(),
-                    gross_amount: transactionAmount,
-                    net_amount: netReceived,
-                    fees_amount: paymentFees,
-                    amount: netReceived,
-                    status: 'ALLOCATED',
-                    reference: `MP ${paymentId} · Orden ${order.order_id}`,
-                    raw_data: {
-                      source: 'sync-meli-payment-details',
-                      order_id: order.order_id,
-                      money_release_date: releaseDate,
-                      mp_status: paymentDetails.status,
-                    },
-                  }, { onConflict: 'external_payment_id' })
-                  .select('id')
-                  .single();
-
-                if (paymentUpsertError) {
-                  console.error(`    ❌ Error upserting payment ledger row: ${paymentUpsertError.message}`);
-                  errors++;
-                } else {
-                  // Diferir el linking: la orden dueña se decide con evidencia.
-                  processedPayments.push({
-                    paymentRowId: paymentRow.id,
-                    externalId: paymentId.toString(),
-                    gross: transactionAmount,
-                    net: netReceived,
-                    fees: paymentFees,
-                  });
-                }
-              }
-            } else {
-              console.log(`    ⚠️ Payment ${paymentId} has no valid amount data, skipping`);
-            }
-
-            // Rate limit: 200ms between payment requests (respects API limits)
-            await new Promise(resolve => setTimeout(resolve, 200));
-
-          } catch (error) {
-            console.error(`    ❌ Error processing payment ${paymentId}:`, error);
+          if (!response.ok) {
             errors++;
+            continue;
           }
+
+          const paymentDetails = await response.json();
+          const transactionAmount = Number(paymentDetails.transaction_amount || 0);
+          const netReceived = Number(
+            paymentDetails.net_received_amount ??
+              paymentDetails.transaction_details?.net_received_amount ??
+              0,
+          );
+          const feeDetailsList: any[] = Array.isArray(paymentDetails.fee_details)
+            ? paymentDetails.fee_details
+            : [];
+          const paymentFees = feeDetailsList.length > 0
+            ? feeDetailsList.reduce((sum: number, fee: any) => sum + Number(fee.amount || 0), 0)
+            : Math.max(0, transactionAmount - netReceived);
+
+          // Only persist provider fields that actually exist. In particular,
+          // date_approved is NOT a money release date and total fees are NOT a
+          // marketplace fee when Mercado Pago does not identify that fee type.
+          const releaseDate = paymentDetails.money_release_date || null;
+          const marketplaceFee = feeDetailsList.find((fee: any) => fee.type === 'marketplace_fee')?.amount ?? null;
+          const financingFee = feeDetailsList.find((fee: any) => fee.type === 'financing_fee')?.amount ?? null;
+          const shippingFee = feeDetailsList.find((fee: any) => fee.type === 'shipping_fee')?.amount ?? null;
+
+          const { error: detailError } = await supabase.from('meli_payment_details').upsert({
+            order_id: order.id,
+            payment_id: paymentId.toString(),
+            transaction_amount: transactionAmount,
+            net_received_amount: netReceived,
+            total_fees: paymentFees,
+            marketplace_fee: marketplaceFee,
+            financing_fee: financingFee,
+            shipping_fee: shippingFee,
+            fee_details: paymentDetails.fee_details ?? null,
+            payment_method: paymentDetails.payment_method_id ?? null,
+            date_approved: paymentDetails.date_approved ?? null,
+            money_release_date: releaseDate,
+            status: paymentDetails.status ?? null,
+            raw_data: paymentDetails,
+          }, { onConflict: 'payment_id' });
+
+          if (detailError) {
+            errors++;
+            continue;
+          }
+
+          // Non-approved payments remain visible in meli_payment_details, but
+          // they are not treated as cash truth in the ledger.
+          if (paymentDetails.status !== 'approved' || netReceived <= 0) {
+            continue;
+          }
+
+          const { data: paymentRow, error: paymentUpsertError } = await supabase
+            .from('payments')
+            .upsert({
+              user_id: userId,
+              payment_provider: 'MERCADOPAGO',
+              external_payment_id: paymentId.toString(),
+              payment_date: paymentDetails.date_approved || new Date().toISOString(),
+              gross_amount: transactionAmount,
+              net_amount: netReceived,
+              fees_amount: paymentFees,
+              amount: netReceived,
+              status: 'ALLOCATED',
+              reference: `MP ${paymentId} · Orden ${order.order_id}`,
+              raw_data: {
+                source: 'sync-meli-payment-details',
+                order_id: order.order_id,
+                money_release_date: releaseDate,
+                mp_status: paymentDetails.status,
+              },
+            }, { onConflict: 'external_payment_id' })
+            .select('id')
+            .single();
+
+          if (paymentUpsertError || !paymentRow) {
+            errors++;
+            continue;
+          }
+
+          processedPayments.push({
+            paymentRowId: paymentRow.id,
+            externalId: paymentId.toString(),
+            gross: transactionAmount,
+            net: netReceived,
+            fees: paymentFees,
+            releaseDate,
+          });
+
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        } catch (error) {
+          console.error(`Error processing payment ${paymentId}:`, error);
+          errors++;
         }
+      }
 
-        // Atribución Pago → Orden por EVIDENCIA (nunca por pack_id).
-        if (orderHasValidPayment && processedPayments.length > 0) {
-          // El pack sólo sirve para armar el conjunto de órdenes candidatas.
-          const packId = order.raw_data?.pack_id != null ? String(order.raw_data.pack_id) : null;
-          let groupRows: any[] = [{
-            id: order.id,
-            order_id: order.order_id,
-            amount: order.amount,
-            gross_amount: order.amount,
-            raw_data: order.raw_data,
-          }];
+      if (processedPayments.length > 0) {
+        // pack_id can widen the candidate set, but it is never ownership evidence.
+        const packId = order.raw_data?.pack_id != null ? String(order.raw_data.pack_id) : null;
+        let groupRows: any[] = [{
+          id: order.id,
+          order_id: order.order_id,
+          amount: order.amount,
+          gross_amount: order.amount,
+          raw_data: order.raw_data,
+        }];
 
-          if (packId) {
-            const { data: siblings, error: sibErr } = await supabase
-              .from('orders')
-              .select('id, order_id, amount, gross_amount, status, raw_data')
-              .eq('channel', 'meli')
-              .eq('channel_account_id', meliAccount.id)
-              .eq('raw_data->>pack_id', packId);
-            if (sibErr) {
-              console.error(`    ❌ Error fetching pack ${packId}: ${sibErr.message}`);
-            } else {
-              const real = (siblings || []).filter((s: any) => s.status !== 'cancelled');
-              if (real.length > 1) {
-                groupRows = real;
-                console.log(`    📦 Pack ${packId}: ${real.length} órdenes candidatas (la atribución se decide por evidencia)`);
-              }
-            }
-          }
+        if (packId) {
+          const { data: siblings, error: siblingsError } = await supabase
+            .from('orders')
+            .select('id, order_id, amount, gross_amount, status, raw_data')
+            .eq('channel', 'meli')
+            .eq('channel_account_id', meliAccount.id)
+            .eq('raw_data->>pack_id', packId);
 
-          // Evidencia explícita de ownership: payment_ids declarados por cada
-          // orden en su snapshot + los ya registrados en meli_payment_details.
-          const explicitByOrder = new Map<string, Set<string>>();
-          for (const row of groupRows) {
-            const ids = new Set<string>(
-              (row.raw_data?.payments || [])
-                .map((p: any) => (p?.id != null ? String(p.id) : null))
-                .filter(Boolean) as string[],
-            );
-            explicitByOrder.set(row.id, ids);
-          }
-          const { data: knownDetails, error: detailsErr } = await supabase
-            .from('meli_payment_details')
-            .select('order_id, payment_id')
-            .in('order_id', groupRows.map((r: any) => r.id));
-          if (detailsErr) {
-            console.error(`    ❌ Error leyendo meli_payment_details: ${detailsErr.message}`);
+          if (siblingsError) {
+            errors++;
           } else {
-            for (const d of knownDetails || []) {
-              if (d.order_id) explicitByOrder.get(d.order_id)?.add(String(d.payment_id));
-            }
+            const activeSiblings = (siblings || []).filter((sibling: any) => sibling.status !== 'cancelled');
+            if (activeSiblings.length > 1) groupRows = activeSiblings;
           }
+        }
 
-          const groupOrders: AllocationOrder[] = groupRows.map((row: any) => ({
-            id: row.id,
-            gross: (row.gross_amount ?? row.amount) || 0,
-            explicitPaymentIds: Array.from(explicitByOrder.get(row.id) ?? []),
-          }));
-          const allocationPayments: AllocationPayment[] = processedPayments.map((p) => ({
-            id: p.externalId,
-            gross: p.gross,
-            net: p.net,
-            fees: p.fees,
-          }));
+        const explicitByOrder = new Map<string, Set<string>>();
+        for (const row of groupRows) {
+          explicitByOrder.set(
+            row.id,
+            new Set<string>(
+              (row.raw_data?.payments || [])
+                .map((payment: any) => payment?.id != null ? String(payment.id) : null)
+                .filter(Boolean) as string[],
+            ),
+          );
+        }
 
-          const { allocations, unresolved } = resolvePaymentAllocations(allocationPayments, groupOrders);
+        const { data: knownDetails, error: detailsError } = await supabase
+          .from('meli_payment_details')
+          .select('order_id, payment_id')
+          .in('order_id', groupRows.map((row: any) => row.id));
 
-          for (const u of unresolved) {
-            console.warn(`    ⚠️ Pago ${u.paymentId} SIN ASIGNAR (${u.reason}) — evidencia insuficiente, no se inventa conciliación`);
-            const row = processedPayments.find((p) => p.externalId === u.paymentId);
-            if (row) {
-              // Sin evidencia: el pago queda huérfano en el ledger y se limpian
-              // atribuciones previas creadas por la regla vieja de pack.
-              await supabase.from('payments').update({ status: 'UNMATCHED' }).eq('id', row.paymentRowId);
-              await supabase.from('payment_sales').delete().eq('payment_id', row.paymentRowId);
-            }
+        if (detailsError) {
+          errors++;
+        } else {
+          for (const detail of knownDetails || []) {
+            if (detail.order_id) explicitByOrder.get(detail.order_id)?.add(String(detail.payment_id));
           }
+        }
 
-          // Invariantes antes de persistir: bruto atribuido == bruto del pago y,
-          // si hay más de una orden, el pago debe cubrir la suma de sus brutos.
-          const rejected = new Set<string>();
-          for (const p of allocationPayments) {
-            const checks = [
-              validateAllocationInvariants(p, allocations),
-              validateGrossOwnership(p, allocations, groupOrders),
-            ];
-            for (const check of checks) {
-              if (!check.ok) {
-                console.error(`    ❌ Invariante violada, no se persiste: ${check.error}`);
-                rejected.add(p.id);
-                errors++;
-              }
-            }
-          }
+        const groupOrders: AllocationOrder[] = groupRows.map((row: any) => ({
+          id: row.id,
+          gross: Number(row.gross_amount ?? row.amount ?? 0),
+          explicitPaymentIds: Array.from(explicitByOrder.get(row.id) ?? []),
+        }));
 
-          const valid = allocations.filter((a) => !rejected.has(a.paymentId));
+        const allocationPayments: AllocationPayment[] = processedPayments.map((payment) => ({
+          id: payment.externalId,
+          gross: payment.gross,
+          net: payment.net,
+          fees: payment.fees,
+        }));
 
-          // 1) Persistir payment_sales sólo para lo que tiene evidencia.
-          for (const a of valid) {
-            const row = processedPayments.find((p) => p.externalId === a.paymentId)!;
-            const { error: linkError } = await supabase
-              .from('payment_sales')
-              .upsert(
-                { payment_id: row.paymentRowId, sale_id: a.orderId, allocated_amount: a.allocatedNet },
-                { onConflict: 'payment_id,sale_id' },
-              );
-            if (linkError) {
-              console.error(`    ❌ Error linking payment_sales (orden ${a.orderId}): ${linkError.message}`);
+        const { allocations, unresolved } = resolvePaymentAllocations(allocationPayments, groupOrders);
+
+        for (const unresolvedPayment of unresolved) {
+          const row = processedPayments.find((payment) => payment.externalId === unresolvedPayment.paymentId);
+          if (!row) continue;
+          await supabase.from('payments').update({ status: 'UNMATCHED' }).eq('id', row.paymentRowId);
+          await supabase.from('payment_sales').delete().eq('payment_id', row.paymentRowId);
+        }
+
+        const rejected = new Set<string>();
+        for (const payment of allocationPayments) {
+          for (const check of [
+            validateAllocationInvariants(payment, allocations),
+            validateGrossOwnership(payment, allocations, groupOrders),
+          ]) {
+            if (!check.ok) {
+              rejected.add(payment.id);
               errors++;
-            } else {
-              paymentsLinked++;
-            }
-          }
-
-          // Barrer atribuciones antiguas del mismo pago que ya no corresponden.
-          for (const row of processedPayments) {
-            const keep = valid.filter((a) => a.paymentId === row.externalId).map((a) => a.orderId);
-            if (keep.length === 0) continue;
-            const { error: cleanErr } = await supabase
-              .from('payment_sales')
-              .delete()
-              .eq('payment_id', row.paymentRowId)
-              .not('sale_id', 'in', `(${keep.join(',')})`);
-            if (cleanErr) console.error(`    ❌ Error limpiando atribuciones obsoletas: ${cleanErr.message}`);
-          }
-
-          // 2) Dato exacto por orden, agregando sólo lo realmente atribuido.
-          const perOrder = new Map<string, { net: number; fees: number }>();
-          for (const a of valid) {
-            const acc = perOrder.get(a.orderId) ?? { net: 0, fees: 0 };
-            acc.net += a.allocatedNet;
-            acc.fees += a.allocatedFees;
-            perOrder.set(a.orderId, acc);
-          }
-
-          for (const [orderId, totals] of perOrder) {
-            const target = groupOrders.find((o) => o.id === orderId)!;
-            const isPrimary = orderId === order.id;
-            const poNet = Math.round(totals.net * 100) / 100;
-            const poFees = Math.round(totals.fees * 100) / 100;
-            const poComm = target.gross > 0 ? ((poFees / target.gross) * 100).toFixed(2) : '0';
-            // El envío (me2) se cobra una vez: sólo se descuenta de la orden
-            // que traía el dato de envío (la que estamos procesando).
-            const shippingCost = order.raw_data?.shipping?.cost || 0;
-            const shippingMode = order.raw_data?.shipping?.shipping_mode || 'custom';
-            const shippingDeduction = (isPrimary && shippingMode === 'me2') ? shippingCost : 0;
-            const settlementAmount = Math.round((poNet - shippingDeduction) * 100) / 100;
-
-            const { error: updateError } = await supabase.from('orders').update({
-              gross_amount: target.gross,
-              net_amount: poNet,
-              commission_amount: poFees,
-              commission_percentage: parseFloat(poComm),
-              expected_payment_date: latestMoneyReleaseDate,
-              money_release_date: latestMoneyReleaseDate,
-              settlement_date: latestMoneyReleaseDate,
-              settlement_amount: settlementAmount,
-              financing_fee: poFees,
-              tax_amount: 0,
-              has_exact_data: true,
-            }).eq('id', orderId);
-
-            if (updateError) {
-              console.error(`    ❌ Error updating order ${orderId}: ${updateError.message}`);
-              errors++;
-            } else if (isPrimary) {
-              updated++;
-              console.log(`    ✨ Orden ${order.order_id} actualizada — neto: ${poNet}`);
             }
           }
         }
 
-        processed++;
+        const validAllocations = allocations.filter((allocation) => !rejected.has(allocation.paymentId));
+
+        for (const allocation of validAllocations) {
+          const row = processedPayments.find((payment) => payment.externalId === allocation.paymentId)!;
+          const { error: linkError } = await supabase.from('payment_sales').upsert(
+            {
+              payment_id: row.paymentRowId,
+              sale_id: allocation.orderId,
+              allocated_amount: allocation.allocatedNet,
+            },
+            { onConflict: 'payment_id,sale_id' },
+          );
+          if (linkError) errors++;
+          else paymentsLinked++;
+        }
+
+        for (const row of processedPayments) {
+          const keep = validAllocations
+            .filter((allocation) => allocation.paymentId === row.externalId)
+            .map((allocation) => allocation.orderId);
+          if (keep.length === 0) continue;
+          const { error: cleanError } = await supabase
+            .from('payment_sales')
+            .delete()
+            .eq('payment_id', row.paymentRowId)
+            .not('sale_id', 'in', `(${keep.join(',')})`);
+          if (cleanError) errors++;
+        }
+
+        // orders keeps only a small compatibility cache of exact MP totals that
+        // the current UI still reads. Settlement, tax and financing concepts
+        // stay in their real domains instead of being fabricated on the order.
+        const perOrder = new Map<string, { net: number; fees: number; releaseDates: string[] }>();
+        for (const allocation of validAllocations) {
+          const payment = processedPayments.find((row) => row.externalId === allocation.paymentId)!;
+          const aggregate = perOrder.get(allocation.orderId) ?? { net: 0, fees: 0, releaseDates: [] };
+          aggregate.net += allocation.allocatedNet;
+          aggregate.fees += allocation.allocatedFees;
+          if (payment.releaseDate) aggregate.releaseDates.push(payment.releaseDate);
+          perOrder.set(allocation.orderId, aggregate);
+        }
+
+        for (const [orderId, totals] of perOrder) {
+          const target = groupOrders.find((candidate) => candidate.id === orderId)!;
+          const net = Math.round(totals.net * 100) / 100;
+          const fees = Math.round(totals.fees * 100) / 100;
+          const feePercentage = target.gross > 0
+            ? Math.round((fees / target.gross) * 10000) / 100
+            : 0;
+          const releaseDate = totals.releaseDates.length > 0
+            ? totals.releaseDates.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
+            : null;
+
+          const { error: updateError } = await supabase.from('orders').update({
+            gross_amount: target.gross,
+            net_amount: net,
+            commission_amount: fees,
+            commission_percentage: feePercentage,
+            money_release_date: releaseDate,
+            has_exact_data: true,
+          }).eq('id', orderId);
+
+          if (updateError) errors++;
+          else if (orderId === order.id) updated++;
+        }
       }
 
-      // Delay between batches (except after last batch)
-      if (batchIndex < batches.length - 1) {
-        console.log(`⏳ Waiting 0.5 seconds before next batch...`);
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
+      processed++;
     }
 
-    const successRate = processed > 0 ? ((updated / processed) * 100).toFixed(1) : '0';
+    const successRate = processed > 0 ? Number(((updated / processed) * 100).toFixed(1)) : 0;
 
-    // 5. Count remaining orders and self-chain if there's more backlog to process
     let remainingQuery = supabase
       .from('orders')
       .select('*', { count: 'exact', head: true })
@@ -534,29 +404,23 @@ Deno.serve(async (req) => {
 
     const { count: remainingCount } = await remainingQuery;
 
-    console.log(`\n✅ SYNC COMPLETED:
-      - Total orders: ${totalOrders}
-      - Processed: ${processed}
-      - Updated: ${updated}
-      - Payments linked to ledger: ${paymentsLinked}
-      - Skipped: ${skipped} (no payments)
-      - Errors: ${errors}
-      - Success rate: ${successRate}%
-      - Remaining without exact data: ${remainingCount ?? 0}
-    `);
-
     if ((remainingCount || 0) > 0 && updated > 0) {
-      console.log(`Chaining: ${remainingCount} orders remain, invoking sync-meli-payment-details again`);
       try {
-        supabase.functions.invoke('sync-meli-payment-details', { body: { date_from, date_to, days_back, limit, account_id: meliAccount.id, user_id: userId } }).catch((e) =>
-          console.error('Chain invoke failed:', e)
-        );
-      } catch (e) {
-        console.error('Chain invoke threw:', e);
+        supabase.functions.invoke('sync-meli-payment-details', {
+          body: {
+            date_from,
+            date_to,
+            days_back,
+            limit,
+            account_id: meliAccount.id,
+            user_id: userId,
+          },
+        }).catch((error) => console.error('Chain invoke failed:', error));
+      } catch (error) {
+        console.error('Chain invoke threw:', error);
       }
     }
 
-    // Return final results
     return new Response(
       JSON.stringify({
         success: true,
@@ -566,25 +430,15 @@ Deno.serve(async (req) => {
         skipped,
         errors,
         remaining: remainingCount ?? 0,
-        successRate: parseFloat(successRate),
-        message: `✅ Sincronización completada: ${updated}/${totalOrders} órdenes actualizadas`
+        successRate,
       }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
-
   } catch (error: any) {
-    console.error('❌ Fatal error:', error);
-    console.error('Error stack:', error.stack);
+    console.error('Fatal sync-meli-payment-details error:', error);
     return new Response(
-      JSON.stringify({ 
-        success: false,
-        error: error.message || 'Error desconocido',
-        details: error.stack
-      }),
-      { 
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      }
+      JSON.stringify({ success: false, error: error?.message || 'Error desconocido' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
 });
