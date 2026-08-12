@@ -1,6 +1,13 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.74.0';
 import { getMeliAccount, getFreshAccessToken } from '../_shared/meli-account.ts';
 import { resolveUserId } from '../_shared/auth.ts';
+import {
+  AllocationOrder,
+  AllocationPayment,
+  resolvePaymentAllocations,
+  validateAllocationInvariants,
+  validateGrossOwnership,
+} from '../_shared/payment-allocation.ts';
 
 // CORS configuration - MUST be present on ALL responses
 const corsHeaders = {
@@ -155,9 +162,16 @@ Deno.serve(async (req) => {
         let totalNetReceived = 0;
         let totalFees = 0;
         let latestMoneyReleaseDate = null;
-        // Links a crear DESPUÉS del loop: el pago de un pack debe repartirse
-        // entre todas las órdenes del pack, no atribuirse entero a esta orden.
-        const paymentLinks: { paymentRowId: string; net: number }[] = [];
+        // Pagos reales de MP procesados en esta orden. La atribución a órdenes
+        // se decide DESPUÉS del loop, con el motor de evidencia
+        // (_shared/payment-allocation.ts). Nunca por pertenecer al mismo pack.
+        const processedPayments: {
+          paymentRowId: string;
+          externalId: string;
+          gross: number;
+          net: number;
+          fees: number;
+        }[] = [];
 
         // Process all payments for this order
         for (const payment of payments) {
