@@ -25,10 +25,9 @@ Deno.serve(async (req) => {
       }
     );
 
-    // Parse request body for optional date parameters
     let dateFromParam: string | null = null;
     let dateToParam: string | null = null;
-    let maxPagesParam: number = 10;
+    let maxPagesParam = 10;
     let accountIdParam: string | null = null;
     let userIdParam: string | null = null;
 
@@ -40,39 +39,31 @@ Deno.serve(async (req) => {
       accountIdParam = body.account_id || null;
       userIdParam = body.user_id || null;
     } catch {
-      // No body or invalid JSON, use defaults
+      // No body or invalid JSON, use defaults.
     }
 
     const userId = await resolveUserId(req, supabaseClient, userIdParam);
-
     if (!userId) {
       return new Response(
         JSON.stringify({ error: 'Unauthorized' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
-    const user = { id: userId };
 
-    // Get user's Mercado Libre account (explicit account_id if given, else most recent one)
-    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
+    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, userId, {
       accountId: accountIdParam,
     });
 
-    console.log('=== SYNC MELI ORDERS DEBUG ===');
-    console.log('User ID:', user.id);
-    console.log('MELI Account from DB:', {
+    console.log('=== SYNC MELI ORDERS ===');
+    console.log('User ID:', userId);
+    console.log('MELI Account:', {
       id: meliAccount?.id,
       seller_id: meliAccount?.seller_id,
-      client_id: meliAccount?.client_id,
       site_id: meliAccount?.site_id,
       has_access_token: !!meliAccount?.access_token,
-      expires_at: meliAccount?.expires_at,
-      created_at: meliAccount?.created_at,
-      updated_at: meliAccount?.updated_at,
     });
 
     if (accountError || !meliAccount) {
-      console.error('Account Error:', accountError);
       return new Response(
         JSON.stringify({ error: 'No Mercado Libre account configured' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -86,8 +77,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Token refresh is centralized in cron-refresh-meli-tokens (MELI rotates
-    // refresh_token on every use, so refreshing here too would race it).
     let accessToken: string;
     try {
       accessToken = await getFreshAccessToken(supabaseClient, meliAccount);
@@ -98,33 +87,17 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Fetch recent orders from Mercado Libre with pagination
     const sellerId = meliAccount.seller_id;
-    if (!sellerId) {
-      console.error('No seller_id found for meli account');
-      return new Response(
-        JSON.stringify({ error: 'No seller_id configured for Mercado Libre account' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    console.log('Fetching orders for seller:', sellerId);
-
-    // Use date parameter if provided, otherwise default to 30 days
     let dateFrom: string;
     if (dateFromParam) {
       dateFrom = new Date(dateFromParam).toISOString();
-      console.log('Using custom date_from:', dateFrom);
     } else {
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
       dateFrom = thirtyDaysAgo.toISOString();
     }
+    const dateTo = dateToParam ? new Date(dateToParam).toISOString() : null;
 
-    const dateTo: string | null = dateToParam ? new Date(dateToParam).toISOString() : null;
-    if (dateTo) console.log('Using custom date_to:', dateTo);
-
-    // Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
     const splitRut = (rut: string | null | undefined): { body: string | null; dv: string | null } => {
       if (!rut) return { body: null, dv: null };
       const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
@@ -132,132 +105,57 @@ Deno.serve(async (req) => {
       return { body: clean.slice(0, -1), dv: clean.slice(-1) };
     };
 
+    // Orders is the commercial source-of-truth layer.
+    // Do not fabricate payment, commission, release or settlement values here.
+    // Mercado Pago enrichment owns those values in sync-meli-payment-details.
     const transformOrder = (order: any, preserveExact: boolean) => {
       const buyer = order.buyer || {};
-      const orderDate = new Date(order.date_created);
-
-      // Extract RUT from billing_info — ML Chile returns this field for authenticated buyers
       const billingInfo = buyer.billing_info || {};
       const rawRut = billingInfo.doc_number || billingInfo.docNumber || null;
       const { body: customerTaxId, dv: customerTaxIdDv } = splitRut(rawRut);
-
-      // Estado normalizado (mismo mapeo que usa meli-webhook, ver _shared/order-status.ts)
-      const status = mapMeliOrderStatus(order);
-
-      // Extract payment data for commission calculation
-      const payment = order.payments?.[0];
-      const paymentMethod = payment?.payment_method_id || 'unknown';
-      const paymentMethodType = payment?.payment_type_id || null; // credit_card, debit_card, account_money, etc.
-      const paymentMethodBrand = payment?.card?.cardholder?.name ? null : (payment?.issuer_id || payment?.payment_method_id || null); // visa, master, etc.
-      const paymentApprovedAt = payment?.date_approved;
-      const grossAmount = order.total_amount || 0;
       const shipping = order.shipping || {};
       const coupon = order.coupon || {};
-
-      // Calculate estimated commission based on payment method
-      let commissionPercentage = 3.99; // default
-      if (paymentMethod === 'account_money') commissionPercentage = 2.99;
-      else if (['credit_card', 'master', 'visa'].includes(paymentMethod)) commissionPercentage = 4.99;
-      else if (['debit_card', 'debvisa', 'debmaster'].includes(paymentMethod)) commissionPercentage = 3.49;
-
-      const commissionAmount = Math.round(grossAmount * (commissionPercentage / 100) * 100) / 100;
-      const netAmount = Math.round((grossAmount - commissionAmount) * 100) / 100;
-
-      // Calculate expected payment date (14 days after approval)
-      let expectedPaymentDate = orderDate;
-      let moneyReleaseDate = null;
-      if (paymentApprovedAt) {
-        const approvalDate = new Date(paymentApprovedAt);
-        expectedPaymentDate = new Date(approvalDate.getTime() + 14 * 24 * 60 * 60 * 1000);
-        moneyReleaseDate = payment?.money_release_date || expectedPaymentDate.toISOString();
-      }
-
-      // Calculate settlement amount (what actually reaches the bank)
-      const shippingCost = shipping.cost || 0;
-      const discountAmount = coupon.amount || 0;
-      const shippingMode = shipping.shipping_mode || 'custom';
-
-      // If Mercado Envíos (me2), shipping is NOT received by seller
-      const shippingDeduction = shippingMode === 'me2' ? shippingCost : 0;
-      const settlementAmount = Math.round((grossAmount - discountAmount - shippingDeduction - commissionAmount) * 100) / 100;
-
-      // Extract product details
       const firstItem = order.order_items?.[0];
-      const productTitle = firstItem?.item?.title || null;
-      const sellerSku = firstItem?.item?.seller_custom_field || null;
 
-      const base = {
+      const commercialRow: Record<string, unknown> = {
         channel: 'meli',
         channel_account_id: meliAccount.id,
-        meli_account_id: meliAccount.id, // Keep for backward compatibility
+        meli_account_id: meliAccount.id,
         order_id: order.id.toString(),
         customer_name: buyer.nickname || 'Cliente',
         customer_email: buyer.email || null,
         customer_tax_id: customerTaxId,
         customer_tax_id_dv: customerTaxIdDv,
-        order_date: orderDate.toISOString(),
+        order_date: new Date(order.date_created).toISOString(),
         amount: order.total_amount || 0,
-        status: status,
+        // Kept as the canonical commercial gross currently consumed by the UI.
+        // It is a direct copy of MELI total_amount, never an estimate.
+        gross_amount: order.total_amount || 0,
+        status: mapMeliOrderStatus(order),
         items: order.order_items?.length || 1,
         raw_data: order,
-
-        // Financial data (estimated — overwritten with the real MercadoPago
-        // figures by sync-meli-payment-details once it processes this order)
-        gross_amount: grossAmount,
-        net_amount: netAmount,
-        commission_percentage: commissionPercentage,
-        commission_amount: commissionAmount,
-        payment_method: paymentMethod,
-        payment_approved_at: paymentApprovedAt || orderDate.toISOString(),
-        expected_payment_date: expectedPaymentDate.toISOString(),
-        has_exact_data: false,
-
-        // FASE 1: Critical fields
-        money_release_date: moneyReleaseDate,
-        settlement_date: expectedPaymentDate.toISOString(),
-        settlement_amount: settlementAmount,
-        bank_reference: `MELI-${order.id}`,
-        shipping_cost: shippingCost,
-        discount_amount: discountAmount,
+        shipping_cost: shipping.cost || 0,
+        discount_amount: coupon.amount || 0,
         currency_id: order.currency_id || 'CLP',
-        shipping_mode: shippingMode,
-
-        // FASE 2: Financial details
-        installments: payment?.installments || 1,
-        installment_amount: payment?.installment_amount || grossAmount,
-        financing_fee: 0, // Will be updated with exact data
-        tax_amount: 0, // Will be updated with exact data
-        payment_method_type: paymentMethodType,
-        payment_method_brand: paymentMethodBrand,
-
-        // FASE 3: Operational details
+        shipping_mode: shipping.shipping_mode || null,
         shipping_id: shipping.id?.toString() || null,
         date_shipped: shipping.date_shipped || null,
         date_delivered: shipping.date_delivered || null,
-        seller_sku: sellerSku,
-        product_title: productTitle,
+        seller_sku: firstItem?.item?.seller_custom_field || null,
+        product_title: firstItem?.item?.title || null,
       };
 
-      if (!preserveExact) return base;
+      // New/non-enriched orders must be eligible for the MP enrichment worker.
+      // For an already enriched order we omit this flag entirely so routine
+      // order syncs cannot reset exact financial data.
+      if (!preserveExact) commercialRow.has_exact_data = false;
 
-      // This order already has has_exact_data=true — sync-meli-payment-details
-      // computed these columns from the real MercadoPago payment(s). Drop them
-      // from this upsert entirely (rather than re-set them to the estimate
-      // above) so a routine order resync can't silently revert verified data
-      // back to a guess. Status/shipping/raw_data still refresh normally.
-      const {
-        gross_amount, net_amount, commission_percentage, commission_amount,
-        expected_payment_date, money_release_date, settlement_date,
-        settlement_amount, financing_fee, tax_amount, has_exact_data,
-        ...preserved
-      } = base;
-      return preserved;
+      return commercialRow;
     };
 
-    // Fetch + persist orders page by page (1 upsert por página, no por orden ni al final)
     let offset = 0;
-    const limit = 50; // MELI API max limit
-    const maxPages = Math.min(maxPagesParam, 50); // Cap a 50 páginas (2500 órdenes)
+    const limit = 50;
+    const maxPages = Math.min(maxPagesParam, 50);
     let currentPage = 0;
     let totalAvailable = 0;
     let totalFetched = 0;
@@ -265,146 +163,100 @@ Deno.serve(async (req) => {
     let errorCount = 0;
     let timedOut = false;
     const startedAt = Date.now();
-    const TIME_BUDGET_MS = 100_000; // margen bajo el límite (~150s) de Edge Functions
-
-    console.log('\n=== STARTING PAGINATION ===');
-    console.log(`Date from: ${dateFrom}`);
-    console.log(`Max pages: ${maxPages}`);
+    const TIME_BUDGET_MS = 100_000;
 
     while (currentPage < maxPages) {
       if (Date.now() - startedAt > TIME_BUDGET_MS) {
-        console.log(`⏱️ Time budget (${TIME_BUDGET_MS}ms) exceeded, stopping pagination early`);
         timedOut = true;
         break;
       }
 
       const dateToFilter = dateTo ? `&order.date_created.to=${dateTo}` : '';
       const ordersUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&sort=date_desc&order.date_created.from=${dateFrom}${dateToFilter}&limit=${limit}&offset=${offset}`;
-      console.log(`\nPage ${currentPage + 1}: Fetching from offset ${offset}`);
-
       const ordersResponse = await fetch(ordersUrl, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-        },
+        headers: { Authorization: `Bearer ${accessToken}` },
       });
 
       if (!ordersResponse.ok) {
-        const errorText = await ordersResponse.text();
-        console.error('Error fetching orders:', ordersResponse.status, errorText);
+        console.error('Error fetching orders:', ordersResponse.status, await ordersResponse.text());
+        errorCount++;
         break;
       }
 
       const ordersPage = await ordersResponse.json();
       const orders = ordersPage.results || [];
       totalAvailable = ordersPage.paging?.total || 0;
-
-      console.log(`Fetched ${orders.length} orders (Total available: ${totalAvailable})`);
-
-      if (orders.length === 0) {
-        console.log('No more orders to fetch');
-        break;
-      }
-
+      if (orders.length === 0) break;
       totalFetched += orders.length;
 
-      // Orders already enriched with real MercadoPago data must not be
-      // re-upserted with the estimate fields, or this resync would wipe out
-      // has_exact_data + the real amounts (see transformOrder's preserveExact).
       const pageOrderIds = orders.map((o: any) => o.id.toString());
-      const { data: exactRows } = await supabaseClient
+      const { data: exactRows, error: exactError } = await supabaseClient
         .from('orders')
         .select('order_id')
         .eq('channel_account_id', meliAccount.id)
         .eq('channel', 'meli')
         .in('order_id', pageOrderIds)
         .eq('has_exact_data', true);
-      const exactOrderIds = new Set((exactRows || []).map((r: any) => r.order_id));
 
-      // Transform + upsert this page. Split into two homogeneous batches —
-      // PostgREST's bulk upsert needs a consistent column set per request, so
-      // "already exact" rows (fewer columns) can't share a batch with fresh
-      // ones (full estimate columns).
-      const fullRows: any[] = [];
-      const preserveRows: any[] = [];
+      if (exactError) {
+        console.error('Error checking exact orders:', exactError);
+        errorCount += orders.length;
+        break;
+      }
+
+      const exactOrderIds = new Set((exactRows || []).map((r: any) => r.order_id));
+      const normalRows: any[] = [];
+      const exactPreservedRows: any[] = [];
+
       for (const order of orders) {
         try {
           const isExact = exactOrderIds.has(order.id.toString());
           const transformed = transformOrder(order, isExact);
-          (isExact ? preserveRows : fullRows).push(transformed);
+          (isExact ? exactPreservedRows : normalRows).push(transformed);
         } catch (error) {
-          console.error(`❌ Error processing order ${order.id}:`, error);
+          console.error(`Error processing order ${order.id}:`, error);
           errorCount++;
         }
       }
 
       let pageSynced = 0;
-      if (fullRows.length > 0) {
+      for (const [label, rows] of [
+        ['commercial', normalRows],
+        ['commercial-preserve-exact', exactPreservedRows],
+      ] as const) {
+        if (rows.length === 0) continue;
         const { data: upserted, error: upsertError } = await supabaseClient
           .from('orders')
-          .upsert(fullRows, {
+          .upsert(rows, {
             onConflict: 'channel_account_id,order_id',
             ignoreDuplicates: false,
           })
           .select('id');
 
         if (upsertError) {
-          console.error(`❌ Error upserting page ${currentPage + 1} (full):`, upsertError);
-          errorCount += fullRows.length;
+          console.error(`Error upserting page ${currentPage + 1} (${label}):`, upsertError);
+          errorCount += rows.length;
         } else {
-          pageSynced += upserted?.length || fullRows.length;
-        }
-      }
-
-      if (preserveRows.length > 0) {
-        const { data: upserted, error: upsertError } = await supabaseClient
-          .from('orders')
-          .upsert(preserveRows, {
-            onConflict: 'channel_account_id,order_id',
-            ignoreDuplicates: false,
-          })
-          .select('id');
-
-        if (upsertError) {
-          console.error(`❌ Error upserting page ${currentPage + 1} (preserve-exact):`, upsertError);
-          errorCount += preserveRows.length;
-        } else {
-          pageSynced += upserted?.length || preserveRows.length;
+          pageSynced += upserted?.length || rows.length;
         }
       }
 
       syncedCount += pageSynced;
-      console.log(`✅ Page ${currentPage + 1}: upserted ${pageSynced} orders (${fullRows.length} full, ${preserveRows.length} exact-preserved)`);
+      console.log(`Page ${currentPage + 1}: synced ${pageSynced} commercial orders`);
 
-      // Check if we've fetched all available orders
-      if (offset + limit >= totalAvailable) {
-        console.log('All orders fetched');
-        break;
-      }
-
+      if (offset + limit >= totalAvailable) break;
       offset += limit;
       currentPage++;
-
-      // Minimal delay to avoid rate limiting
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    console.log(`\n=== SYNC SUMMARY ===`);
-    console.log(`Total orders fetched: ${totalFetched}`);
-    console.log(`Successfully synced: ${syncedCount}`);
-    console.log(`Errors: ${errorCount}`);
-    console.log(`Pages fetched: ${currentPage + 1}`);
-    console.log(`Total available: ${totalAvailable}`);
-    if (timedOut) console.log(`⚠️ Stopped early due to time budget — ~${Math.max(totalAvailable - offset, 0)} orders may remain`);
-
-    // Auto-trigger billing enrichment (fire-and-forget) to populate real name + RUT
+    // Billing enrichment is still commercial data (buyer identity/RUT), so it
+    // remains part of the orders pipeline.
     if (syncedCount > 0) {
-      console.log('Triggering enrich-meli-billing...');
       try {
         supabaseClient.functions.invoke('enrich-meli-billing', {
           body: { account_id: meliAccount.id, user_id: userId },
-        }).catch((e) =>
-          console.error('enrich-meli-billing invoke failed:', e)
-        );
+        }).catch((e) => console.error('enrich-meli-billing invoke failed:', e));
       } catch (e) {
         console.error('enrich-meli-billing threw:', e);
       }
@@ -414,7 +266,7 @@ Deno.serve(async (req) => {
       JSON.stringify({
         success: true,
         message: timedOut
-          ? 'Sincronización parcial (límite de tiempo alcanzado, volvé a correrla para continuar)'
+          ? 'Sincronización parcial (límite de tiempo alcanzado)'
           : 'Sincronización completada',
         total: totalFetched,
         synced: syncedCount,
@@ -425,7 +277,6 @@ Deno.serve(async (req) => {
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
-
   } catch (error: any) {
     console.error('Error syncing orders:', error);
     return new Response(
