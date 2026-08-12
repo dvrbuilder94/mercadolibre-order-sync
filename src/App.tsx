@@ -22,6 +22,7 @@ import PageDocumentos            from "./pages/PageDocumentos";
 import PageWorkflow              from "./pages/PageWorkflow";
 import PageConciliacion          from "./pages/PageConciliacion";
 import PageFeedback              from "./pages/PageFeedback";
+import PageModeloDatos           from "./pages/PageModeloDatos";
 
 const queryClient = new QueryClient();
 
@@ -48,6 +49,7 @@ const App = () => (
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
           <Route path="/pipeline"     element={<Pipeline />} />
           <Route path="/workflow"     element={<PageWorkflow />} />
+          <Route path="/modelo-datos" element={<PageModeloDatos />} />
           <Route path="/arquitectura" element={<Navigate to="/workflow" replace />} />
           <Route path="/asistente"    element={<Navigate to="/tesoreria" replace />} />
           <Route path="/config"       element={<ConfigNew />} />
