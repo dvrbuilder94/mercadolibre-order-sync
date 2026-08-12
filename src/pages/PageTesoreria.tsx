@@ -9,7 +9,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { DetailPanel } from "@/components/DetailPanel";
 import { fetchOrderDetail } from "@/lib/orderDetail";
 import { TesoreriaResumen } from "@/components/tesoreria/TesoreriaResumen";
-import { TesoreriaDetalle } from "@/components/tesoreria/TesoreriaDetalle";
+import { TesoreriaMovimientos } from "@/components/tesoreria/TesoreriaMovimientos";
 import { TesoreriaCargos } from "@/components/tesoreria/TesoreriaCargos";
 import {
   clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw,
@@ -31,8 +31,11 @@ const EMBED = `
     orders (
       id, order_id, channel, customer_name, product_title,
       gross_amount, order_date, money_release_date,
-      installments, payment_method, has_exact_data,
-      order_tax_documents ( id, tax_documents ( status ) )
+      installments, payment_method, has_exact_data, raw_data,
+      order_tax_documents (
+        id,
+        tax_documents ( id, status, document_number, external_url, document_type )
+      )
     )
   )
 `;
@@ -87,8 +90,6 @@ export default function PageTesoreria() {
       }
       setRows(onlyRealMpPayments(acc));
 
-      // Para el MVP, Mercado Pago es la caja operativa. Estas son ventas MELI
-      // del período que todavía no tienen un pago aprobado con neto real.
       const { data: unpaid, error: unpaidError } = await supabase
         .from("orders")
         .select("id, order_id, gross_amount")
@@ -105,7 +106,8 @@ export default function PageTesoreria() {
         gross_amount: number | null;
       }>);
 
-      // Upcoming releases: scan payments globally (no period filter) for the next 30 days
+      // Las próximas liberaciones usan su propia cohorte temporal (money_release_date),
+      // separada de la cohorte mensual de payment_date que alimenta los movimientos.
       const today = format(new Date(), "yyyy-MM-dd'T'00:00:00");
       const in30 = format(new Date(Date.now() + 30 * 86400000), "yyyy-MM-dd'T'23:59:59");
       const { data: futureLinks } = await supabase
@@ -141,7 +143,21 @@ export default function PageTesoreria() {
             raw_data: p.raw_data,
             payment_sales: [{
               allocated_amount: ps.allocated_amount,
-              orders: { ...o, id: "", order_id: "", channel: null, customer_name: null, product_title: null, gross_amount: null, order_date: null, installments: null, payment_method: null },
+              orders: {
+                ...o,
+                id: "",
+                order_id: "",
+                channel: null,
+                customer_name: null,
+                product_title: null,
+                gross_amount: null,
+                order_date: null,
+                installments: null,
+                payment_method: null,
+                has_exact_data: null,
+                raw_data: null,
+                order_tax_documents: null,
+              },
             }],
           });
         }
@@ -177,8 +193,6 @@ export default function PageTesoreria() {
     } catch (error) {
       console.error("Error sincronizando caja Mercado Pago:", error);
     }
-    // Always reload the ledger: an MP request failure should not hide the data
-    // that was already persisted successfully.
     await fetchData();
   }, [fetchData, rangeIso]);
 
@@ -190,8 +204,6 @@ export default function PageTesoreria() {
     [payments],
   );
 
-  // Refunds and chargebacks are negative movements. Keep approved and released
-  // amounts separate: approval confirms the payment; release makes it available.
   const approvedNetTotal = useMemo(
     () => cashMovements.reduce((sum, payment) => sum + payment.net, 0),
     [cashMovements],
@@ -289,8 +301,6 @@ export default function PageTesoreria() {
 
         {monthlyControl && <MonthlyControlPanel snapshot={monthlyControl} />}
 
-        {/* Mercado Pago es la caja operativa del MVP. Aprobado y liberado se
-            muestran separados para no llamar "caja disponible" a plata retenida. */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
           <div className="bg-white border rounded-lg p-4">
             <p className="text-[11px] uppercase tracking-wider text-slate-400">Neto aprobado MP</p>
@@ -308,7 +318,7 @@ export default function PageTesoreria() {
               {orphanPayments.length}
             </p>
             <p className="text-[11px] text-slate-400 mt-1">
-              {partialPayments.length > 0 ? `${partialPayments.length} pagos parcialmente asignados` : "sin huérfanos detectados"}
+              {partialPayments.length > 0 ? `${partialPayments.length} pagos con asignación por revisar` : "sin huérfanos detectados"}
             </p>
           </div>
           <div className="bg-white border rounded-lg p-4">
@@ -347,7 +357,7 @@ export default function PageTesoreria() {
                 />
               </TabsContent>
               <TabsContent value="detalle">
-                <TesoreriaDetalle
+                <TesoreriaMovimientos
                   payments={payments}
                   initialMatchFilter={matchFilter}
                   onOpenOrder={openOrderDetail}

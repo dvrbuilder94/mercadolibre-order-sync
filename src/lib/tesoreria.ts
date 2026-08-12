@@ -8,6 +8,14 @@ export const clp = (n: number | null | undefined) =>
     maximumFractionDigits: 0,
   }).format(n || 0);
 
+export interface TesoreriaDocument {
+  id: string;
+  number: string;
+  url: string | null;
+  status: string | null;
+  type: string | null;
+}
+
 export interface TesoreriaSaleLink {
   allocated_amount: number;
   orders: {
@@ -22,7 +30,17 @@ export interface TesoreriaSaleLink {
     installments: number | null;
     payment_method: string | null;
     has_exact_data: boolean | null;
-    order_tax_documents: { id: string; tax_documents: { status: string | null } | null }[] | null;
+    raw_data: Record<string, any> | null;
+    order_tax_documents: {
+      id: string;
+      tax_documents: {
+        id: string;
+        status: string | null;
+        document_number: string;
+        external_url: string | null;
+        document_type: string | null;
+      } | null;
+    }[] | null;
   } | null;
 }
 
@@ -47,6 +65,7 @@ export interface TesoreriaPayment {
   paymentDate: string;
   gross: number;
   fees: number;
+  otherDeductions: number;
   net: number;
   status: string;
   method: string;
@@ -55,8 +74,6 @@ export interface TesoreriaPayment {
   channels: string[];
   releaseDate: string | null;
   liberado: boolean;
-  // La fecha de liberación es exacta solo cuando MercadoPago la confirmó
-  // (has_exact_data). Si alguna venta del pago no está confirmada, es estimada.
   exactRelease: boolean;
   sales: {
     id: string;
@@ -67,17 +84,21 @@ export interface TesoreriaPayment {
     allocated: number;
     gross: number | null;
     hasDoc: boolean;
+    packId: string | null;
+    documents: TesoreriaDocument[];
   }[];
   allocatedSum: number;
-  // Cuántas de las ventas de este pago ya tienen documento tributario vigente.
+  linkedGrossSum: number;
   docsOk: number;
+  documents: TesoreriaDocument[];
+  packIds: string[];
   matchState: "matched" | "partial" | "orphan";
 }
 
 const isLogicalBatch = (p: TesoreriaPaymentRaw) =>
   p.raw_data?.ledger_type === "LOGICAL_BATCH";
 
-/** Drop sync-meli-settlements synthetic "batch" rows — they are not real MP deposits. */
+/** Drop old synthetic settlement rows. They are not real Mercado Pago movements. */
 export const onlyRealMpPayments = (rows: TesoreriaPaymentRaw[]) =>
   rows.filter((p) => !isLogicalBatch(p));
 
@@ -100,7 +121,6 @@ const METHOD_TYPE_LABEL: Record<string, string> = {
 export const methodLabel = (type: string | null) =>
   (type && METHOD_TYPE_LABEL[type]) || type || "—";
 
-/** Pulls the most informative payment method label we can from raw_data or the linked order. */
 const extractMethod = (raw: any, orderMethod: string | null) => {
   const payment = raw?.mp_payment || raw;
   const type =
@@ -117,20 +137,50 @@ const extractMethod = (raw: any, orderMethod: string | null) => {
   return { type, brand };
 };
 
+const moneyMatches = (a: number, b: number) => {
+  const ref = Math.max(Math.abs(a), Math.abs(b));
+  const tolerance = Math.max(ref * 0.005, 1);
+  return Math.abs(a - b) <= tolerance;
+};
+
+const docsFromOrder = (order: TesoreriaSaleLink["orders"]): TesoreriaDocument[] => {
+  if (!order) return [];
+  const docs = new Map<string, TesoreriaDocument>();
+  for (const link of order.order_tax_documents || []) {
+    const doc = link.tax_documents;
+    if (!doc || doc.status === "voided") continue;
+    docs.set(doc.id, {
+      id: doc.id,
+      number: doc.document_number,
+      url: doc.external_url,
+      status: doc.status,
+      type: doc.document_type,
+    });
+  }
+  return Array.from(docs.values());
+};
+
 export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => {
   const links = p.payment_sales || [];
   const sales = links
     .filter((l) => l.orders)
-    .map((l) => ({
-      id: l.orders!.id,
-      orderId: l.orders!.order_id,
-      channel: l.orders!.channel,
-      customer: l.orders!.customer_name,
-      title: l.orders!.product_title,
-      allocated: l.allocated_amount || 0,
-      gross: l.orders!.gross_amount,
-      hasDoc: orderHasDoc(l.orders!.order_tax_documents),
-    }));
+    .map((l) => {
+      const order = l.orders!;
+      const packRaw = order.raw_data?.pack_id;
+      return {
+        id: order.id,
+        orderId: order.order_id,
+        channel: order.channel,
+        customer: order.customer_name,
+        title: order.product_title,
+        allocated: l.allocated_amount || 0,
+        gross: order.gross_amount,
+        hasDoc: orderHasDoc(order.order_tax_documents),
+        packId: packRaw == null ? null : String(packRaw),
+        documents: docsFromOrder(order),
+      };
+    });
+
   const channels = Array.from(
     new Set(links.map((l) => l.orders?.channel).filter(Boolean) as string[]),
   );
@@ -155,25 +205,37 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     links.find((l) => l.orders?.installments)?.orders?.installments ?? null;
   const { type, brand } = extractMethod(p.raw_data, orderMethod);
 
-  const allocatedSum = sales.reduce((s, x) => s + x.allocated, 0);
+  const allocatedSum = sales.reduce((sum, sale) => sum + sale.allocated, 0);
+  const linkedGrossSum = sales.reduce((sum, sale) => sum + (sale.gross || 0), 0);
+  const gross = p.gross_amount || 0;
+  const fees = p.fees_amount || 0;
   const net = p.net_amount || 0;
+  const isReversal = p.status === "REFUND" || p.status === "CHARGEBACK" || net < 0;
+
   let matchState: TesoreriaPayment["matchState"] = "orphan";
   if (sales.length > 0) {
-    const ref = net || p.amount || 0;
-    const tolerance = Math.max(Math.abs(ref) * 0.02, 100);
-    matchState =
-      ref !== 0 && Math.abs(allocatedSum - ref) <= tolerance ? "matched" : "partial";
+    const netConsistent = net !== 0 && moneyMatches(allocatedSum, net);
+    // Para pagos normales, no basta que el neto asignado cierre: el bruto del
+    // payment debe corresponder al bruto de las ventas vinculadas. Esto evita
+    // marcar como "Completo" un payment prorrateado artificialmente a todo un pack.
+    // Reversas se validan por su asignación neta porque pueden ser parciales.
+    const grossConsistent = isReversal || (gross !== 0 && moneyMatches(linkedGrossSum, gross));
+    matchState = netConsistent && grossConsistent ? "matched" : "partial";
   }
 
-  const isReversal = p.status === "REFUND" || p.status === "CHARGEBACK";
+  const documents = new Map<string, TesoreriaDocument>();
+  for (const sale of sales) for (const doc of sale.documents) documents.set(doc.id, doc);
+  const packIds = Array.from(new Set(sales.map((sale) => sale.packId).filter(Boolean) as string[]));
+  const otherDeductions = !isReversal ? Math.max(0, gross - fees - net) : 0;
 
   return {
     id: p.id,
     paymentId: p.external_payment_id || p.id.slice(0, 8),
     provider: providerLabel(p.payment_provider),
     paymentDate: p.payment_date,
-    gross: p.gross_amount || 0,
-    fees: p.fees_amount || 0,
+    gross,
+    fees,
+    otherDeductions,
     net,
     status: p.status || "—",
     method: methodLabel(type),
@@ -181,13 +243,14 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     installments,
     channels,
     releaseDate: release,
-    // A refund/chargeback is effective when its negative ledger movement is
-    // recorded. Other movements without a confirmed release date stay pending.
     liberado: isReversal || (release ? new Date(release) <= new Date() : false),
     exactRelease,
     sales,
     allocatedSum,
+    linkedGrossSum,
     docsOk: sales.filter((s) => s.hasDoc).length,
+    documents: Array.from(documents.values()),
+    packIds,
     matchState,
   };
 };
