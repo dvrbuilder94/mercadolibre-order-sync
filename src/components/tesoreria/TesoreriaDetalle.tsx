@@ -206,23 +206,16 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
             <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500 border-b">
               <tr>
                 <th className="px-3 py-2.5 text-left w-6"></th>
-                <th className="px-3 py-2.5 text-left">Fecha</th>
-                <th className="px-3 py-2.5 text-left">Payment ID</th>
-                <th className="px-3 py-2.5 text-left">Pasarela</th>
-                <th className="px-3 py-2.5 text-left">Medio</th>
-                <th className="px-3 py-2.5 text-left">Canal</th>
-                <th className="px-3 py-2.5 text-right">Bruto</th>
-                <th className="px-3 py-2.5 text-right">Comisión</th>
-                <th className="px-3 py-2.5 text-right">Neto</th>
-                <th className="px-3 py-2.5 text-left">Liberación</th>
-                <th className="px-3 py-2.5 text-left">Ventas</th>
-                <th className="px-3 py-2.5 text-left">Doc</th>
-                <th className="px-3 py-2.5 text-left">Match</th>
+                {shownCols.map((c) => (
+                  <th key={c.key} className={`px-3 py-2.5 ${c.align === "right" ? "text-right" : "text-left"}`}>
+                    {c.label}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {slice.length === 0 && (
-                <tr><td colSpan={13} className="px-3 py-12 text-center text-slate-400 text-sm">Sin pagos para los filtros aplicados.</td></tr>
+                <tr><td colSpan={shownCols.length + 1} className="px-3 py-12 text-center text-slate-400 text-sm">Sin pagos para los filtros aplicados.</td></tr>
               )}
               {slice.map((p) => {
                 const isOpen = expanded.has(p.id);
@@ -234,66 +227,16 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                           {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                         </button>
                       </td>
-                      <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">
-                        {format(new Date(p.paymentDate), "dd MMM yyyy", { locale: es })}
-                      </td>
-                      <td className="px-3 py-2.5 font-mono text-[12px] text-slate-700">
-                        <span className="inline-flex items-center gap-1">
-                          {p.paymentId}
-                          <button
-                            onClick={() => navigator.clipboard.writeText(p.paymentId)}
-                            className="text-slate-300 hover:text-slate-600"
-                            title="Copiar"
-                          >
-                            <Copy className="h-3 w-3" />
-                          </button>
-                        </span>
-                      </td>
-                      <td className="px-3 py-2.5 text-slate-600">{p.provider}</td>
-                      <td className="px-3 py-2.5">
-                        <div className="text-slate-700">{p.method}</div>
-                        {p.methodBrand && <div className="text-[11px] text-slate-400 uppercase">{p.methodBrand}{p.installments ? ` · ${p.installments}x` : ""}</div>}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <div className="flex flex-col gap-1">
-                          {p.channels.length === 0 ? <span className="text-slate-300">—</span> :
-                            p.channels.map((ch) => (
-                              <span key={ch} className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${CHANNEL_COLOR[ch] || "bg-slate-100 text-slate-600"}`}>
-                                {channelLabel(ch)}
-                              </span>
-                            ))}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-slate-600">{clp(p.gross)}</td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-slate-500">{p.fees ? `-${clp(p.fees)}` : "—"}</td>
-                      <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-slate-900">{clp(p.net)}</td>
-                      <td className="px-3 py-2.5 text-xs">
-                        {p.releaseDate
-                          ? <span className={p.liberado ? "text-emerald-600" : "text-amber-600"}>
-                              {format(new Date(p.releaseDate), "dd MMM", { locale: es })}
-                              {!p.exactRelease && <span title="Fecha estimada: MercadoPago no la confirmó (~14 días)" className="text-amber-500"> ≈</span>}
-                              <span className="block text-[10px] text-slate-400">{p.liberado ? "Liberado" : "Pendiente"}{!p.exactRelease ? " · estim." : ""}</span>
-                            </span>
-                          : <span className="text-slate-300">—</span>}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        {p.sales.length === 0
-                          ? <span className="text-slate-300 text-xs">0</span>
-                          : <span className="text-xs text-slate-600">{p.sales.length} {p.sales.length === 1 ? "venta" : "ventas"}</span>}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        {p.sales.length === 0
-                          ? <span className="text-slate-300 text-xs">—</span>
-                          : p.docsOk === p.sales.length
-                            ? <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-emerald-100 text-emerald-700">✓ {p.docsOk}/{p.sales.length}</span>
-                            : <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700">{p.docsOk}/{p.sales.length} · falta</span>}
-                      </td>
-                      <td className="px-3 py-2.5">{matchBadge(p.matchState)}</td>
+                      {shownCols.map((c) => (
+                        <td key={c.key} className={`px-3 py-2.5 ${c.align === "right" ? "text-right tabular-nums" : ""}`}>
+                          {renderCell(p, c.key)}
+                        </td>
+                      ))}
                     </tr>
                     {isOpen && (
                       <tr className="bg-slate-50/50 border-b">
                         <td></td>
-                        <td colSpan={12} className="px-3 py-3">
+                        <td colSpan={shownCols.length} className="px-3 py-3">
                           {/* Puente por pago: bruto → comisión → envío/cupones → neto.
                               "Envío/cupones" = residual gross − fees − net (charges_details). */}
                           <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-xs mb-3">
