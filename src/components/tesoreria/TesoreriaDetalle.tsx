@@ -168,6 +168,30 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
           options={[["all","Todos"], ...methods.map((m) => [m, m] as [string, string])]}/>
         <div className="ml-auto flex items-center gap-2">
           <span className="text-xs text-slate-400">{filtered.length} pagos</span>
+          <div className="relative">
+            <button onClick={() => setColsOpen((v) => !v)}
+              className="text-xs px-2.5 py-1.5 rounded-md border hover:bg-slate-50 flex items-center gap-1.5">
+              <SlidersHorizontal className="h-3.5 w-3.5" /> Columnas
+            </button>
+            {colsOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setColsOpen(false)} />
+                <div className="absolute right-0 mt-1 z-20 w-56 bg-white border rounded-lg shadow-lg p-2">
+                  <div className="flex items-center justify-between px-1 pb-1.5 mb-1 border-b">
+                    <span className="text-[11px] uppercase tracking-wider text-slate-400">Columnas</span>
+                    <button onClick={() => setVisible(new Set(DEFAULT_COLS))}
+                      className="text-[11px] text-sky-600 hover:underline">Todas</button>
+                  </div>
+                  {COLUMNS.map((c) => (
+                    <label key={c.key} className="flex items-center gap-2 px-1 py-1 text-xs text-slate-600 hover:bg-slate-50 rounded cursor-pointer">
+                      <input type="checkbox" checked={visible.has(c.key)} onChange={() => toggleCol(c.key)} />
+                      {c.label}
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <button onClick={exportCsv}
             className="text-xs px-2.5 py-1.5 rounded-md border hover:bg-slate-50 flex items-center gap-1.5">
             <Download className="h-3.5 w-3.5" /> CSV
