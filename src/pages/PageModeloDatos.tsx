@@ -144,6 +144,9 @@ export default function PageModeloDatos() {
           <div>
             <h1 className="text-lg font-semibold text-slate-900">Modelo de datos</h1>
             <p className="text-xs text-slate-500">Tablas y relaciones reales del esquema public</p>
+            {hideDisconnected && hiddenChannels.length > 0 && (
+              <p className="text-[11px] text-slate-400">Ocultos: {hiddenChannels.join(", ")}</p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-2 rounded-md border bg-white px-3 h-9 text-xs text-slate-600 cursor-pointer select-none">
