@@ -121,7 +121,6 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
   };
 
   const exportCsv = () => {
-    /* eslint-disable-next-line */
     const headers = [
       "fecha_pago", "payment_id", "pasarela", "medio", "marca", "cuotas",
       "canal", "bruto", "comision", "iva", "neto", "liberacion", "liberacion_estimada", "ventas", "documentos", "links_documentos", "estado_match",
