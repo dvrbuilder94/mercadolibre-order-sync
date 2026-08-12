@@ -15,8 +15,6 @@ import {
   clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw,
 } from "@/lib/tesoreria";
 import { chileMonthIsoRange, chilePeriodNow } from "@/lib/chileDate";
-import type { MonthlyControlSnapshot } from "@/lib/monthlyControl";
-import { MonthlyControlPanel } from "@/components/tesoreria/MonthlyControlPanel";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
@@ -55,7 +53,6 @@ export default function PageTesoreria() {
     gross_amount: number | null;
   }>>([]);
   const [detailOrder, setDetailOrder] = useState<any | null>(null);
-  const [monthlyControl, setMonthlyControl] = useState<MonthlyControlSnapshot | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -147,15 +144,6 @@ export default function PageTesoreria() {
         }
       }
       setUpcomingRows(futurePayments);
-
-      const { data: control, error: controlError } = await (supabase as any)
-        .rpc("get_monthly_control_snapshot", { p_period: period });
-      if (controlError) {
-        console.error("Error cargando control mensual:", controlError);
-        setMonthlyControl(null);
-      } else {
-        setMonthlyControl(control as unknown as MonthlyControlSnapshot);
-      }
     } catch (e) {
       console.error("Error cargando tesorería:", e);
       setRows([]); setUpcomingRows([]); setUnpaidOrders([]);
@@ -286,8 +274,6 @@ export default function PageTesoreria() {
             </button>
           </div>
         </div>
-
-        {monthlyControl && <MonthlyControlPanel snapshot={monthlyControl} />}
 
         {/* Mercado Pago es la caja operativa del MVP. Aprobado y liberado se
             muestran separados para no llamar "caja disponible" a plata retenida. */}

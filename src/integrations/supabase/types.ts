@@ -1687,6 +1687,10 @@ export type Database = {
           tx_count: number
         }[]
       }
+      get_monthly_control_snapshot: {
+        Args: { p_period: string }
+        Returns: Json
+      }
       get_pending_sales: {
         Args: {
           p_date_from?: string
