@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   ShoppingBag, Activity, Settings, LogOut,
-  Wrench, Landmark, FileText, Undo2, Workflow, GitMerge, MessageSquare, Route,
+  Wrench, Landmark, FileText, Undo2, Workflow, GitMerge, MessageSquare, Route, Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FeedbackWidget } from "@/components/FeedbackWidget";
@@ -22,6 +22,7 @@ const primary = [
 ];
 
 const advanced = [
+  { to: "/modelo-datos", label: "Modelo de datos",   icon: Database },
   { to: "/workflow",     label: "Workflow",          icon: Workflow },
   { to: "/pipeline",     label: "Sync (avanzada)",   icon: Activity },
 ];
@@ -94,7 +95,7 @@ export function Nav() {
           "flex items-center gap-2 px-3 py-2 rounded-md text-xs transition-colors mb-1",
           adv ? "text-primary hover:bg-slate-50" : "text-slate-400 hover:text-slate-700 hover:bg-slate-50"
         )}
-        title="Muestra módulos técnicos: Sincronización, Asistente, Sandbox"
+        title="Muestra módulos técnicos"
       >
         <Wrench className="h-3.5 w-3.5" />
         Modo avanzado {adv ? "· on" : "· off"}
