@@ -310,9 +310,14 @@ Deno.serve(async (req) => {
                   console.error(`    ❌ Error upserting payment ledger row: ${paymentUpsertError.message}`);
                   errors++;
                 } else {
-                  // Diferir el linking: si esta orden es parte de un pack, el
-                  // pago se reparte entre todas sus órdenes más abajo.
-                  paymentLinks.push({ paymentRowId: paymentRow.id, net: netReceived });
+                  // Diferir el linking: la orden dueña se decide con evidencia.
+                  processedPayments.push({
+                    paymentRowId: paymentRow.id,
+                    externalId: paymentId.toString(),
+                    gross: transactionAmount,
+                    net: netReceived,
+                    fees: paymentFees,
+                  });
                 }
               }
             } else {
