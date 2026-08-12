@@ -15,8 +15,6 @@ import {
   clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw,
 } from "@/lib/tesoreria";
 import { chileMonthIsoRange, chilePeriodNow } from "@/lib/chileDate";
-import type { MonthlyControlSnapshot } from "@/lib/monthlyControl";
-import { MonthlyControlPanel } from "@/components/tesoreria/MonthlyControlPanel";
 
 const periodLabel = (p: string) => {
   const [y, m] = p.split("-").map(Number);
