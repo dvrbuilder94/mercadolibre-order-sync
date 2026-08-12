@@ -30,7 +30,10 @@ const EMBED = `
       id, order_id, channel, customer_name, product_title,
       gross_amount, order_date, money_release_date,
       installments, payment_method, has_exact_data,
-      order_tax_documents ( id, tax_documents ( status ) )
+      order_tax_documents (
+        id,
+        tax_documents ( id, status, document_type, document_number, external_url )
+      )
     )
   )
 `;
