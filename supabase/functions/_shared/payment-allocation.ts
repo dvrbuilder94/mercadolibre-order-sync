@@ -222,3 +222,28 @@ export function validateAllocationInvariants(
 
   return { ok: true };
 }
+
+/**
+ * Invariante de ownership: si el pago quedó repartido entre varias órdenes, el
+ * bruto del pago debe igualar la suma de los brutos COMERCIALES de esas
+ * órdenes. Es la validación que impide que un pago de $29.990 termine colgado
+ * de tres órdenes que suman $89.970.
+ */
+export function validateGrossOwnership(
+  payment: AllocationPayment,
+  allocations: Allocation[],
+  orders: AllocationOrder[],
+): { ok: true } | { ok: false; error: string } {
+  const mine = allocations.filter((a) => a.paymentId === payment.id);
+  if (mine.length <= 1) return { ok: true };
+
+  const byId = new Map(orders.map((o) => [o.id, o]));
+  const ordersGross = mine.reduce((s, a) => s + (byId.get(a.orderId)?.gross ?? 0), 0);
+  if (!sameAmount(ordersGross, payment.gross)) {
+    return {
+      ok: false,
+      error: `payment ${payment.id}: bruto del pago ${payment.gross} != suma de brutos de las ${mine.length} órdenes (${ordersGross})`,
+    };
+  }
+  return { ok: true };
+}
