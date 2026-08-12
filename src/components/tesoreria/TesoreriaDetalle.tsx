@@ -1,9 +1,9 @@
-import { useMemo, useState, Fragment } from "react";
+import { useEffect, useMemo, useState, Fragment, type ReactNode } from "react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronDown, ChevronRight, Copy, Download, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Download, ExternalLink, Search, SlidersHorizontal } from "lucide-react";
 import { CHANNEL_COLOR } from "@/lib/constants";
-import { clp, TesoreriaPayment, channelLabel } from "@/lib/tesoreria";
+import { clp, TesoreriaPayment, channelLabel, docTypeLabel } from "@/lib/tesoreria";
 
 type MatchFilter = "all" | "matched" | "partial" | "orphan";
 
@@ -14,6 +14,29 @@ interface Props {
 }
 
 const PAGE = 50;
+const COLS_KEY = "tesoreria.detalle.columns";
+
+type ColKey =
+  | "fecha" | "paymentId" | "provider" | "method" | "channel" | "gross"
+  | "fees" | "vat" | "net" | "release" | "sales" | "doc" | "match";
+
+const COLUMNS: { key: ColKey; label: string; align?: "right" }[] = [
+  { key: "fecha", label: "Fecha" },
+  { key: "paymentId", label: "Payment ID" },
+  { key: "provider", label: "Pasarela" },
+  { key: "method", label: "Medio" },
+  { key: "channel", label: "Canal" },
+  { key: "gross", label: "Bruto", align: "right" },
+  { key: "fees", label: "Comisión", align: "right" },
+  { key: "vat", label: "IVA (19%)", align: "right" },
+  { key: "net", label: "Neto", align: "right" },
+  { key: "release", label: "Liberación" },
+  { key: "sales", label: "Ventas" },
+  { key: "doc", label: "Doc" },
+  { key: "match", label: "Match" },
+];
+
+const DEFAULT_COLS: ColKey[] = COLUMNS.map((c) => c.key);
 
 const matchBadge = (s: TesoreriaPayment["matchState"]) => {
   if (s === "matched")
@@ -31,6 +54,26 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
   const [method, setMethod] = useState<string>("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(0);
+  const [visible, setVisible] = useState<Set<ColKey>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLS_KEY) || "null");
+      if (Array.isArray(saved) && saved.length) return new Set(saved as ColKey[]);
+    } catch { /* ignore */ }
+    return new Set(DEFAULT_COLS);
+  });
+  const [colsOpen, setColsOpen] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem(COLS_KEY, JSON.stringify(Array.from(visible)));
+  }, [visible]);
+
+  const shownCols = COLUMNS.filter((c) => visible.has(c.key));
+  const toggleCol = (key: ColKey) =>
+    setVisible((prev) => {
+      const n = new Set(prev);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n.size === 0 ? new Set<ColKey>([key]) : n;
+    });
 
   const providers = useMemo(
     () => Array.from(new Set(payments.map((p) => p.provider))).filter(Boolean),
