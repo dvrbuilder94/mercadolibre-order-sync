@@ -1,74 +1,46 @@
-## Renombrar Liquidaciones → Tesorería (con 2 vistas)
+# Tesorería · Movimientos: claridad numérica y columnas configurables
 
-Reemplazo el módulo actual de "Liquidaciones" por **Tesorería**, manteniendo la ruta vieja con redirect. Dos pestañas dentro del módulo, mismo backend (`payments`, `payment_sales`, `orders`, `meli_payment_details`, `settlements`).
+## 1. Corregir la lectura de los números (prioridad)
 
----
+El dato está bien; lo que confunde es cómo se muestra.
 
-### Vista 1 — Resumen (default)
+- **Marcar pagos de un pack**: cuando un pago pertenece a un pack con varias órdenes, mostrar un chip discreto "Pack · 2 órdenes" junto al Payment ID.
+- **Aclarar el prorrateo en el detalle expandido**: hoy la fila de orden muestra "Venta bruta $34.990" y "Asignado al pago $6.606" sin explicar la relación. Se agrega:
+  - una línea de contexto arriba del detalle: `Pack 2000014439630827 · total pack $44.980 · pagado en 2 pagos`,
+  - y, cuando el pack se pagó en varios pagos, un pie: `Este pago cubre $8.492 de $44.980 del pack`.
+- **Fila resumen coherente**: mantener `Bruto − Comisión − Envío/cupones = Neto` (ya cierra) y añadir `Σ asignado = Neto` como validación visual, en verde si calza y en rojo si no.
 
-Pregunta que responde: *"¿cuánta plata me llegó, cuánta está por llegar, y cuánto está matcheado?"*
+## 2. Simplificar DOC y MATCH
 
-**Header KPIs (4 cards, filtro por período + canal)**
-- Recibido en el período (Σ `payments.amount` con `paid_at` en rango)
-- Por liberar (Σ `meli_payment_details.net_amount` con `release_date > now`)
-- Matcheado vs Ventas (% pagos con al menos 1 fila en `payment_sales`)
-- Pagos huérfanos (count + monto sin `payment_sales`) → link a tab Detalle filtrado
+Hoy son dos columnas que dicen casi lo mismo. Se fusionan en una sola columna **Estado**:
 
-**Gráficos**
-- Línea/barras: Recibido por día (últimos 30/60/90 días)
-- Donut: Recibido por pasarela / medio de pago (MP account_money, credit_card, debit_card, etc., desde `payments.raw_data.payment_method`)
-- Barras: Recibido por canal de venta (meli / shopify / …)
-- Mini-tabla: Próximas liberaciones (top 10 por `release_date` ascendente)
+- `Completo` (verde): el pago está asignado a ventas y todas tienen documento vigente.
+- `Sin DTE` (ámbar): asignado, pero falta boleta/factura en alguna venta.
+- `Parcial` (ámbar): lo asignado no cuadra con el neto del pago.
+- `Sin venta` (rojo): pago huérfano.
 
-**Matching pagos↔ventas (panel)**
-- Total pagos en período · Pagos con match · Pagos sin match · Monto sin matchear
-- Botón "Buscar pagos huérfanos en MercadoPago" → llama `check-orphan-payments` (ya existe)
-- Resultado: lista de pagos en MP que **no** existen en `meli_payment_details` (gap real de ingesta)
+El detalle por venta (✓ Con doc / falta) se mantiene al expandir, que es donde realmente sirve.
 
----
+## 3. Nueva columna **Doc** (link a la boleta)
 
-### Vista 2 — Detalle
+Columna angosta con el número de documento abreviado (ej. `335488`) enlazado al `external_url` de Bsale, abriendo en pestaña nueva. Si el pago cubre varias ventas con el mismo documento se muestra una vez; si son varios, se muestra el primero y `+N`.
 
-Tabla pro, una fila por **payment_id**, con drill-down de ventas asociadas.
+## 4. Selector de columnas estilo Dynamics
 
-**Filtros**: rango de fechas · canal · pasarela · medio de pago · estado match (matched / orphan / partial) · búsqueda libre (payment_id, order_id, cliente).
+Botón "Columnas" sobre la tabla que abre un panel con:
 
-**Columnas**
-| Fecha pago | Payment ID | Pasarela | Medio (brand/type) | Canal | Cuotas | Bruto | Comisión | Neto | Liberación | Ventas asociadas | Estado match |
+- checkboxes para mostrar/ocultar cada columna,
+- reordenamiento por arrastre,
+- botón "Restablecer".
 
-- **Pasarela**: deriva de `raw_data` (MercadoPago / Transbank / etc.)
-- **Medio**: `payment_method_type` + `payment_method_brand` (visa, master, account_money…)
-- **Ventas asociadas**: chip con N° de orden; click expande la fila mostrando todas las órdenes del `payment_sales` con `allocated_amount`, producto y cliente
-- **Estado match**: badge `Completo` (Σ allocated ≈ amount), `Parcial`, `Sin matchear`
+Columnas disponibles: Fecha, Payment ID, Pasarela, Medio, Canal, Bruto, Comisión, Envío/cupones, Neto, Liberación, Ventas, Doc, Estado.
+Visibles por defecto: Fecha, Payment ID, Medio, Canal, Bruto, Comisión, Neto, Liberación, Ventas, Doc, Estado.
 
-**Acciones por fila**
-- Expandir ventas asociadas (inline)
-- Abrir orden en DetailPanel (reusa el existente)
-- Copiar Payment ID
+La preferencia se guarda en el navegador (localStorage), por lo que persiste entre sesiones sin tocar la base de datos. La exportación a CSV respeta las columnas visibles y su orden.
 
-**Export**: CSV del listado filtrado.
+## Detalles técnicos
 
----
-
-### Cambios técnicos
-
-- `src/App.tsx`: nueva ruta `/tesoreria` apunta a `PageTesoreria`. Mantengo `/liquidaciones` como `<Navigate to="/tesoreria" replace />`.
-- `src/components/Nav.tsx`: label "Liquidaciones" → "Tesorería", icono `Landmark` se mantiene, ruta nueva.
-- `src/pages/PageTesoreria.tsx` (nuevo): contiene `<Tabs>` con "Resumen" y "Detalle".
-- `src/pages/PageLiquidaciones.tsx`: lo dejo eliminado (lógica útil se migra). Cualquier helper compartido se mueve a `src/lib/tesoreria.ts`.
-- Componentes nuevos en `src/components/tesoreria/`:
-  - `TesoreriaResumen.tsx` (KPIs + gráficos con `recharts` ya instalado)
-  - `TesoreriaDetalle.tsx` (tabla + filtros + expand)
-  - `PaymentRow.tsx` (fila expandible con ventas)
-  - `OrphanPaymentsCard.tsx` (usa `check-orphan-payments`)
-- Sin migraciones SQL ni edge functions nuevas — todo se calcula client-side desde tablas existentes.
-- Reuso: `DetailPanel`, `usePeriodReconciliation` para filtro de período/canal, `fetchOrderDetail`.
-
----
-
-### Fuera de scope (lo aclaro para no asumir)
-- No toco `payments`, `payment_sales`, ni los syncs.
-- No agrego conciliación bancaria (sigue siendo `bank_movements`, vacío hoy).
-- No toco asistente, conciliación ni resto del nav.
-
-¿Lo dejo así o querés que ajuste KPIs / columnas / agregue algo antes de implementar?
+- `src/lib/tesoreria.ts`: exponer `packId`, `packTotal`, `packPaymentCount` y `docs[] {number, url}` en `TesoreriaPayment`; reemplazar `matchState`/`docsOk` por un `estado` derivado (manteniendo los campos internos para los filtros).
+- La consulta de `PageTesoreria.tsx` debe incluir `tax_documents.document_number` y `external_url`, y el `pack_id` desde `orders.raw_data`.
+- `src/components/tesoreria/TesoreriaDetalle.tsx`: definición de columnas como arreglo de configuración, render dinámico según preferencia, panel de columnas con `dnd` liviano y persistencia en localStorage.
+- Sin cambios de esquema ni de lógica de conciliación.
