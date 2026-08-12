@@ -1,5 +1,29 @@
 import { CHANNEL_LABEL } from "@/lib/constants";
-import { orderHasDoc } from "@/lib/taxDocs";
+import { linkIsVigente, orderHasDoc } from "@/lib/taxDocs";
+
+export const VAT_RATE = 0.19;
+
+/** IVA incluido en un monto bruto con IVA (19%). */
+export const vatFromGross = (gross: number) =>
+  Math.round(gross - gross / (1 + VAT_RATE));
+
+export interface TesoreriaDoc {
+  id: string;
+  type: string | null;
+  number: string | null;
+  url: string | null;
+}
+
+const DOC_TYPE_LABEL: Record<string, string> = {
+  boleta: "Boleta",
+  factura: "Factura",
+  factura_exenta: "Factura exenta",
+  nota_credito: "Nota de crédito",
+  nota_debito: "Nota de débito",
+};
+
+export const docTypeLabel = (t: string | null) =>
+  (t && DOC_TYPE_LABEL[t]) || t || "Documento";
 
 export const clp = (n: number | null | undefined) =>
   new Intl.NumberFormat("es-CL", {
@@ -22,7 +46,16 @@ export interface TesoreriaSaleLink {
     installments: number | null;
     payment_method: string | null;
     has_exact_data: boolean | null;
-    order_tax_documents: { id: string; tax_documents: { status: string | null } | null }[] | null;
+    order_tax_documents: {
+      id: string;
+      tax_documents: {
+        id?: string;
+        status: string | null;
+        document_type?: string | null;
+        document_number?: string | null;
+        external_url?: string | null;
+      } | null;
+    }[] | null;
   } | null;
 }
 
@@ -48,6 +81,8 @@ export interface TesoreriaPayment {
   gross: number;
   fees: number;
   net: number;
+  /** IVA incluido en el bruto (19%). */
+  vat: number;
   status: string;
   method: string;
   methodBrand: string | null;
@@ -67,8 +102,11 @@ export interface TesoreriaPayment {
     allocated: number;
     gross: number | null;
     hasDoc: boolean;
+    docs: TesoreriaDoc[];
   }[];
   allocatedSum: number;
+  /** Documentos tributarios vigentes de todas las ventas del pago (sin repetir). */
+  docs: TesoreriaDoc[];
   // Cuántas de las ventas de este pago ya tienen documento tributario vigente.
   docsOk: number;
   matchState: "matched" | "partial" | "orphan";
@@ -130,6 +168,14 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
       allocated: l.allocated_amount || 0,
       gross: l.orders!.gross_amount,
       hasDoc: orderHasDoc(l.orders!.order_tax_documents),
+      docs: (l.orders!.order_tax_documents ?? [])
+        .filter(linkIsVigente)
+        .map((link) => ({
+          id: link.tax_documents?.id || link.id,
+          type: link.tax_documents?.document_type ?? null,
+          number: link.tax_documents?.document_number ?? null,
+          url: link.tax_documents?.external_url ?? null,
+        })),
     }));
   const channels = Array.from(
     new Set(links.map((l) => l.orders?.channel).filter(Boolean) as string[]),
@@ -175,6 +221,7 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     gross: p.gross_amount || 0,
     fees: p.fees_amount || 0,
     net,
+    vat: vatFromGross(p.gross_amount || 0),
     status: p.status || "—",
     method: methodLabel(type),
     methodBrand: brand,
@@ -187,6 +234,9 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     exactRelease,
     sales,
     allocatedSum,
+    docs: Array.from(
+      new Map(sales.flatMap((s) => s.docs).map((d) => [d.id, d])).values(),
+    ),
     docsOk: sales.filter((s) => s.hasDoc).length,
     matchState,
   };
