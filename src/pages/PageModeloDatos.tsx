@@ -28,12 +28,32 @@ const GAP_X = 90;
 const GAP_Y = 70;
 const COLS = 4;
 
+// Cada canal agrupa sus tablas por prefijo. Sirve para ocultar del diagrama
+// las tablas de canales que la cuenta todavía no tiene conectados.
+const CHANNEL_TABLES: Record<string, { label: string; accounts: string; prefixes: string[] }> = {
+  meli: { label: "MercadoLibre", accounts: "meli_accounts", prefixes: ["meli_"] },
+  mercadopago: { label: "Mercado Pago", accounts: "mercadopago_accounts", prefixes: ["mercadopago_"] },
+  bsale: { label: "Bsale", accounts: "bsale_accounts", prefixes: ["bsale_"] },
+  shopify: { label: "Shopify", accounts: "shopify_accounts", prefixes: ["shopify_"] },
+  falabella: { label: "Falabella", accounts: "falabella_accounts", prefixes: ["falabella_"] },
+  amazon: { label: "Amazon", accounts: "amazon_accounts", prefixes: ["amazon_"] },
+};
+
+function channelOfTable(tableName: string): string | null {
+  for (const [key, cfg] of Object.entries(CHANNEL_TABLES)) {
+    if (cfg.prefixes.some(p => tableName.startsWith(p))) return key;
+  }
+  return null;
+}
+
 export default function PageModeloDatos() {
   const [rows, setRows] = useState<CatalogRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [scale, setScale] = useState(0.85);
+  const [connected, setConnected] = useState<Record<string, boolean>>({});
+  const [hideDisconnected, setHideDisconnected] = useState(true);
 
   useEffect(() => {
     const load = async () => {
@@ -50,6 +70,21 @@ export default function PageModeloDatos() {
     load();
   }, []);
 
+  useEffect(() => {
+    const loadConnections = async () => {
+      const entries = await Promise.all(
+        Object.entries(CHANNEL_TABLES).map(async ([key, cfg]) => {
+          const { count } = await (supabase as any)
+            .from(cfg.accounts)
+            .select("id", { count: "exact", head: true });
+          return [key, (count ?? 0) > 0] as const;
+        }),
+      );
+      setConnected(Object.fromEntries(entries));
+    };
+    loadConnections();
+  }, []);
+
   const tables = useMemo<TableModel[]>(() => {
     const map = new Map<string, CatalogRow[]>();
     for (const row of rows) {
@@ -60,9 +95,18 @@ export default function PageModeloDatos() {
     const q = search.trim().toLowerCase();
     return [...map.entries()]
       .map(([name, columns]) => ({ name, columns }))
+      .filter((table) => {
+        if (!hideDisconnected) return true;
+        const channel = channelOfTable(table.name);
+        return !channel || connected[channel] !== false;
+      })
       .filter((table) => !q || table.name.toLowerCase().includes(q) || table.columns.some(c => c.column_name.toLowerCase().includes(q)))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [rows, search]);
+  }, [rows, search, hideDisconnected, connected]);
+
+  const hiddenChannels = Object.entries(CHANNEL_TABLES)
+    .filter(([key]) => connected[key] === false)
+    .map(([, cfg]) => cfg.label);
 
   const positions = useMemo(() => {
     const map = new Map<string, { x: number; y: number }>();
@@ -100,8 +144,20 @@ export default function PageModeloDatos() {
           <div>
             <h1 className="text-lg font-semibold text-slate-900">Modelo de datos</h1>
             <p className="text-xs text-slate-500">Tablas y relaciones reales del esquema public</p>
+            {hideDisconnected && hiddenChannels.length > 0 && (
+              <p className="text-[11px] text-slate-400">Ocultos: {hiddenChannels.join(", ")}</p>
+            )}
           </div>
           <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 rounded-md border bg-white px-3 h-9 text-xs text-slate-600 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={hideDisconnected}
+                onChange={(e) => setHideDisconnected(e.target.checked)}
+                className="h-3.5 w-3.5 accent-slate-700"
+              />
+              Ocultar canales no conectados
+            </label>
             <div className="relative">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
               <input
