@@ -356,11 +356,20 @@ Deno.serve(async (req) => {
           const ratioOf = (t: { gross: number }) =>
             grossTotal > 0 ? t.gross / grossTotal : 1 / targets.length;
 
-          // 1) Atribución: ligar cada pago real de MP a cada orden del pack,
-          //    repartido por bruto. Idempotente (upsert por payment_id,sale_id).
+          // 1) Atribución: si el bruto del pago calza exactamente con el bruto
+          //    de UNA sola orden del pack, ese pago es de esa orden y se le
+          //    asigna íntegro (MP emite un pago por producto en muchos packs).
+          //    Solo cuando no hay calce exacto se reparte por bruto.
+          //    Idempotente (upsert por payment_id,sale_id).
           for (const link of paymentLinks) {
-            for (const t of targets) {
-              const allocated = Math.round(link.net * ratioOf(t) * 100) / 100;
+            const exact = targets.filter((t) => Math.abs(t.gross - link.gross) < 1);
+            const linkTargets = exact.length === 1 ? exact : targets;
+            const linkGrossTotal = linkTargets.reduce((s, t) => s + t.gross, 0);
+            for (const t of linkTargets) {
+              const share = linkTargets.length === 1
+                ? 1
+                : (linkGrossTotal > 0 ? t.gross / linkGrossTotal : 1 / linkTargets.length);
+              const allocated = Math.round(link.net * share * 100) / 100;
               const { error: linkError } = await supabase
                 .from('payment_sales')
                 .upsert(
