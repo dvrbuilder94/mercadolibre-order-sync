@@ -46,6 +46,91 @@ const matchBadge = (s: TesoreriaPayment["matchState"]) => {
   return <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700">Sin matchear</span>;
 };
 
+const docLinks = (docs: TesoreriaPayment["docs"]) => (
+  <div className="flex flex-col gap-0.5">
+    {docs.map((d) =>
+      d.url ? (
+        <a key={d.id} href={d.url} target="_blank" rel="noopener noreferrer"
+          className="text-[11px] text-sky-600 hover:underline inline-flex items-center gap-1 w-fit">
+          {docTypeLabel(d.type)} {d.number ?? ""}
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      ) : (
+        <span key={d.id} className="text-[11px] text-slate-500">
+          {docTypeLabel(d.type)} {d.number ?? ""}
+        </span>
+      ),
+    )}
+  </div>
+);
+
+const renderCell = (p: TesoreriaPayment, key: ColKey): ReactNode => {
+  switch (key) {
+    case "fecha":
+      return <span className="text-slate-700 whitespace-nowrap">{format(new Date(p.paymentDate), "dd MMM yyyy", { locale: es })}</span>;
+    case "paymentId":
+      return (
+        <span className="inline-flex items-center gap-1 font-mono text-[12px] text-slate-700">
+          {p.paymentId}
+          <button onClick={() => navigator.clipboard.writeText(p.paymentId)}
+            className="text-slate-300 hover:text-slate-600" title="Copiar">
+            <Copy className="h-3 w-3" />
+          </button>
+        </span>
+      );
+    case "provider":
+      return <span className="text-slate-600">{p.provider}</span>;
+    case "method":
+      return (
+        <>
+          <div className="text-slate-700">{p.method}</div>
+          {p.methodBrand && <div className="text-[11px] text-slate-400 uppercase">{p.methodBrand}{p.installments ? ` · ${p.installments}x` : ""}</div>}
+        </>
+      );
+    case "channel":
+      return (
+        <div className="flex flex-col gap-1">
+          {p.channels.length === 0 ? <span className="text-slate-300">—</span> :
+            p.channels.map((ch) => (
+              <span key={ch} className={`text-[10px] px-1.5 py-0.5 rounded font-medium w-fit ${CHANNEL_COLOR[ch] || "bg-slate-100 text-slate-600"}`}>
+                {channelLabel(ch)}
+              </span>
+            ))}
+        </div>
+      );
+    case "gross":
+      return <span className="text-slate-600">{clp(p.gross)}</span>;
+    case "fees":
+      return <span className="text-slate-500">{p.fees ? `-${clp(p.fees)}` : "—"}</span>;
+    case "vat":
+      // IVA incluido en el bruto del pago (19%), referencial para contabilidad.
+      return <span className="text-slate-500" title="IVA incluido en el bruto (19%)">{p.gross ? clp(p.vat) : "—"}</span>;
+    case "net":
+      return <span className="font-semibold text-slate-900">{clp(p.net)}</span>;
+    case "release":
+      return p.releaseDate ? (
+        <span className={`text-xs ${p.liberado ? "text-emerald-600" : "text-amber-600"}`}>
+          {format(new Date(p.releaseDate), "dd MMM", { locale: es })}
+          {!p.exactRelease && <span title="Fecha estimada: MercadoPago no la confirmó (~14 días)" className="text-amber-500"> ≈</span>}
+          <span className="block text-[10px] text-slate-400">{p.liberado ? "Liberado" : "Pendiente"}{!p.exactRelease ? " · estim." : ""}</span>
+        </span>
+      ) : <span className="text-slate-300">—</span>;
+    case "sales":
+      return p.sales.length === 0
+        ? <span className="text-slate-300 text-xs">0</span>
+        : <span className="text-xs text-slate-600">{p.sales.length} {p.sales.length === 1 ? "venta" : "ventas"}</span>;
+    case "doc":
+      if (p.docs.length > 0) return docLinks(p.docs);
+      return p.sales.length === 0
+        ? <span className="text-slate-300 text-xs">—</span>
+        : <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700">Sin documento</span>;
+    case "match":
+      return matchBadge(p.matchState);
+    default:
+      return null;
+  }
+};
+
 export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenOrder }: Props) {
   const [q, setQ] = useState("");
   const [matchFilter, setMatchFilter] = useState<MatchFilter>(initialMatchFilter);
