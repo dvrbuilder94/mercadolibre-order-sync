@@ -1002,6 +1002,48 @@ export type Database = {
           },
         ]
       }
+      payment_sales_repair_log: {
+        Row: {
+          allocated_amount: number | null
+          created_at: string
+          external_payment_id: string | null
+          id: string
+          payment_gross: number | null
+          payment_id: string
+          reason: string
+          repair_batch_id: string
+          repaired_at: string
+          sale_id: string
+          sum_order_gross: number | null
+        }
+        Insert: {
+          allocated_amount?: number | null
+          created_at?: string
+          external_payment_id?: string | null
+          id?: string
+          payment_gross?: number | null
+          payment_id: string
+          reason: string
+          repair_batch_id: string
+          repaired_at?: string
+          sale_id: string
+          sum_order_gross?: number | null
+        }
+        Update: {
+          allocated_amount?: number | null
+          created_at?: string
+          external_payment_id?: string | null
+          id?: string
+          payment_gross?: number | null
+          payment_id?: string
+          reason?: string
+          repair_batch_id?: string
+          repaired_at?: string
+          sale_id?: string
+          sum_order_gross?: number | null
+        }
+        Relationships: []
+      }
       payments: {
         Row: {
           amount: number
