@@ -157,7 +157,7 @@ Deno.serve(async (req) => {
         let latestMoneyReleaseDate = null;
         // Links a crear DESPUÉS del loop: el pago de un pack debe repartirse
         // entre todas las órdenes del pack, no atribuirse entero a esta orden.
-        const paymentLinks: { paymentRowId: string; net: number }[] = [];
+        const paymentLinks: { paymentRowId: string; net: number; gross: number }[] = [];
 
         // Process all payments for this order
         for (const payment of payments) {
@@ -298,7 +298,11 @@ Deno.serve(async (req) => {
                 } else {
                   // Diferir el linking: si esta orden es parte de un pack, el
                   // pago se reparte entre todas sus órdenes más abajo.
-                  paymentLinks.push({ paymentRowId: paymentRow.id, net: netReceived });
+                  paymentLinks.push({
+                    paymentRowId: paymentRow.id,
+                    net: netReceived,
+                    gross: transactionAmount,
+                  });
                 }
               }
             } else {
