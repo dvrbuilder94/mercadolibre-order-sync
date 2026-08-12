@@ -27,6 +27,7 @@ create table quadra_reset_backup_20260812.payment_sales as table public.payment_
 create table quadra_reset_backup_20260812.meli_payment_details as table public.meli_payment_details;
 create table quadra_reset_backup_20260812.tax_documents as table public.tax_documents;
 create table quadra_reset_backup_20260812.order_tax_documents as table public.order_tax_documents;
+create table quadra_reset_backup_20260812.order_tax_match_candidates as table public.order_tax_match_candidates;
 create table quadra_reset_backup_20260812.settlements as table public.settlements;
 create table quadra_reset_backup_20260812.settlement_items as table public.settlement_items;
 create table quadra_reset_backup_20260812.bank_movements as table public.bank_movements;
@@ -49,6 +50,7 @@ truncate table
   public.meli_payment_details,
   public.meli_claims,
   public.order_tax_documents,
+  public.order_tax_match_candidates,
   public.settlement_items,
   public.bank_movements,
   public.payments,
