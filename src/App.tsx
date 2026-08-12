@@ -11,11 +11,12 @@ import MeliCallback from "./pages/MeliCallback";
 import MercadoPagoCallback from "./pages/MercadoPagoCallback";
 import NotFound     from "./pages/NotFound";
 
-// New UX — 8 pages
+// New UX
 import Pipeline              from "./pages/Pipeline";
 import PageVentas            from "./pages/PageVentas";
 import ConfigNew             from "./pages/ConfigNew";
 import PageTesoreria         from "./pages/PageTesoreria";
+import PageTrazabilidadPagos from "./pages/PageTrazabilidadPagos";
 import PageDevoluciones      from "./pages/PageDevoluciones";
 import PageDocumentos        from "./pages/PageDocumentos";
 import PageWorkflow          from "./pages/PageWorkflow";
@@ -41,6 +42,7 @@ const App = () => (
           <Route path="/documentos"   element={<PageDocumentos />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
           <Route path="/tesoreria"     element={<PageTesoreria />} />
+          <Route path="/trazabilidad"  element={<PageTrazabilidadPagos />} />
           <Route path="/liquidaciones" element={<Navigate to="/tesoreria" replace />} />
           <Route path="/billing"       element={<Navigate to="/tesoreria?tab=cargos" replace />} />
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
