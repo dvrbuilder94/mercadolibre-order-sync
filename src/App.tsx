@@ -12,16 +12,16 @@ import MercadoPagoCallback from "./pages/MercadoPagoCallback";
 import NotFound     from "./pages/NotFound";
 
 // New UX
-import Pipeline              from "./pages/Pipeline";
-import PageVentas            from "./pages/PageVentas";
-import ConfigNew             from "./pages/ConfigNew";
-import PageTesoreria         from "./pages/PageTesoreria";
-import PageTrazabilidadPagos from "./pages/PageTrazabilidadPagos";
-import PageDevoluciones      from "./pages/PageDevoluciones";
-import PageDocumentos        from "./pages/PageDocumentos";
-import PageWorkflow          from "./pages/PageWorkflow";
-import PageConciliacion      from "./pages/PageConciliacion";
-import PageFeedback          from "./pages/PageFeedback";
+import Pipeline                  from "./pages/Pipeline";
+import PageVentas                from "./pages/PageVentas";
+import ConfigNew                 from "./pages/ConfigNew";
+import PageTesoreria             from "./pages/PageTesoreria";
+import PageTrazabilidadPagosV2   from "./pages/PageTrazabilidadPagosV2";
+import PageDevoluciones          from "./pages/PageDevoluciones";
+import PageDocumentos            from "./pages/PageDocumentos";
+import PageWorkflow              from "./pages/PageWorkflow";
+import PageConciliacion          from "./pages/PageConciliacion";
+import PageFeedback              from "./pages/PageFeedback";
 
 const queryClient = new QueryClient();
 
@@ -42,7 +42,7 @@ const App = () => (
           <Route path="/documentos"   element={<PageDocumentos />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
           <Route path="/tesoreria"     element={<PageTesoreria />} />
-          <Route path="/trazabilidad"  element={<PageTrazabilidadPagos />} />
+          <Route path="/trazabilidad"  element={<PageTrazabilidadPagosV2 />} />
           <Route path="/liquidaciones" element={<Navigate to="/tesoreria" replace />} />
           <Route path="/billing"       element={<Navigate to="/tesoreria?tab=cargos" replace />} />
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
