@@ -202,13 +202,21 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
   const { type, brand } = extractMethod(p.raw_data, orderMethod);
 
   const allocatedSum = sales.reduce((s, x) => s + x.allocated, 0);
+  const salesGrossSum = sales.reduce((s, x) => s + (x.gross || 0), 0);
+  const paymentGross = p.gross_amount || 0;
   const net = p.net_amount || 0;
+
+  // Ownership is a gross-vs-gross control. `allocated_amount` is a financial
+  // allocation field and must not be used to prove that a payment belongs to
+  // the linked order(s). A payment is complete only when the linked sales gross
+  // reconciles to the payment gross within a small rounding tolerance.
   let matchState: TesoreriaPayment["matchState"] = "orphan";
   if (sales.length > 0) {
-    const ref = net || p.amount || 0;
-    const tolerance = Math.max(Math.abs(ref) * 0.02, 100);
+    const tolerance = Math.max(Math.abs(paymentGross) * 0.005, 5);
     matchState =
-      ref !== 0 && Math.abs(allocatedSum - ref) <= tolerance ? "matched" : "partial";
+      paymentGross !== 0 && Math.abs(salesGrossSum - paymentGross) <= tolerance
+        ? "matched"
+        : "partial";
   }
 
   const isReversal = p.status === "REFUND" || p.status === "CHARGEBACK";

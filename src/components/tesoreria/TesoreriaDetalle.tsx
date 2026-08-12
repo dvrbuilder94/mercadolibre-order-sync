@@ -18,7 +18,7 @@ const COLS_KEY = "tesoreria.detalle.columns";
 
 type ColKey =
   | "fecha" | "paymentId" | "provider" | "method" | "channel" | "gross"
-  | "fees" | "vat" | "net" | "release" | "sales" | "doc" | "match";
+  | "fees" | "net" | "release" | "sales" | "doc" | "match";
 
 const COLUMNS: { key: ColKey; label: string; align?: "right" }[] = [
   { key: "fecha", label: "Fecha" },
@@ -28,7 +28,6 @@ const COLUMNS: { key: ColKey; label: string; align?: "right" }[] = [
   { key: "channel", label: "Canal" },
   { key: "gross", label: "Bruto", align: "right" },
   { key: "fees", label: "Comisión", align: "right" },
-  { key: "vat", label: "IVA (19%)", align: "right" },
   { key: "net", label: "Neto", align: "right" },
   { key: "release", label: "Liberación" },
   { key: "sales", label: "Ventas" },
@@ -102,9 +101,6 @@ const renderCell = (p: TesoreriaPayment, key: ColKey): ReactNode => {
       return <span className="text-slate-600">{clp(p.gross)}</span>;
     case "fees":
       return <span className="text-slate-500">{p.fees ? `-${clp(p.fees)}` : "—"}</span>;
-    case "vat":
-      // IVA incluido en el bruto del pago (19%), referencial para contabilidad.
-      return <span className="text-slate-500" title="IVA incluido en el bruto (19%)">{p.gross ? clp(p.vat) : "—"}</span>;
     case "net":
       return <span className="font-semibold text-slate-900">{clp(p.net)}</span>;
     case "release":
@@ -208,12 +204,12 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
   const exportCsv = () => {
     const headers = [
       "fecha_pago", "payment_id", "pasarela", "medio", "marca", "cuotas",
-      "canal", "bruto", "comision", "iva", "neto", "liberacion", "liberacion_estimada", "ventas", "documentos", "links_documentos", "estado_match",
+      "canal", "bruto", "comision", "neto", "liberacion", "liberacion_estimada", "ventas", "documentos", "links_documentos", "estado_match",
     ];
     const rows = filtered.map((p) => [
       p.paymentDate, p.paymentId, p.provider, p.method, p.methodBrand || "",
       p.installments ?? "", p.channels.join("|"),
-      p.gross, p.fees, p.vat, p.net, p.releaseDate || "",
+      p.gross, p.fees, p.net, p.releaseDate || "",
       p.exactRelease ? "" : "estimada",
       p.sales.map((s) => s.orderId).join("|"),
       p.docs.map((d) => `${docTypeLabel(d.type)} ${d.number ?? ""}`.trim()).join("|"),
@@ -322,14 +318,14 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                       <tr className="bg-slate-50/50 border-b">
                         <td></td>
                         <td colSpan={shownCols.length} className="px-3 py-3">
-                          {/* Puente por pago: bruto → comisión → envío/cupones → neto.
-                              "Envío/cupones" = residual gross − fees − net (charges_details). */}
+                          {/* El residual bruto − comisión − neto no se etiqueta como
+                              envío/cupón sin evidencia explícita desde Mercado Pago. */}
                           <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-xs mb-3">
                             <span className="text-slate-400">Bruto <b className="text-slate-700 tabular-nums">{clp(p.gross)}</b></span>
                             <span className="text-slate-300">−</span>
                             <span className="text-slate-400">Comisión <b className="text-red-600 tabular-nums">{clp(p.fees)}</b></span>
                             <span className="text-slate-300">−</span>
-                            <span className="text-slate-400">Envío/cupones <b className="text-red-600 tabular-nums">{clp(p.gross - p.fees - p.net)}</b></span>
+                            <span className="text-slate-400">No clasificado <b className="text-slate-700 tabular-nums">{clp(p.gross - p.fees - p.net)}</b></span>
                             <span className="text-slate-300">=</span>
                             <span className="text-slate-400">Neto <b className="text-emerald-600 tabular-nums">{clp(p.net)}</b></span>
                           </div>
@@ -345,7 +341,7 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                                   <th className="py-1">Cliente</th>
                                   <th className="py-1">Producto</th>
                                   <th className="py-1 text-right">Venta bruta</th>
-                                  <th className="py-1 text-right">Asignado al pago</th>
+                                  <th className="py-1 text-right">Neto asignado</th>
                                   <th className="py-1">Documento</th>
                                 </tr>
                               </thead>
@@ -369,7 +365,7 @@ export function TesoreriaDetalle({ payments, initialMatchFilter = "all", onOpenO
                                   </tr>
                                 ))}
                                 <tr className="border-t border-slate-300 font-medium">
-                                  <td colSpan={4} className="py-1.5 text-right text-slate-500">Σ asignado:</td>
+                                  <td colSpan={4} className="py-1.5 text-right text-slate-500">Σ neto asignado:</td>
                                   <td className="py-1.5 text-right tabular-nums">{clp(p.allocatedSum)}</td>
                                   <td></td>
                                 </tr>
