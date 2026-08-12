@@ -168,6 +168,14 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
       allocated: l.allocated_amount || 0,
       gross: l.orders!.gross_amount,
       hasDoc: orderHasDoc(l.orders!.order_tax_documents),
+      docs: (l.orders!.order_tax_documents ?? [])
+        .filter(linkIsVigente)
+        .map((link) => ({
+          id: link.tax_documents?.id || link.id,
+          type: link.tax_documents?.document_type ?? null,
+          number: link.tax_documents?.document_number ?? null,
+          url: link.tax_documents?.external_url ?? null,
+        })),
     }));
   const channels = Array.from(
     new Set(links.map((l) => l.orders?.channel).filter(Boolean) as string[]),
@@ -213,6 +221,7 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     gross: p.gross_amount || 0,
     fees: p.fees_amount || 0,
     net,
+    vat: vatFromGross(p.gross_amount || 0),
     status: p.status || "—",
     method: methodLabel(type),
     methodBrand: brand,
@@ -225,6 +234,9 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     exactRelease,
     sales,
     allocatedSum,
+    docs: Array.from(
+      new Map(sales.flatMap((s) => s.docs).map((d) => [d.id, d])).values(),
+    ),
     docsOk: sales.filter((s) => s.hasDoc).length,
     matchState,
   };
