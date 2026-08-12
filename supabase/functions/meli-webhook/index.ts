@@ -9,12 +9,8 @@ const corsHeaders = {
 };
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
-  }
-  if (req.method !== 'POST') {
-    return new Response(null, { status: 405, headers: corsHeaders });
-  }
+  if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
+  if (req.method !== 'POST') return new Response(null, { status: 405, headers: corsHeaders });
 
   try {
     const supabaseClient = createClient(
@@ -28,9 +24,6 @@ Deno.serve(async (req) => {
       user_id?: unknown;
     }>(req);
 
-    // Mercado Libre envía notificaciones con esta estructura:
-    // { topic: "orders_v2", resource: "/orders/123456789", user_id: 123456 }
-    
     if (notification.topic !== 'orders_v2') {
       return new Response(
         JSON.stringify({ message: 'Notification ignored - not an order notification' }),
@@ -38,7 +31,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Extraer el ID de la orden de la URL del resource
     const resource = typeof notification.resource === 'string' ? notification.resource : '';
     const orderId = resource.match(/^\/orders\/(\d{1,30})$/)?.[1];
     const sellerId = typeof notification.user_id === 'number' || typeof notification.user_id === 'string'
@@ -46,14 +38,12 @@ Deno.serve(async (req) => {
       : '';
 
     if (!orderId || !/^\d{1,30}$/.test(sellerId)) {
-      console.error('Missing order ID or seller ID in notification');
       return new Response(
         JSON.stringify({ error: 'Invalid notification data' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Buscar la cuenta de Mercado Libre asociada a este seller_id
     const { data: meliAccount, error: accountError } = await supabaseClient
       .from('meli_accounts')
       .select('*')
@@ -68,10 +58,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Obtener access token — el refresh se centraliza en cron-refresh-meli-tokens
-    // (MELI rota el refresh_token en cada uso, refrescar aquí también generaría una carrera).
-    // Se acusa recibo (200) en vez de 500 para que MELI no reintente el webhook
-    // mientras el token está vencido: el cron lo va a renovar de todos modos.
     let accessToken: string;
     try {
       accessToken = await getFreshAccessToken(supabaseClient, meliAccount);
@@ -83,18 +69,13 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Obtener detalles de la orden actualizada
     const orderResponse = await fetch(
       `https://api.mercadolibre.com/orders/${orderId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
+      { headers: { Authorization: `Bearer ${accessToken}` } },
     );
 
     if (!orderResponse.ok) {
-      console.error('Failed to fetch order details');
+      console.error('Failed to fetch order details:', orderResponse.status);
       return new Response(
         JSON.stringify({ error: 'Failed to fetch order' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -103,23 +84,61 @@ Deno.serve(async (req) => {
 
     const order = await orderResponse.json();
 
-    // Actualizar o insertar la orden en la base de datos
+    // Composite commercial identity: one external order id is unique only
+    // inside the connected channel account. This must match sync-meli-orders.
+    const { data: existing, error: existingError } = await supabaseClient
+      .from('orders')
+      .select('id, has_exact_data')
+      .eq('channel', 'meli')
+      .eq('channel_account_id', meliAccount.id)
+      .eq('order_id', order.id.toString())
+      .maybeSingle();
+
+    if (existingError) {
+      console.error('Error checking existing order:', existingError);
+      return new Response(
+        JSON.stringify({ error: 'Failed to inspect existing order' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const shipping = order.shipping || {};
+    const coupon = order.coupon || {};
+    const firstItem = order.order_items?.[0];
+
+    const row: Record<string, unknown> = {
+      channel: 'meli',
+      channel_account_id: meliAccount.id,
+      meli_account_id: meliAccount.id,
+      order_id: order.id.toString(),
+      customer_name: order.buyer?.nickname || 'Cliente',
+      customer_email: order.buyer?.email || null,
+      status: mapMeliOrderStatus(order),
+      order_date: order.date_created,
+      amount: order.total_amount || 0,
+      // Direct commercial total from MELI; never an estimate.
+      gross_amount: order.total_amount || 0,
+      items: order.order_items?.length || 1,
+      raw_data: order,
+      shipping_cost: shipping.cost || 0,
+      discount_amount: coupon.amount || 0,
+      currency_id: order.currency_id || 'CLP',
+      shipping_mode: shipping.shipping_mode || null,
+      shipping_id: shipping.id?.toString() || null,
+      date_shipped: shipping.date_shipped || null,
+      date_delivered: shipping.date_delivered || null,
+      seller_sku: firstItem?.item?.seller_custom_field || null,
+      product_title: firstItem?.item?.title || null,
+    };
+
+    // New/non-exact rows must remain eligible for MP enrichment. If the order
+    // already has exact MP values, omit the flag so a webhook cannot undo them.
+    if (!existing?.has_exact_data) row.has_exact_data = false;
+
     const { error: upsertError } = await supabaseClient
       .from('orders')
-      .upsert({
-        order_id: order.id.toString(),
-        meli_account_id: meliAccount.id,
-        customer_name: order.buyer?.nickname || 'Desconocido',
-        customer_email: order.buyer?.email || null,
-        // Mismo mapeo que sync-meli-orders — antes acá se guardaba el status
-        // crudo de ML, lo que dejaba el vocabulario inconsistente entre ambos.
-        status: mapMeliOrderStatus(order),
-        order_date: order.date_created,
-        amount: order.total_amount,
-        items: order.order_items?.length || 0,
-        raw_data: order,
-      }, {
-        onConflict: 'order_id',
+      .upsert(row, {
+        onConflict: 'channel_account_id,order_id',
       });
 
     if (upsertError) {
@@ -130,13 +149,11 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log('Order updated successfully:', orderId);
-
+    console.log('Commercial order updated successfully:', orderId);
     return new Response(
       JSON.stringify({ success: true, order_id: orderId }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
-
   } catch (error: any) {
     console.error('Error processing webhook:', error);
     const status = error instanceof HttpInputError ? error.status : 500;
