@@ -1774,6 +1774,22 @@ export type Database = {
           total_count: number
         }[]
       }
+      get_schema_catalog: {
+        Args: never
+        Returns: {
+          column_default: string
+          column_name: string
+          data_type: string
+          foreign_column_name: string
+          foreign_table_name: string
+          is_nullable: boolean
+          is_primary_key: boolean
+          is_unique: boolean
+          ordinal_position: number
+          table_name: string
+          udt_name: string
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
