@@ -1,6 +1,13 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.74.0';
 import { getMeliAccount, getFreshAccessToken } from '../_shared/meli-account.ts';
 import { resolveUserId } from '../_shared/auth.ts';
+import {
+  AllocationOrder,
+  AllocationPayment,
+  resolvePaymentAllocations,
+  validateAllocationInvariants,
+  validateGrossOwnership,
+} from '../_shared/payment-allocation.ts';
 
 // CORS configuration - MUST be present on ALL responses
 const corsHeaders = {
@@ -155,9 +162,16 @@ Deno.serve(async (req) => {
         let totalNetReceived = 0;
         let totalFees = 0;
         let latestMoneyReleaseDate = null;
-        // Links a crear DESPUÉS del loop: el pago de un pack debe repartirse
-        // entre todas las órdenes del pack, no atribuirse entero a esta orden.
-        const paymentLinks: { paymentRowId: string; net: number }[] = [];
+        // Pagos reales de MP procesados en esta orden. La atribución a órdenes
+        // se decide DESPUÉS del loop, con el motor de evidencia
+        // (_shared/payment-allocation.ts). Nunca por pertenecer al mismo pack.
+        const processedPayments: {
+          paymentRowId: string;
+          externalId: string;
+          gross: number;
+          net: number;
+          fees: number;
+        }[] = [];
 
         // Process all payments for this order
         for (const payment of payments) {
@@ -296,9 +310,14 @@ Deno.serve(async (req) => {
                   console.error(`    ❌ Error upserting payment ledger row: ${paymentUpsertError.message}`);
                   errors++;
                 } else {
-                  // Diferir el linking: si esta orden es parte de un pack, el
-                  // pago se reparte entre todas sus órdenes más abajo.
-                  paymentLinks.push({ paymentRowId: paymentRow.id, net: netReceived });
+                  // Diferir el linking: la orden dueña se decide con evidencia.
+                  processedPayments.push({
+                    paymentRowId: paymentRow.id,
+                    externalId: paymentId.toString(),
+                    gross: transactionAmount,
+                    net: netReceived,
+                    fees: paymentFees,
+                  });
                 }
               }
             } else {
@@ -314,22 +333,22 @@ Deno.serve(async (req) => {
           }
         }
 
-        // Atribuir el/los pago(s) y escribir el dato exacto — consciente de packs.
-        if (orderHasValidPayment) {
-          // Un pack de MercadoLibre agrupa varias órdenes bajo UN pago.
-          // MercadoPago adjunta ese pago solo al snapshot de una orden, así que
-          // las hermanas llegan acá con raw_data.payments vacío y se saltan —
-          // quedando sin pago mientras esta orden absorbe el pack completo.
-          // Repartimos el pago entre todas las órdenes (no canceladas) del pack,
-          // proporcional al bruto de cada una.
+        // Atribución Pago → Orden por EVIDENCIA (nunca por pack_id).
+        if (orderHasValidPayment && processedPayments.length > 0) {
+          // El pack sólo sirve para armar el conjunto de órdenes candidatas.
           const packId = order.raw_data?.pack_id != null ? String(order.raw_data.pack_id) : null;
-          let targets: { id: string; gross: number; isPrimary: boolean }[] =
-            [{ id: order.id, gross: order.amount || 0, isPrimary: true }];
+          let groupRows: any[] = [{
+            id: order.id,
+            order_id: order.order_id,
+            amount: order.amount,
+            gross_amount: order.amount,
+            raw_data: order.raw_data,
+          }];
 
           if (packId) {
             const { data: siblings, error: sibErr } = await supabase
               .from('orders')
-              .select('id, amount, gross_amount, status')
+              .select('id, order_id, amount, gross_amount, status, raw_data')
               .eq('channel', 'meli')
               .eq('channel_account_id', meliAccount.id)
               .eq('raw_data->>pack_id', packId);
@@ -338,55 +357,132 @@ Deno.serve(async (req) => {
             } else {
               const real = (siblings || []).filter((s: any) => s.status !== 'cancelled');
               if (real.length > 1) {
-                targets = real.map((s: any) => ({
-                  id: s.id,
-                  gross: (s.gross_amount ?? s.amount) || 0,
-                  isPrimary: s.id === order.id,
-                }));
-                console.log(`    📦 Pack ${packId}: repartiendo el pago entre ${targets.length} órdenes`);
+                groupRows = real;
+                console.log(`    📦 Pack ${packId}: ${real.length} órdenes candidatas (la atribución se decide por evidencia)`);
               }
             }
           }
 
-          const grossTotal = targets.reduce((s, t) => s + t.gross, 0);
-          const ratioOf = (t: { gross: number }) =>
-            grossTotal > 0 ? t.gross / grossTotal : 1 / targets.length;
+          // Evidencia explícita de ownership: payment_ids declarados por cada
+          // orden en su snapshot + los ya registrados en meli_payment_details.
+          const explicitByOrder = new Map<string, Set<string>>();
+          for (const row of groupRows) {
+            const ids = new Set<string>(
+              (row.raw_data?.payments || [])
+                .map((p: any) => (p?.id != null ? String(p.id) : null))
+                .filter(Boolean) as string[],
+            );
+            explicitByOrder.set(row.id, ids);
+          }
+          const { data: knownDetails, error: detailsErr } = await supabase
+            .from('meli_payment_details')
+            .select('order_id, payment_id')
+            .in('order_id', groupRows.map((r: any) => r.id));
+          if (detailsErr) {
+            console.error(`    ❌ Error leyendo meli_payment_details: ${detailsErr.message}`);
+          } else {
+            for (const d of knownDetails || []) {
+              if (d.order_id) explicitByOrder.get(d.order_id)?.add(String(d.payment_id));
+            }
+          }
 
-          // 1) Atribución: ligar cada pago real de MP a cada orden del pack,
-          //    repartido por bruto. Idempotente (upsert por payment_id,sale_id).
-          for (const link of paymentLinks) {
-            for (const t of targets) {
-              const allocated = Math.round(link.net * ratioOf(t) * 100) / 100;
-              const { error: linkError } = await supabase
-                .from('payment_sales')
-                .upsert(
-                  { payment_id: link.paymentRowId, sale_id: t.id, allocated_amount: allocated },
-                  { onConflict: 'payment_id,sale_id' },
-                );
-              if (linkError) {
-                console.error(`    ❌ Error linking payment_sales (orden ${t.id}): ${linkError.message}`);
+          const groupOrders: AllocationOrder[] = groupRows.map((row: any) => ({
+            id: row.id,
+            gross: (row.gross_amount ?? row.amount) || 0,
+            explicitPaymentIds: Array.from(explicitByOrder.get(row.id) ?? []),
+          }));
+          const allocationPayments: AllocationPayment[] = processedPayments.map((p) => ({
+            id: p.externalId,
+            gross: p.gross,
+            net: p.net,
+            fees: p.fees,
+          }));
+
+          const { allocations, unresolved } = resolvePaymentAllocations(allocationPayments, groupOrders);
+
+          for (const u of unresolved) {
+            console.warn(`    ⚠️ Pago ${u.paymentId} SIN ASIGNAR (${u.reason}) — evidencia insuficiente, no se inventa conciliación`);
+            const row = processedPayments.find((p) => p.externalId === u.paymentId);
+            if (row) {
+              // Sin evidencia: el pago queda huérfano en el ledger y se limpian
+              // atribuciones previas creadas por la regla vieja de pack.
+              await supabase.from('payments').update({ status: 'UNMATCHED' }).eq('id', row.paymentRowId);
+              await supabase.from('payment_sales').delete().eq('payment_id', row.paymentRowId);
+            }
+          }
+
+          // Invariantes antes de persistir: bruto atribuido == bruto del pago y,
+          // si hay más de una orden, el pago debe cubrir la suma de sus brutos.
+          const rejected = new Set<string>();
+          for (const p of allocationPayments) {
+            const checks = [
+              validateAllocationInvariants(p, allocations),
+              validateGrossOwnership(p, allocations, groupOrders),
+            ];
+            for (const check of checks) {
+              if (!check.ok) {
+                console.error(`    ❌ Invariante violada, no se persiste: ${check.error}`);
+                rejected.add(p.id);
                 errors++;
-              } else {
-                paymentsLinked++;
               }
             }
           }
 
-          // 2) Dato exacto: cada orden del pack recibe su porción de neto/comisión.
-          for (const t of targets) {
-            const ratio = ratioOf(t);
-            const poNet = Math.round(totalNetReceived * ratio * 100) / 100;
-            const poFees = Math.round(totalFees * ratio * 100) / 100;
-            const poComm = t.gross > 0 ? (poFees / t.gross * 100).toFixed(2) : '0';
-            // El envío (me2) se cobra una vez por el pack: se descuenta solo de
-            // la orden que traía el dato de envío (la que procesamos).
+          const valid = allocations.filter((a) => !rejected.has(a.paymentId));
+
+          // 1) Persistir payment_sales sólo para lo que tiene evidencia.
+          for (const a of valid) {
+            const row = processedPayments.find((p) => p.externalId === a.paymentId)!;
+            const { error: linkError } = await supabase
+              .from('payment_sales')
+              .upsert(
+                { payment_id: row.paymentRowId, sale_id: a.orderId, allocated_amount: a.allocatedNet },
+                { onConflict: 'payment_id,sale_id' },
+              );
+            if (linkError) {
+              console.error(`    ❌ Error linking payment_sales (orden ${a.orderId}): ${linkError.message}`);
+              errors++;
+            } else {
+              paymentsLinked++;
+            }
+          }
+
+          // Barrer atribuciones antiguas del mismo pago que ya no corresponden.
+          for (const row of processedPayments) {
+            const keep = valid.filter((a) => a.paymentId === row.externalId).map((a) => a.orderId);
+            if (keep.length === 0) continue;
+            const { error: cleanErr } = await supabase
+              .from('payment_sales')
+              .delete()
+              .eq('payment_id', row.paymentRowId)
+              .not('sale_id', 'in', `(${keep.join(',')})`);
+            if (cleanErr) console.error(`    ❌ Error limpiando atribuciones obsoletas: ${cleanErr.message}`);
+          }
+
+          // 2) Dato exacto por orden, agregando sólo lo realmente atribuido.
+          const perOrder = new Map<string, { net: number; fees: number }>();
+          for (const a of valid) {
+            const acc = perOrder.get(a.orderId) ?? { net: 0, fees: 0 };
+            acc.net += a.allocatedNet;
+            acc.fees += a.allocatedFees;
+            perOrder.set(a.orderId, acc);
+          }
+
+          for (const [orderId, totals] of perOrder) {
+            const target = groupOrders.find((o) => o.id === orderId)!;
+            const isPrimary = orderId === order.id;
+            const poNet = Math.round(totals.net * 100) / 100;
+            const poFees = Math.round(totals.fees * 100) / 100;
+            const poComm = target.gross > 0 ? ((poFees / target.gross) * 100).toFixed(2) : '0';
+            // El envío (me2) se cobra una vez: sólo se descuenta de la orden
+            // que traía el dato de envío (la que estamos procesando).
             const shippingCost = order.raw_data?.shipping?.cost || 0;
             const shippingMode = order.raw_data?.shipping?.shipping_mode || 'custom';
-            const shippingDeduction = (t.isPrimary && shippingMode === 'me2') ? shippingCost : 0;
+            const shippingDeduction = (isPrimary && shippingMode === 'me2') ? shippingCost : 0;
             const settlementAmount = Math.round((poNet - shippingDeduction) * 100) / 100;
 
             const { error: updateError } = await supabase.from('orders').update({
-              gross_amount: t.gross,
+              gross_amount: target.gross,
               net_amount: poNet,
               commission_amount: poFees,
               commission_percentage: parseFloat(poComm),
@@ -397,14 +493,14 @@ Deno.serve(async (req) => {
               financing_fee: poFees,
               tax_amount: 0,
               has_exact_data: true,
-            }).eq('id', t.id);
+            }).eq('id', orderId);
 
             if (updateError) {
-              console.error(`    ❌ Error updating order ${t.id}: ${updateError.message}`);
+              console.error(`    ❌ Error updating order ${orderId}: ${updateError.message}`);
               errors++;
-            } else if (t.isPrimary) {
+            } else if (isPrimary) {
               updated++;
-              console.log(`    ✨ Orden ${order.order_id} actualizada${targets.length > 1 ? ` (pack de ${targets.length})` : ''} — neto: ${poNet}`);
+              console.log(`    ✨ Orden ${order.order_id} actualizada — neto: ${poNet}`);
             }
           }
         }
