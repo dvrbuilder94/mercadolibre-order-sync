@@ -88,7 +88,6 @@ export interface TesoreriaPayment {
     documents: TesoreriaDocument[];
   }[];
   allocatedSum: number;
-  linkedGrossSum: number;
   docsOk: number;
   documents: TesoreriaDocument[];
   packIds: string[];
@@ -135,12 +134,6 @@ const extractMethod = (raw: any, orderMethod: string | null) => {
     payment?.card?.payment_method?.id ||
     null;
   return { type, brand };
-};
-
-const moneyMatches = (a: number, b: number) => {
-  const ref = Math.max(Math.abs(a), Math.abs(b));
-  const tolerance = Math.max(ref * 0.005, 1);
-  return Math.abs(a - b) <= tolerance;
 };
 
 const docsFromOrder = (order: TesoreriaSaleLink["orders"]): TesoreriaDocument[] => {
@@ -206,21 +199,21 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
   const { type, brand } = extractMethod(p.raw_data, orderMethod);
 
   const allocatedSum = sales.reduce((sum, sale) => sum + sale.allocated, 0);
-  const linkedGrossSum = sales.reduce((sum, sale) => sum + (sale.gross || 0), 0);
   const gross = p.gross_amount || 0;
   const fees = p.fees_amount || 0;
   const net = p.net_amount || 0;
   const isReversal = p.status === "REFUND" || p.status === "CHARGEBACK" || net < 0;
 
+  // Mantener la semántica existente del ledger: payment_sales.allocated_amount
+  // representa la porción de neto atribuida a las ventas. Una orden puede tener
+  // más de un payment y un pack puede distribuir el neto entre varias órdenes;
+  // por eso NO se compara el bruto de cada payment contra el bruto total de la
+  // orden o del pack.
   let matchState: TesoreriaPayment["matchState"] = "orphan";
   if (sales.length > 0) {
-    const netConsistent = net !== 0 && moneyMatches(allocatedSum, net);
-    // Para pagos normales, no basta que el neto asignado cierre: el bruto del
-    // payment debe corresponder al bruto de las ventas vinculadas. Esto evita
-    // marcar como "Completo" un payment prorrateado artificialmente a todo un pack.
-    // Reversas se validan por su asignación neta porque pueden ser parciales.
-    const grossConsistent = isReversal || (gross !== 0 && moneyMatches(linkedGrossSum, gross));
-    matchState = netConsistent && grossConsistent ? "matched" : "partial";
+    const ref = net || p.amount || 0;
+    const tolerance = Math.max(Math.abs(ref) * 0.02, 100);
+    matchState = ref !== 0 && Math.abs(allocatedSum - ref) <= tolerance ? "matched" : "partial";
   }
 
   const documents = new Map<string, TesoreriaDocument>();
@@ -247,7 +240,6 @@ export const toTesoreriaPayment = (p: TesoreriaPaymentRaw): TesoreriaPayment => 
     exactRelease,
     sales,
     allocatedSum,
-    linkedGrossSum,
     docsOk: sales.filter((s) => s.hasDoc).length,
     documents: Array.from(documents.values()),
     packIds,
