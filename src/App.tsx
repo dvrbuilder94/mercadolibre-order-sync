@@ -23,6 +23,7 @@ import PageWorkflow              from "./pages/PageWorkflow";
 import PageConciliacion          from "./pages/PageConciliacion";
 import PageFeedback              from "./pages/PageFeedback";
 import PageModeloDatos           from "./pages/PageModeloDatos";
+import PageImportMeliBackup      from "./pages/PageImportMeliBackup";
 
 const queryClient = new QueryClient();
 
@@ -53,6 +54,7 @@ const App = () => (
           <Route path="/arquitectura" element={<Navigate to="/workflow" replace />} />
           <Route path="/asistente"    element={<Navigate to="/tesoreria" replace />} />
           <Route path="/config"       element={<ConfigNew />} />
+          <Route path="/admin/import-meli" element={<PageImportMeliBackup />} />
           <Route path="/feedback"     element={<PageFeedback />} />
 
           {/* OAuth callbacks — DO NOT TOUCH */}
