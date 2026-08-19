@@ -13,7 +13,7 @@ import {
 interface PinGateDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onVerified: () => void | Promise<void>;
+  onVerified: (pin: string) => void | Promise<void>;
   title?: string;
   description?: string;
 }
@@ -61,8 +61,10 @@ export function PinGateDialog({
         setPin("");
         return;
       }
+      const verifiedPin = pin;
       onOpenChange(false);
-      await onVerified();
+      setPin("");
+      await onVerified(verifiedPin);
     } finally {
       setChecking(false);
     }
@@ -118,7 +120,7 @@ export function PinGateDialog({
             >
               {checking ? "Verificando..." : "Verificar y continuar"}
             </button>
-            <p className="text-[11px] text-slate-400 text-center">El PIN nunca se guarda ni se devuelve al navegador en texto plano.</p>
+            <p className="text-[11px] text-slate-400 text-center">El PIN no se guarda en texto plano. La acción protegida vuelve a verificarlo en backend.</p>
           </div>
         )}
       </DialogContent>

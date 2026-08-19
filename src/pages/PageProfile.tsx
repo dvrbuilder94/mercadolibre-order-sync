@@ -126,11 +126,11 @@ export default function PageProfile() {
     }
   };
 
-  const startNewMeliAccount = async () => {
+  const startNewMeliAccount = async (verifiedPin: string) => {
     setAddingMeli(true);
     try {
-      const { data, error } = await supabase.functions.invoke("get-meli-auth-url", {
-        body: { new_account: true },
+      const { data, error } = await supabase.functions.invoke("get-meli-new-account-auth-url", {
+        body: { pin: verifiedPin },
       });
       const authUrl = data?.authUrl || data?.auth_url;
       if (error || !authUrl) throw new Error(data?.error || "No se pudo iniciar la conexión");
