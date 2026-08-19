@@ -51,16 +51,13 @@ function inferChannel(detected: string | null, rawData: any): string | null {
 type Props = {
   period: string;
   channelFilter: string;
-  onReview?: () => void;
 };
 
 type SummaryState = {
   documentsIssued: number;
-  realSales: number;
+  sales: number;
   documentedSales: number;
   undocumentedSales: number;
-  unlinkedDocuments: number;
-  cancelledLinkedDocuments: number;
   net: number;
   tax: number;
   total: number;
@@ -72,11 +69,9 @@ type SummaryState = {
 
 const EMPTY: SummaryState = {
   documentsIssued: 0,
-  realSales: 0,
+  sales: 0,
   documentedSales: 0,
   undocumentedSales: 0,
-  unlinkedDocuments: 0,
-  cancelledLinkedDocuments: 0,
   net: 0,
   tax: 0,
   total: 0,
@@ -86,7 +81,7 @@ const EMPTY: SummaryState = {
   channels: [],
 };
 
-export default function DocumentosResumen({ period, channelFilter, onReview }: Props) {
+export default function DocumentosResumen({ period, channelFilter }: Props) {
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<SummaryState>(EMPTY);
 
@@ -99,7 +94,7 @@ export default function DocumentosResumen({ period, channelFilter, onReview }: P
         const { from, to } = chileMonthDateRange(period);
 
         const allDocs: any[] = [];
-        const DOC_COLS = "id, document_type, document_date, net_amount, tax_amount, total_amount, status, detected_channel, raw_data, order_tax_documents(order_id, orders(status, channel))";
+        const DOC_COLS = "id, document_type, document_date, net_amount, tax_amount, total_amount, status, detected_channel, raw_data";
         for (let page = 0; page < 50; page++) {
           const { data, error } = await (supabase.from("tax_documents") as any)
             .select(DOC_COLS)
@@ -136,15 +131,15 @@ export default function DocumentosResumen({ period, channelFilter, onReview }: P
           if (batch.length < 1000) break;
         }
 
-        const realOrders = allOrders.filter((order: any) => isRealSale(order.status));
-        const realOrderIds = realOrders.map((order: any) => order.id);
+        const sales = allOrders.filter((order: any) => isRealSale(order.status));
+        const saleIds = sales.map((order: any) => order.id);
         const documentedIds = new Set<string>();
 
-        for (let i = 0; i < realOrderIds.length; i += 300) {
+        for (let i = 0; i < saleIds.length; i += 300) {
           const { data: links, error } = await supabase
             .from("order_tax_documents")
             .select("order_id, tax_documents(status)")
-            .in("order_id", realOrderIds.slice(i, i + 300));
+            .in("order_id", saleIds.slice(i, i + 300));
           if (error) throw error;
           for (const link of links || []) {
             const td: any = Array.isArray((link as any).tax_documents)
@@ -152,18 +147,6 @@ export default function DocumentosResumen({ period, channelFilter, onReview }: P
               : (link as any).tax_documents;
             if (td && td.status !== "voided") documentedIds.add((link as any).order_id);
           }
-        }
-
-        let unlinkedDocuments = 0;
-        let cancelledLinkedDocuments = 0;
-        for (const doc of vigenteDocs) {
-          const links = doc.order_tax_documents || [];
-          const statuses = links
-            .map((link: any) => Array.isArray(link.orders) ? link.orders[0]?.status : link.orders?.status)
-            .filter(Boolean);
-          if (statuses.some((status: string) => isRealSale(status))) continue;
-          if (statuses.length > 0) cancelledLinkedDocuments++;
-          else unlinkedDocuments++;
         }
 
         const compositionMap = new Map<string, { count: number; amount: number }>();
@@ -202,11 +185,9 @@ export default function DocumentosResumen({ period, channelFilter, onReview }: P
         if (!cancelled) {
           setSummary({
             documentsIssued: vigenteDocs.length,
-            realSales: realOrders.length,
+            sales: sales.length,
             documentedSales: documentedIds.size,
-            undocumentedSales: Math.max(0, realOrders.length - documentedIds.size),
-            unlinkedDocuments,
-            cancelledLinkedDocuments,
+            undocumentedSales: Math.max(0, sales.length - documentedIds.size),
             net,
             tax,
             total,
@@ -232,8 +213,8 @@ export default function DocumentosResumen({ period, channelFilter, onReview }: P
     return () => { cancelled = true; };
   }, [period, channelFilter]);
 
-  const coverage = summary.realSales > 0
-    ? Math.round((summary.documentedSales / summary.realSales) * 1000) / 10
+  const coverage = summary.sales > 0
+    ? Math.round((summary.documentedSales / summary.sales) * 1000) / 10
     : 0;
 
   const maxComposition = useMemo(
@@ -247,14 +228,13 @@ export default function DocumentosResumen({ period, channelFilter, onReview }: P
 
   const kpis = [
     { label: "Documentos emitidos", value: summary.documentsIssued.toLocaleString("es-CL"), sub: "DTE vigentes del período" },
-    { label: "Ventas documentadas", value: summary.documentedSales.toLocaleString("es-CL"), sub: "ventas reales con DTE", tone: "text-emerald-600" },
-    { label: "Ventas sin documento", value: summary.undocumentedSales.toLocaleString("es-CL"), sub: "ventas reales sin DTE", tone: summary.undocumentedSales > 0 ? "text-amber-600" : "text-emerald-600" },
-    { label: "Documentos sin venta asociada", value: summary.unlinkedDocuments.toLocaleString("es-CL"), sub: "DTE vigentes sin venta real", tone: summary.unlinkedDocuments > 0 ? "text-amber-600" : "text-emerald-600" },
+    { label: "Ventas documentadas", value: summary.documentedSales.toLocaleString("es-CL"), sub: "ventas con DTE", tone: "text-emerald-600" },
+    { label: "Ventas sin documento", value: summary.undocumentedSales.toLocaleString("es-CL"), sub: "ventas sin DTE", tone: summary.undocumentedSales > 0 ? "text-amber-600" : "text-emerald-600" },
   ];
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         {kpis.map((kpi) => (
           <div key={kpi.label} className="bg-white border rounded-lg p-4">
             <p className="text-xs uppercase tracking-wide text-slate-400">{kpi.label}</p>
@@ -268,9 +248,9 @@ export default function DocumentosResumen({ period, channelFilter, onReview }: P
 
       <div className="bg-white border rounded-lg p-5">
         <h2 className="font-semibold text-slate-900">De venta a documento</h2>
-        <p className="text-sm text-slate-400 mt-1">Cobertura tributaria de las ventas reales del período.</p>
+        <p className="text-sm text-slate-400 mt-1">Cobertura tributaria de las ventas del período.</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5 items-end">
-          <div><p className="text-xs text-slate-400">Ventas reales</p><p className="text-2xl font-bold">{loading ? "—" : summary.realSales.toLocaleString("es-CL")}</p></div>
+          <div><p className="text-xs text-slate-400">Ventas del período</p><p className="text-2xl font-bold">{loading ? "—" : summary.sales.toLocaleString("es-CL")}</p></div>
           <div><p className="text-xs text-slate-400">Con DTE</p><p className="text-2xl font-bold text-emerald-600">{loading ? "—" : summary.documentedSales.toLocaleString("es-CL")}</p></div>
           <div><p className="text-xs text-slate-400">Sin DTE</p><p className="text-2xl font-bold text-amber-600">{loading ? "—" : summary.undocumentedSales.toLocaleString("es-CL")}</p></div>
           <div><p className="text-xs text-slate-400">Cobertura documental</p><p className="text-2xl font-bold">{loading ? "—" : `${coverage}%`}</p></div>
@@ -280,27 +260,14 @@ export default function DocumentosResumen({ period, channelFilter, onReview }: P
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-white border rounded-lg p-5">
-          <h2 className="font-semibold text-slate-900">Resultado documental del período</h2>
-          <p className="text-sm text-slate-400 mt-1">Boletas, facturas y débitos suman; notas de crédito restan.</p>
-          <div className="grid grid-cols-2 gap-4 mt-5">
-            <div><p className="text-xs text-slate-400">Neto</p><p className="text-xl font-bold">{loading ? "—" : CLP(summary.net)}</p></div>
-            <div><p className="text-xs text-slate-400">IVA</p><p className="text-xl font-bold">{loading ? "—" : CLP(summary.tax)}</p></div>
-            <div><p className="text-xs text-slate-400">Total documental</p><p className="text-xl font-bold text-emerald-600">{loading ? "—" : CLP(summary.total)}</p></div>
-            <div><p className="text-xs text-slate-400">Notas de crédito</p><p className="text-xl font-bold text-red-500">{loading ? "—" : `${summary.creditNotes.toLocaleString("es-CL")} · ${CLP(summary.creditNotesAmount)}`}</p></div>
-          </div>
-        </div>
-
-        <div className="bg-white border rounded-lg p-5">
-          <h2 className="font-semibold text-slate-900">Estado de conciliación documental</h2>
-          <p className="text-sm text-slate-400 mt-1">DTE del período y su relación con ventas reales.</p>
-          <div className="grid grid-cols-2 gap-3 mt-5">
-            <div className="border rounded-lg p-3"><p className="text-xs text-slate-400">Vinculados a venta real</p><p className="text-xl font-bold text-emerald-600">{loading ? "—" : (summary.documentsIssued - summary.unlinkedDocuments - summary.cancelledLinkedDocuments).toLocaleString("es-CL")}</p></div>
-            <div className="border rounded-lg p-3"><p className="text-xs text-slate-400">Sin venta</p><p className="text-xl font-bold text-amber-600">{loading ? "—" : summary.unlinkedDocuments.toLocaleString("es-CL")}</p></div>
-            <div className="border rounded-lg p-3"><p className="text-xs text-slate-400">Venta cancelada / revisar NC</p><p className="text-xl font-bold text-red-500">{loading ? "—" : summary.cancelledLinkedDocuments.toLocaleString("es-CL")}</p></div>
-            <div className="border rounded-lg p-3 flex items-center justify-between gap-3"><div><p className="text-xs text-slate-400">Acción</p><p className="text-sm font-medium mt-1">Revisar excepciones</p></div>{onReview && <button onClick={onReview} className="px-3 py-1.5 text-xs font-medium border rounded-md hover:bg-slate-50">Ir a Revisión</button>}</div>
-          </div>
+      <div className="bg-white border rounded-lg p-5">
+        <h2 className="font-semibold text-slate-900">Resultado documental del período</h2>
+        <p className="text-sm text-slate-400 mt-1">Boletas, facturas y débitos suman; notas de crédito restan.</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5">
+          <div><p className="text-xs text-slate-400">Neto</p><p className="text-xl font-bold">{loading ? "—" : CLP(summary.net)}</p></div>
+          <div><p className="text-xs text-slate-400">IVA</p><p className="text-xl font-bold">{loading ? "—" : CLP(summary.tax)}</p></div>
+          <div><p className="text-xs text-slate-400">Total documental</p><p className="text-xl font-bold text-emerald-600">{loading ? "—" : CLP(summary.total)}</p></div>
+          <div><p className="text-xs text-slate-400">Notas de crédito</p><p className="text-xl font-bold text-red-500">{loading ? "—" : `${summary.creditNotes.toLocaleString("es-CL")} · ${CLP(summary.creditNotesAmount)}`}</p></div>
         </div>
       </div>
 
