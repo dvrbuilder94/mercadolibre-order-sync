@@ -19,6 +19,7 @@ import PageTesoreria             from "./pages/PageTesoreria";
 import PageTrazabilidadPagosV2   from "./pages/PageTrazabilidadPagosV2";
 import PageDevoluciones          from "./pages/PageDevoluciones";
 import PageDocumentos            from "./pages/PageDocumentos";
+import PageDocumentosResumen     from "./pages/PageDocumentosResumen";
 import PageWorkflow              from "./pages/PageWorkflow";
 import PageConciliacion          from "./pages/PageConciliacion";
 import PageFeedback              from "./pages/PageFeedback";
@@ -41,7 +42,8 @@ const App = () => (
           {/* App — Tesorería es el resumen financiero y la puerta de entrada */}
           <Route path="/resumen"      element={<Navigate to="/tesoreria" replace />} />
           <Route path="/ventas"       element={<PageVentas />} />
-          <Route path="/documentos"   element={<PageDocumentos />} />
+          <Route path="/documentos"   element={<PageDocumentosResumen />} />
+          <Route path="/documentos/listado" element={<PageDocumentos />} />
           <Route path="/conciliacion" element={<PageConciliacion />} />
           <Route path="/tesoreria"     element={<PageTesoreria />} />
           <Route path="/trazabilidad"  element={<PageTrazabilidadPagosV2 />} />
