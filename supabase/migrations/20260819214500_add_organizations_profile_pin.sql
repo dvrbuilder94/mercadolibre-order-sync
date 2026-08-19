@@ -51,12 +51,11 @@ using (exists (
   where self.organization_id = organization_members.organization_id and self.user_id = auth.uid()
 ));
 
+-- The security table contains pin_hash and lockout counters. It is deliberately
+-- not selectable by anon/authenticated. All reads/writes happen through the
+-- SECURITY DEFINER RPCs below, which only return booleans.
 drop policy if exists "Members can view security status" on public.organization_security;
-create policy "Members can view security status" on public.organization_security for select to authenticated
-using (exists (
-  select 1 from public.organization_members m
-  where m.organization_id = organization_security.organization_id and m.user_id = auth.uid()
-));
+revoke all on table public.organization_security from anon, authenticated;
 
 create or replace function public.current_user_organization_id()
 returns uuid
