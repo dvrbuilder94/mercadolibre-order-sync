@@ -8,6 +8,7 @@
  * - never uploads/commits backup JSON files
  * - deduplicates MELI by order.id and Bsale by document.id
  * - uses the same conflict keys as production sync functions
+ * - preserves has_exact_data=true on already-enriched MELI orders
  *
  * Required env for --apply:
  *   SUPABASE_URL
@@ -21,7 +22,6 @@
  */
 
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import process from 'node:process';
 import { createClient } from '@supabase/supabase-js';
 
@@ -65,7 +65,7 @@ function mapMeliStatus(order) {
   return 'pending';
 }
 
-function transformMeliOrder(order) {
+function transformMeliOrder(order, preserveExact = false) {
   const buyer = order.buyer || {};
   const billingInfo = buyer.billing_info || {};
   const rawRut = billingInfo.doc_number || billingInfo.docNumber || null;
@@ -74,7 +74,7 @@ function transformMeliOrder(order) {
   const coupon = order.coupon || {};
   const firstItem = order.order_items?.[0];
 
-  return {
+  const row = {
     channel: 'meli',
     channel_account_id: meliAccountId,
     meli_account_id: meliAccountId,
@@ -98,9 +98,11 @@ function transformMeliOrder(order) {
     date_delivered: shipping.date_delivered || null,
     seller_sku: firstItem?.item?.seller_custom_field || firstItem?.item?.seller_sku || null,
     product_title: firstItem?.item?.title || null,
-    // Preserve architecture: MP enrichment owns exact net/fees/release values.
-    has_exact_data: false,
   };
+
+  // Match sync-meli-orders: routine commercial imports must never reset exact MP data.
+  if (!preserveExact) row.has_exact_data = false;
+  return row;
 }
 
 const VALID_SII = new Set([33, 34, 39, 41, 56, 61]);
@@ -193,17 +195,28 @@ function transformBsaleDoc(doc, batchId) {
 
 async function collectMeli(files) {
   const byId = new Map();
+  const paymentIds = new Set();
+  const duplicatePaymentIds = new Set();
   let input = 0;
   let embeddedPayments = 0;
+
   for (const file of files) {
     const dump = await readJson(file);
     for (const order of dump.orders || []) {
       input++;
-      embeddedPayments += Array.isArray(order.payments) ? order.payments.length : 0;
+      for (const payment of Array.isArray(order.payments) ? order.payments : []) {
+        embeddedPayments++;
+        if (payment?.id != null) {
+          const id = String(payment.id);
+          if (paymentIds.has(id)) duplicatePaymentIds.add(id);
+          paymentIds.add(id);
+        }
+      }
       byId.set(String(order.id), order);
     }
   }
-  return { input, unique: [...byId.values()], embeddedPayments };
+
+  return { input, unique: [...byId.values()], embeddedPayments, duplicatePaymentIds };
 }
 
 async function collectBsale(files) {
@@ -216,7 +229,7 @@ async function collectBsale(files) {
       input++;
       const id = String(doc.id);
       if (byId.has(id)) duplicateIds.add(id);
-      // Last file wins. Upsert key still makes repeated runs idempotent.
+      // Last file wins. Stable external_id + upsert makes repeated runs idempotent.
       byId.set(id, doc);
     }
   }
@@ -237,6 +250,23 @@ async function upsertChunks(supabase, table, rows, onConflict, chunkSize = 250) 
   }
 }
 
+async function getExactOrderIds(supabase, orderIds, chunkSize = 250) {
+  const exact = new Set();
+  for (let i = 0; i < orderIds.length; i += chunkSize) {
+    const ids = orderIds.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from('orders')
+      .select('order_id')
+      .eq('channel', 'meli')
+      .eq('channel_account_id', meliAccountId)
+      .eq('has_exact_data', true)
+      .in('order_id', ids);
+    if (error) throw new Error(`checking exact MELI orders: ${error.message}`);
+    for (const row of data || []) exact.add(String(row.order_id));
+  }
+  return exact;
+}
+
 const meli = await collectMeli(meliFiles);
 const bsale = await collectBsale(bsaleFiles);
 const validBsale = bsale.unique.filter((d) => VALID_SII.has(Number(d.document_type?.codeSii)));
@@ -247,6 +277,7 @@ console.log(`MELI input orders: ${meli.input}`);
 console.log(`MELI unique orders: ${meli.unique.length}`);
 console.log(`MELI duplicate orders removed: ${meli.input - meli.unique.length}`);
 console.log(`MELI embedded payment records retained in raw_data: ${meli.embeddedPayments}`);
+console.log(`MELI duplicate embedded payment IDs observed: ${meli.duplicatePaymentIds.size}`);
 console.log(`Bsale input documents: ${bsale.input}`);
 console.log(`Bsale unique document IDs: ${bsale.unique.length}`);
 console.log(`Bsale duplicate IDs removed: ${bsale.duplicateIds.size}`);
@@ -268,11 +299,19 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 });
 
 const batchId = `backup-${new Date().toISOString()}`;
-const orderRows = meli.unique.map(transformMeliOrder);
+const exactOrderIds = await getExactOrderIds(supabase, meli.unique.map((order) => String(order.id)));
+const normalOrderRows = [];
+const exactPreservedRows = [];
+for (const order of meli.unique) {
+  const preserveExact = exactOrderIds.has(String(order.id));
+  (preserveExact ? exactPreservedRows : normalOrderRows).push(transformMeliOrder(order, preserveExact));
+}
 const taxRows = validBsale.map((doc) => transformBsaleDoc(doc, batchId)).filter(Boolean);
 
-console.log('\nWriting MELI orders...');
-await upsertChunks(supabase, 'orders', orderRows, 'channel_account_id,order_id');
+console.log(`\nExisting exact MELI orders preserved: ${exactPreservedRows.length}`);
+console.log('Writing MELI orders...');
+await upsertChunks(supabase, 'orders', normalOrderRows, 'channel_account_id,order_id');
+await upsertChunks(supabase, 'orders', exactPreservedRows, 'channel_account_id,order_id');
 
 console.log('\nWriting Bsale tax documents...');
 await upsertChunks(supabase, 'tax_documents', taxRows, 'user_id,external_system,external_id');
