@@ -42,7 +42,7 @@ export default function PageDocumentosResumen() {
               <FileText className="h-5 w-5 text-slate-400" />
               <h1 className="text-2xl font-semibold text-slate-900">Documentos</h1>
             </div>
-            <p className="text-sm text-slate-400 mt-1">Control tributario: qué ventas están documentadas, cuáles faltan y qué DTE no se pueden explicar.</p>
+            <p className="text-sm text-slate-400 mt-1">Control tributario de ventas, DTE e IVA.</p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -79,11 +79,7 @@ export default function PageDocumentosResumen() {
           </div>
         </div>
 
-        <DocumentosResumen
-          period={period}
-          channelFilter={channelFilter}
-          onReview={() => navigate("/conciliacion")}
-        />
+        <DocumentosResumen period={period} channelFilter={channelFilter} />
       </main>
     </div>
   );
