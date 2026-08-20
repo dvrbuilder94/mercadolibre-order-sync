@@ -30,6 +30,7 @@ Deno.serve(async (req) => {
     let maxPagesParam = 10;
     let accountIdParam: string | null = null;
     let userIdParam: string | null = null;
+    let startOffsetParam = 0;
 
     try {
       const body = await req.json();
@@ -38,8 +39,17 @@ Deno.serve(async (req) => {
       maxPagesParam = body.max_pages || 10;
       accountIdParam = body.account_id || null;
       userIdParam = body.user_id || null;
+      startOffsetParam = body.start_offset ?? 0;
     } catch {
       // No body or invalid JSON, use defaults.
+    }
+
+    const parsedStartOffset = Number(startOffsetParam);
+    if (!Number.isSafeInteger(parsedStartOffset) || parsedStartOffset < 0) {
+      return new Response(
+        JSON.stringify({ error: 'start_offset must be a non-negative integer' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     const userId = await resolveUserId(req, supabaseClient, userIdParam);
@@ -153,21 +163,29 @@ Deno.serve(async (req) => {
       return commercialRow;
     };
 
-    let offset = 0;
+    let offset = parsedStartOffset;
     const limit = 50;
-    const maxPages = Math.min(maxPagesParam, 50);
-    let currentPage = 0;
+    const parsedMaxPages = Number(maxPagesParam);
+    const maxPages = Number.isFinite(parsedMaxPages)
+      ? Math.min(Math.max(Math.floor(parsedMaxPages), 1), 50)
+      : 10;
+    let pagesProcessed = 0;
     let totalAvailable = 0;
     let totalFetched = 0;
     let syncedCount = 0;
     let errorCount = 0;
     let timedOut = false;
+    let stoppedOnError = false;
+    let hasMore = false;
+    let nextOffset = parsedStartOffset;
     const startedAt = Date.now();
     const TIME_BUDGET_MS = 100_000;
 
-    while (currentPage < maxPages) {
+    while (pagesProcessed < maxPages) {
       if (Date.now() - startedAt > TIME_BUDGET_MS) {
         timedOut = true;
+        hasMore = true;
+        nextOffset = offset;
         break;
       }
 
@@ -180,13 +198,20 @@ Deno.serve(async (req) => {
       if (!ordersResponse.ok) {
         console.error('Error fetching orders:', ordersResponse.status, await ordersResponse.text());
         errorCount++;
+        stoppedOnError = true;
+        hasMore = true;
+        nextOffset = offset; // retry the same page; upserts are idempotent.
         break;
       }
 
       const ordersPage = await ordersResponse.json();
       const orders = ordersPage.results || [];
       totalAvailable = ordersPage.paging?.total || 0;
-      if (orders.length === 0) break;
+      if (orders.length === 0) {
+        hasMore = false;
+        nextOffset = offset;
+        break;
+      }
       totalFetched += orders.length;
 
       const pageOrderIds = orders.map((o: any) => o.id.toString());
@@ -201,6 +226,9 @@ Deno.serve(async (req) => {
       if (exactError) {
         console.error('Error checking exact orders:', exactError);
         errorCount += orders.length;
+        stoppedOnError = true;
+        hasMore = true;
+        nextOffset = offset;
         break;
       }
 
@@ -220,6 +248,7 @@ Deno.serve(async (req) => {
       }
 
       let pageSynced = 0;
+      let pageHadUpsertError = false;
       for (const [label, rows] of [
         ['commercial', normalRows],
         ['commercial-preserve-exact', exactPreservedRows],
@@ -234,24 +263,44 @@ Deno.serve(async (req) => {
           .select('id');
 
         if (upsertError) {
-          console.error(`Error upserting page ${currentPage + 1} (${label}):`, upsertError);
+          console.error(`Error upserting page ${pagesProcessed + 1} (${label}):`, upsertError);
           errorCount += rows.length;
+          pageHadUpsertError = true;
         } else {
           pageSynced += upserted?.length || rows.length;
         }
       }
 
       syncedCount += pageSynced;
-      console.log(`Page ${currentPage + 1}: synced ${pageSynced} commercial orders`);
+      pagesProcessed++;
+      console.log(`Page ${pagesProcessed} (offset=${offset}): synced ${pageSynced} commercial orders`);
 
-      if (offset + limit >= totalAvailable) break;
-      offset += limit;
-      currentPage++;
+      if (pageHadUpsertError) {
+        // Replay this page next time. Rows already saved will simply be updated
+        // again because the canonical key is channel_account_id + order_id.
+        stoppedOnError = true;
+        hasMore = true;
+        nextOffset = offset;
+        break;
+      }
+
+      nextOffset = offset + limit;
+      hasMore = nextOffset < totalAvailable;
+      if (!hasMore) break;
+
+      offset = nextOffset;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
+    // If the page cap ended the invocation while MELI still has records, the
+    // response must be partial even when no timeout occurred.
+    const partial = hasMore;
+    const nextCursor = partial ? { offset: nextOffset } : null;
+
     // Billing enrichment is still commercial data (buyer identity/RUT), so it
-    // remains part of the orders pipeline.
+    // remains part of the orders pipeline for backward compatibility. The
+    // canonical orchestrator also has a dedicated RUT step; this side effect
+    // will be removed in a later scoped refactor.
     if (syncedCount > 0) {
       try {
         supabaseClient.functions.invoke('enrich-meli-billing', {
@@ -264,16 +313,27 @@ Deno.serve(async (req) => {
 
     return new Response(
       JSON.stringify({
-        success: true,
-        message: timedOut
-          ? 'Sincronización parcial (límite de tiempo alcanzado)'
+        success: !stoppedOnError,
+        message: partial
+          ? 'Sincronización parcial (hay más órdenes por procesar)'
           : 'Sincronización completada',
         total: totalFetched,
         synced: syncedCount,
         errors: errorCount,
-        pages: currentPage + 1,
+        pages: pagesProcessed,
         available: totalAvailable,
-        partial: timedOut,
+        partial,
+        timedOut,
+        ...(nextCursor ? { next_cursor: nextCursor } : {}),
+        summary: {
+          start_offset: parsedStartOffset,
+          next_offset: nextCursor?.offset ?? null,
+          pages_processed_this_run: pagesProcessed,
+          total_fetched: totalFetched,
+          total_synced: syncedCount,
+          total_available: totalAvailable,
+          errors: errorCount,
+        },
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
