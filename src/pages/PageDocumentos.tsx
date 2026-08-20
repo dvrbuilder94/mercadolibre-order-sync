@@ -102,6 +102,60 @@ function inferChannel(detected: string | null, rawData: any): string | null {
 
 const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
+function renderCell(d: any, key: ColKey) {
+  switch (key) {
+    case "documento":
+      return (
+        <div className="flex items-center gap-1.5">
+          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>{DOC_LABEL[d.document_type] || d.document_type}</span>
+          <span className="font-mono text-xs text-slate-500">{d.document_number}</span>
+        </div>
+      );
+    case "canal": {
+      const ch = inferChannel(d.detected_channel, d.raw_data);
+      return ch
+        ? <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[ch] || "bg-slate-100 text-slate-500"}`}>{CHANNEL_LABEL[ch] || ch}</span>
+        : <span className="text-xs text-slate-300">—</span>;
+    }
+    case "fecha":
+      return <span className="text-xs text-slate-500">{d.document_date}</span>;
+    case "neto":
+      return <span className="font-mono text-xs text-slate-600">{CLP(d.net_amount)}</span>;
+    case "iva":
+      return <span className="font-mono text-xs text-slate-600">{CLP(d.tax_amount)}</span>;
+    case "total":
+      return <span className="font-mono text-xs font-semibold">{CLP(d.total_amount)}</span>;
+    case "pago": {
+      const names = paymentNames(d.raw_data ?? d);
+      if (names.length === 0) return <span className="text-xs text-slate-300">—</span>;
+      if (names.length === 1) return <span className="text-xs text-slate-600">{names[0]}</span>;
+      return <span className="text-xs text-slate-600" title={names.join(" + ")}>{names.length} formas</span>;
+    }
+    case "cliente":
+      return <span className="text-xs text-slate-600">{d.client_name || "—"}</span>;
+    case "rut":
+      return <span className="font-mono text-xs text-slate-500">{fullRut(d) || "—"}</span>;
+    case "orden":
+      return <span className="font-mono text-xs text-slate-500">{d.external_order_id || "—"}</span>;
+    case "referencia":
+      return <span className="text-xs text-slate-500">{d.raw_data?.reference_reason || d.reference_reason || "—"}</span>;
+    case "estado":
+      return d.status === "voided"
+        ? <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700">Anulado</span>
+        : <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-emerald-100 text-emerald-700">Vigente</span>;
+    case "venta": {
+      const links = d.order_tax_documents || [];
+      return <span className="text-xs text-slate-500">{links.length ? `${links.length} ${links.length === 1 ? "venta" : "ventas"}` : "—"}</span>;
+    }
+    case "link":
+      return d.external_url
+        ? <a href={d.external_url} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-600 hover:underline inline-flex items-center gap-1">Ver DTE <ExternalLink className="h-3 w-3" /></a>
+        : <span className="text-xs text-slate-300">—</span>;
+    default:
+      return null;
+  }
+}
+
 export default function PageDocumentos() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(chilePeriodNow);
