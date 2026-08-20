@@ -11,30 +11,30 @@ import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 import { signedTaxDocumentAmount } from "@/lib/financialRules";
 
 const PAGE_SIZE = 50;
-const COLS_KEY = "documentos.listado.columns";
+const COLS_KEY = "documentos.listado.columns.v2";
 
 type ColKey =
-  | "documento" | "canal" | "fecha" | "neto" | "iva" | "total" | "pago"
-  | "cliente" | "rut" | "orden" | "referencia" | "estado" | "venta" | "link";
+  | "tipo" | "numero" | "canal" | "fecha" | "neto" | "iva" | "total" | "pago"
+  | "rut" | "orden" | "referencia" | "estado" | "venta" | "link";
 
 const COLUMNS: { key: ColKey; label: string; align?: "right"; fixed?: boolean }[] = [
-  { key: "documento", label: "Documento", fixed: true },
+  { key: "tipo", label: "Tipo", fixed: true },
+  { key: "numero", label: "Nº documento", fixed: true },
   { key: "canal", label: "Canal" },
   { key: "fecha", label: "Fecha" },
   { key: "neto", label: "Neto", align: "right" },
   { key: "iva", label: "IVA", align: "right" },
   { key: "total", label: "Total", align: "right" },
   { key: "pago", label: "Forma de pago" },
-  { key: "cliente", label: "Cliente" },
   { key: "rut", label: "RUT" },
-  { key: "orden", label: "Orden externa" },
+  { key: "orden", label: "Orden de compra / externa" },
   { key: "referencia", label: "Referencia/origen" },
   { key: "estado", label: "Estado" },
   { key: "venta", label: "Venta asociada" },
   { key: "link", label: "Link" },
 ];
 
-const DEFAULT_COLS: ColKey[] = ["documento", "canal", "fecha", "neto", "iva", "total", "pago", "venta", "link"];
+const DEFAULT_COLS: ColKey[] = ["tipo", "numero", "canal", "fecha", "neto", "iva", "total", "pago", "venta", "link"];
 
 /** Formas de pago reales vienen de Bsale `payments` → `payment_type`.
  *  `coin.name` ("Peso Chileno") NO es forma de pago y no se usa aquí. */
@@ -104,13 +104,12 @@ const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
 function renderCell(d: any, key: ColKey) {
   switch (key) {
-    case "documento":
+    case "tipo":
       return (
-        <div className="flex items-center gap-1.5">
-          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>{DOC_LABEL[d.document_type] || d.document_type}</span>
-          <span className="font-mono text-xs text-slate-500">{d.document_number}</span>
-        </div>
+        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>{DOC_LABEL[d.document_type] || d.document_type}</span>
       );
+    case "numero":
+      return <span className="font-mono text-xs text-slate-600">{d.document_number || "—"}</span>;
     case "canal": {
       const ch = inferChannel(d.detected_channel, d.raw_data);
       return ch
@@ -131,8 +130,6 @@ function renderCell(d: any, key: ColKey) {
       if (names.length === 1) return <span className="text-xs text-slate-600">{names[0]}</span>;
       return <span className="text-xs text-slate-600" title={names.join(" + ")}>{names.length} formas</span>;
     }
-    case "cliente":
-      return <span className="text-xs text-slate-600">{d.client_name || "—"}</span>;
     case "rut":
       return <span className="font-mono text-xs text-slate-500">{fullRut(d) || "—"}</span>;
     case "orden":
