@@ -1,5 +1,12 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { HttpInputError, readJsonBody } from '../_shared/http.ts'
+import {
+  buildTaxDocumentPayload,
+  isValidTributaryDoc,
+  mergePaymentEnrichment,
+  normalizeCodeSii,
+  unresolvedPaymentTypeIds,
+} from '../_shared/bsale-document.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -20,37 +27,9 @@ interface BsaleAccount {
   cpn_id: string
 }
 
-// Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
-function splitRut(rut: string | null | undefined): { body: string | null; dv: string | null } {
-  if (!rut) return { body: null, dv: null };
-  const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
-  if (clean.length < 2) return { body: null, dv: null };
-  return { body: clean.slice(0, -1), dv: clean.slice(-1) };
-}
-
-// Map Bsale document type using codeSii (same logic as sync-bsale-docs)
-function mapBsaleDocType(codeSii: number | undefined, name: string): string {
-  // SII codes: 33=Factura, 34=Factura Exenta, 39=Boleta, 41=Boleta Exenta, 61=NC, 56=ND
-  if (codeSii === 33) return 'factura';
-  if (codeSii === 34) return 'factura_exenta';
-  if (codeSii === 39 || codeSii === 41) return 'boleta';
-  if (codeSii === 61) return 'nota_credito';
-  if (codeSii === 56) return 'nota_debito';
-  
-  // Fallback by name
-  const normalized = (name || '').toUpperCase();
-  if (normalized.includes('NOTA DE CREDITO') || normalized.includes('NOTA CREDITO')) return 'nota_credito';
-  if (normalized.includes('NOTA DE DEBITO') || normalized.includes('NOTA DEBITO')) return 'nota_debito';
-  if (normalized.includes('FACTURA EXENTA')) return 'factura_exenta';
-  if (normalized.includes('FACTURA')) return 'factura';
-  if (normalized.includes('BOLETA')) return 'boleta';
-  
-  return 'boleta';
-}
-
 async function fetchBsaleDocument(accessToken: string, resourceId: number) {
   return await fetch(
-    `https://api.bsale.cl/v1/documents/${resourceId}.json?expand=[details,client,document_type,references]`,
+    `https://api.bsale.cl/v1/documents/${resourceId}.json?expand=[details,client,document_type,references,coin,payments]`,
     {
       headers: {
         'access_token': accessToken,
@@ -58,6 +37,30 @@ async function fetchBsaleDocument(accessToken: string, resourceId: number) {
       },
     }
   )
+}
+
+// Resuelve nombres de payment_type sólo cuando el documento no los trae.
+async function resolvePaymentTypeNames(accessToken: string, ids: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>()
+  if (ids.length === 0) return map
+  try {
+    for (let offset = 0; offset < 500; offset += 50) {
+      const response = await fetch(
+        `https://api.bsale.cl/v1/payment_types.json?limit=50&offset=${offset}`,
+        { headers: { 'access_token': accessToken, 'Content-Type': 'application/json' } },
+      )
+      if (!response.ok) break
+      const data = await response.json().catch(() => null)
+      const items: any[] = data?.items || []
+      for (const item of items) {
+        if (item?.id != null && item?.name) map.set(String(item.id), String(item.name))
+      }
+      if (items.length < 50) break
+    }
+  } catch (error) {
+    console.warn('No se pudo cargar payment_types:', (error as any)?.message)
+  }
+  return map
 }
 
 async function resolveBsaleAccount(
