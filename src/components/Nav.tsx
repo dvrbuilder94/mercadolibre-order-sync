@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   ShoppingBag, Activity, Settings, LogOut,
-  Wrench, Landmark, FileText, Undo2, GitMerge, MessageSquare, Route, Database, UserRound,
+  Wrench, Landmark, FileText, Undo2, GitMerge, MessageSquare, Database, UserRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FeedbackWidget } from "@/components/FeedbackWidget";
@@ -13,7 +13,6 @@ const ADV_KEY = "quadra.advancedMode";
 
 const primary = [
   { to: "/tesoreria",     label: "Tesorería",     icon: Landmark },
-  { to: "/trazabilidad",  label: "Trazabilidad",   icon: Route },
   { to: "/ventas",        label: "Ventas",        icon: ShoppingBag },
   { to: "/documentos",    label: "Documentos",    icon: FileText },
   { to: "/conciliacion", label: "Revisión",      icon: GitMerge },
