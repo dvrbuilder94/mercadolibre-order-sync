@@ -12,7 +12,7 @@ import MercadoPagoCallback from "./pages/MercadoPagoCallback";
 import NotFound     from "./pages/NotFound";
 
 // New UX
-import Pipeline                  from "./pages/Pipeline";
+import PageSyncCanonical         from "./pages/PageSyncCanonical";
 import PageVentas                from "./pages/PageVentas";
 import ConfigNew                 from "./pages/ConfigNew";
 import PageTesoreria             from "./pages/PageTesoreria";
@@ -51,7 +51,7 @@ const App = () => (
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
 
           {/* Sync es la única experiencia operativa de sincronización. */}
-          <Route path="/sync"          element={<Pipeline />} />
+          <Route path="/sync"          element={<PageSyncCanonical />} />
           <Route path="/pipeline"      element={<Navigate to="/sync" replace />} />
           <Route path="/workflow"      element={<Navigate to="/sync" replace />} />
 
