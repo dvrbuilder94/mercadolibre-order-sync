@@ -573,7 +573,6 @@ Deno.serve(async (req) => {
     // fresco (sin cursor); en reanudaciones el front ya lo tiene en el checkpoint.
     let totalAvailable: number | null = null;
     if (normalizedStartCode === null) {
-
       totalAvailable = 0;
       for (const code of VALID_SII_CODES) {
         const u = new URL(`${BSALE_API_URL}/v1/documents.json`);
