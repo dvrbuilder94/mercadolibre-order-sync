@@ -995,6 +995,50 @@ export type Database = {
           },
         ]
       }
+      organization_invitations: {
+        Row: {
+          created_at: string
+          email: string
+          id: string
+          invited_by: string
+          invited_user_id: string | null
+          organization_id: string
+          role: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          id?: string
+          invited_by: string
+          invited_user_id?: string | null
+          organization_id: string
+          role: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          id?: string
+          invited_by?: string
+          invited_user_id?: string | null
+          organization_id?: string
+          role?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "organization_invitations_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       organization_members: {
         Row: {
           created_at: string
@@ -1019,38 +1063,6 @@ export type Database = {
             foreignKeyName: "organization_members_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
-            referencedRelation: "organizations"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      organization_security: {
-        Row: {
-          failed_attempts: number
-          locked_until: string | null
-          organization_id: string
-          pin_hash: string | null
-          updated_at: string
-        }
-        Insert: {
-          failed_attempts?: number
-          locked_until?: string | null
-          organization_id: string
-          pin_hash?: string | null
-          updated_at?: string
-        }
-        Update: {
-          failed_attempts?: number
-          locked_until?: string | null
-          organization_id?: string
-          pin_hash?: string | null
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "organization_security_organization_id_fkey"
-            columns: ["organization_id"]
-            isOneToOne: true
             referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
@@ -1842,6 +1854,9 @@ export type Database = {
           vat_amount: number
         }[]
       }
+      can_manage_org: { Args: never; Returns: boolean }
+      current_org_id: { Args: never; Returns: string }
+      current_org_role: { Args: never; Returns: string }
       current_user_organization_id: { Args: never; Returns: string }
       get_meli_billing_summary: {
         Args: { p_period: string }
@@ -1864,6 +1879,16 @@ export type Database = {
       get_monthly_control_snapshot: {
         Args: { p_period: string }
         Returns: Json
+      }
+      get_org_members: {
+        Args: never
+        Returns: {
+          email: string
+          full_name: string
+          is_owner: boolean
+          role: string
+          user_id: string
+        }[]
       }
       get_pending_sales: {
         Args: {
@@ -1922,7 +1947,6 @@ export type Database = {
           udt_name: string
         }[]
       }
-      has_org_pin: { Args: never; Returns: boolean }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
@@ -1930,9 +1954,13 @@ export type Database = {
         }
         Returns: boolean
       }
-      set_org_pin: { Args: { p_pin: string }; Returns: boolean }
+      remove_org_member: { Args: { p_user_id: string }; Returns: boolean }
+      same_organization_as: { Args: { p_user_id: string }; Returns: boolean }
+      update_org_member_role: {
+        Args: { p_role: string; p_user_id: string }
+        Returns: boolean
+      }
       user_owns_order: { Args: { _order_id: string }; Returns: boolean }
-      verify_org_pin: { Args: { p_pin: string }; Returns: boolean }
     }
     Enums: {
       app_role: "admin" | "user"
