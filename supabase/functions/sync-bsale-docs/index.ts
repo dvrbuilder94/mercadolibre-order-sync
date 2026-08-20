@@ -568,6 +568,10 @@ Deno.serve(async (req) => {
     let nextCursor: { code_sii: number; offset: number } | null = null;
     let pagesThisRun = 0;
 
+    // Catálogo de formas de pago (id → nombre), una sola vez por invocación.
+    const paymentTypeNames = await loadPaymentTypeNames(BSALE_API_URL, bsaleToken);
+    console.log(`payment_types cargados: ${paymentTypeNames.size}`);
+
     // Total disponible (suma del `count` de Bsale por cada código SII), para
     // que el frontend pueda mostrar "X de N". Solo se calcula en arranque
     // fresco (sin cursor); en reanudaciones el front ya lo tiene en el checkpoint.
