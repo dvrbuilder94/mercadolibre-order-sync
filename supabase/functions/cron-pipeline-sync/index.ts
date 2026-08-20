@@ -1,21 +1,27 @@
-import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { chileMonthIsoRange, chileMonthUnixRange } from '../_shared/chile-date.ts';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { chileMonthIsoRange } from '../_shared/chile-date.ts';
 import { isInternalRequest, unauthorizedJson } from '../_shared/internal-request.ts';
+import {
+  enrichRutsLoop,
+  recordPipelineStep,
+  reconcilePeriod,
+  syncBsaleLoop,
+  syncMercadoPagoCash,
+  syncOrdersLoop,
+  syncPaymentsLoop,
+  type MeliSyncAccount,
+} from '../_shared/sync-pipeline.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-cron-secret, x-client-info, apikey, content-type',
 };
 
-// Runs the Pipeline's 6 steps (Sync MeLi → Sync pagos por orden → Caja MP →
-// Sync Bsale → RUTs → Conciliar) for every connected account, on a pg_cron
-// schedule (internal credential + service role).
-// Scoped to the
-// current + previous month, since that's what actually needs to stay fresh.
+// Scheduler automático de Sync.
 //
-// Each step is just the existing user-facing edge function, called with the
-// service-role key + an explicit user_id (see _shared/auth.ts) instead of a
-// user session — the business logic isn't duplicated here.
+// IMPORTANTE: la lógica de ejecución de cada paso/loop vive en
+// `_shared/sync-pipeline.ts`. Este archivo sólo decide qué tenants y períodos
+// necesitan correr. El futuro runner manual debe reutilizar el mismo motor.
 
 function chilePeriodNow(): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -30,148 +36,6 @@ function shiftPeriod(period: string, delta: number): string {
   const [y, m] = period.split('-').map(Number);
   const d = new Date(y, m - 1 + delta, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
-
-// --- Step invocation ---
-async function callStep(admin: SupabaseClient, name: string, body: Record<string, unknown>) {
-  const { data, error } = await admin.functions.invoke(name, { body });
-  if (error) {
-    let detail: any = null;
-    try { detail = await (error as any)?.context?.json?.(); } catch { /* ignore */ }
-    throw new Error(detail?.error || detail?.message || error.message || `${name} failed`);
-  }
-  return data;
-}
-
-async function runStep(
-  admin: SupabaseClient,
-  step: string,
-  userId: string | null,
-  meliAccountId: string | null,
-  period: string | null,
-  fn: () => Promise<any>,
-): Promise<{ step: string; user_id: string | null; period: string | null; ok: boolean; detail?: any }> {
-  const { data: row } = await admin
-    .from('pipeline_sync_runs')
-    .insert({ step, user_id: userId, meli_account_id: meliAccountId, period, status: 'running' })
-    .select('id')
-    .single();
-
-  try {
-    const detail = await fn();
-    if (row) {
-      await admin.from('pipeline_sync_runs')
-        .update({ status: 'ok', finished_at: new Date().toISOString(), detail })
-        .eq('id', row.id);
-    }
-    return { step, user_id: userId, period, ok: true, detail };
-  } catch (e: any) {
-    const detail = { error: e?.message ?? String(e) };
-    console.error(`[cron-pipeline-sync] ${step} failed (user=${userId}, period=${period}):`, detail.error);
-    if (row) {
-      await admin.from('pipeline_sync_runs')
-        .update({ status: 'error', finished_at: new Date().toISOString(), detail })
-        .eq('id', row.id);
-    }
-    return { step, user_id: userId, period, ok: false, detail };
-  }
-}
-
-// --- Per-step round loops (mirror the rounds Pipeline.tsx does from the browser) ---
-async function syncOrdersLoop(admin: SupabaseClient, acc: { id: string; user_id: string }, dateFrom: string, dateTo: string, timeLeft: () => boolean) {
-  let totalSynced = 0, round = 0, partial = true;
-  while (partial && round < 5 && timeLeft()) {
-    round++;
-    const data = await callStep(admin, 'sync-meli-orders', {
-      date_from: dateFrom, date_to: dateTo, max_pages: 50, account_id: acc.id, user_id: acc.user_id,
-    });
-    totalSynced += data?.synced ?? 0;
-    partial = !!data?.partial;
-  }
-  return { rounds: round, totalSynced, partial };
-}
-
-async function syncPaymentsLoop(admin: SupabaseClient, acc: { id: string; user_id: string }, dateFrom: string, dateTo: string, timeLeft: () => boolean) {
-  let totalLinked = 0, round = 0, remaining = 0;
-  while (round < 10 && timeLeft()) {
-    round++;
-    const data = await callStep(admin, 'sync-meli-payment-details', {
-      date_from: dateFrom, date_to: dateTo, limit: 50, account_id: acc.id, user_id: acc.user_id,
-    });
-    totalLinked += data?.paymentsLinked ?? 0;
-    remaining = data?.remaining ?? 0;
-    if (remaining === 0 || (data?.updated ?? 0) === 0) break;
-  }
-  return { rounds: round, totalLinked, remaining };
-}
-
-async function syncMercadoPagoCash(admin: SupabaseClient, acc: { id: string; user_id: string }, dateFrom: string, dateTo: string) {
-  return callStep(admin, 'check-orphan-payments', {
-    date_from: dateFrom,
-    date_to: dateTo,
-    account_id: acc.id,
-    user_id: acc.user_id,
-  });
-}
-
-async function enrichRutsLoop(admin: SupabaseClient, acc: { id: string; user_id: string }, dateFrom: string, dateTo: string, timeLeft: () => boolean) {
-  let totalEnriched = 0, round = 0, remaining = 0;
-  while (round < 20 && timeLeft()) {
-    round++;
-    const data = await callStep(admin, 'enrich-meli-billing', {
-      date_from: dateFrom, date_to: dateTo, account_id: acc.id, user_id: acc.user_id,
-    });
-    totalEnriched += data?.enriched ?? 0;
-    remaining = data?.remaining ?? 0;
-    if (remaining === 0 || (data?.enriched ?? 0) === 0) break;
-  }
-  return { rounds: round, totalEnriched, remaining };
-}
-
-// Bsale's pagination cursor lives in the browser's localStorage when driven
-// from Pipeline.tsx — there's no browser here, so it's persisted in
-// bsale_sync_checkpoints instead, scoped per (user_id, period).
-async function syncBsaleLoop(admin: SupabaseClient, userId: string, period: string, timeLeft: () => boolean) {
-  const { from: dateFrom, to: dateTo } = chileMonthUnixRange(period);
-  const { data: ckptRow } = await admin
-    .from('bsale_sync_checkpoints')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('period', period)
-    .maybeSingle();
-
-  let cursor: { code_sii: number; offset: number } | null = ckptRow?.cursor ?? null;
-  let batchId: string | null = ckptRow?.batch_id ?? null;
-  let totalAvailable: number | null = ckptRow?.total_available ?? null;
-  let totalUpserted = 0, rounds = 0;
-
-  while (rounds < 8 && timeLeft()) {
-    rounds++;
-    const data = await callStep(admin, 'sync-bsale-docs', {
-      date_from: dateFrom, date_to: dateTo, max_pages: 20,
-      ...(batchId ? { resync_batch: batchId } : {}),
-      ...(cursor ? { start_code_sii: cursor.code_sii, start_offset: cursor.offset } : {}),
-      user_id: userId,
-    });
-
-    totalUpserted += data?.summary?.total_upserted ?? 0;
-    batchId = data?.resync_batch ?? batchId;
-    if (data?.summary?.total_available != null) totalAvailable = data.summary.total_available;
-    cursor = data?.next_cursor ?? null;
-
-    if (cursor) {
-      await admin.from('bsale_sync_checkpoints').upsert({
-        user_id: userId, period, cursor, batch_id: batchId, total_available: totalAvailable,
-        updated_at: new Date().toISOString(),
-      });
-    }
-    if (!data?.partial) break;
-  }
-
-  if (!cursor) {
-    await admin.from('bsale_sync_checkpoints').delete().eq('user_id', userId).eq('period', period);
-  }
-  return { rounds, totalUpserted, resumePending: !!cursor };
 }
 
 Deno.serve(async (req) => {
@@ -189,7 +53,7 @@ Deno.serve(async (req) => {
   );
 
   const startedAt = Date.now();
-  const BUDGET_MS = 100_000; // margen bajo el límite (~150s) de Edge Functions
+  const BUDGET_MS = 100_000;
   const timeLeft = () => Date.now() - startedAt < BUDGET_MS;
 
   const currentPeriod = chilePeriodNow();
@@ -200,7 +64,7 @@ Deno.serve(async (req) => {
     .select('id, user_id')
     .not('access_token', 'is', null);
   if (meliErr) console.error('[cron-pipeline-sync] Error listing meli_accounts:', meliErr);
-  const accounts = meliAccountsRaw ?? [];
+  const accounts = (meliAccountsRaw ?? []) as MeliSyncAccount[];
 
   const { data: bsaleAccountsRaw, error: bsaleErr } = await admin
     .from('bsale_accounts')
@@ -209,7 +73,7 @@ Deno.serve(async (req) => {
   if (bsaleErr) console.error('[cron-pipeline-sync] Error listing bsale_accounts:', bsaleErr);
 
   const userIds = Array.from(new Set([
-    ...accounts.map((a: any) => a.user_id as string),
+    ...accounts.map(a => a.user_id),
     ...((bsaleAccountsRaw ?? []).map((a: any) => a.user_id as string)),
   ]));
 
@@ -218,41 +82,83 @@ Deno.serve(async (req) => {
   const results: any[] = [];
 
   outer: for (const period of periods) {
-    if (!timeLeft()) { console.log('[cron-pipeline-sync] time budget exceeded, stopping'); break outer; }
+    if (!timeLeft()) {
+      console.log('[cron-pipeline-sync] time budget exceeded, stopping');
+      break outer;
+    }
+
     const { from: dateFrom, to: dateTo } = chileMonthIsoRange(period);
 
-    // 1 & 2: per MELI account — Sync MeLi, Sync pagos
+    // 1–3: por cuenta MELI.
     for (const acc of accounts) {
       if (!timeLeft()) break outer;
-      results.push(await runStep(admin, 'sync_meli_orders', acc.user_id, acc.id, period,
-        () => syncOrdersLoop(admin, acc, dateFrom, dateTo, timeLeft)));
+      results.push(await recordPipelineStep(
+        admin,
+        'sync_meli_orders',
+        acc.user_id,
+        acc.id,
+        period,
+        () => syncOrdersLoop(admin, acc, dateFrom, dateTo, timeLeft),
+      ));
+
       if (!timeLeft()) break outer;
-      results.push(await runStep(admin, 'sync_payments', acc.user_id, acc.id, period,
-        () => syncPaymentsLoop(admin, acc, dateFrom, dateTo, timeLeft)));
+      results.push(await recordPipelineStep(
+        admin,
+        'sync_payments',
+        acc.user_id,
+        acc.id,
+        period,
+        () => syncPaymentsLoop(admin, acc, dateFrom, dateTo, timeLeft),
+      ));
+
       if (!timeLeft()) break outer;
-      results.push(await runStep(admin, 'sync_mp_cash', acc.user_id, acc.id, period,
-        () => syncMercadoPagoCash(admin, acc, dateFrom, dateTo)));
+      results.push(await recordPipelineStep(
+        admin,
+        'sync_mp_cash',
+        acc.user_id,
+        acc.id,
+        period,
+        () => syncMercadoPagoCash(admin, acc, dateFrom, dateTo),
+      ));
     }
 
-    // 4: per user — Sync Bsale (needs to land before RUTs/Conciliar, same order as Pipeline.tsx)
+    // 4: por tenant/owner — Bsale.
     for (const userId of userIds) {
       if (!timeLeft()) break outer;
-      results.push(await runStep(admin, 'sync_bsale', userId, null, period,
-        () => syncBsaleLoop(admin, userId, period, timeLeft)));
+      results.push(await recordPipelineStep(
+        admin,
+        'sync_bsale',
+        userId,
+        null,
+        period,
+        () => syncBsaleLoop(admin, userId, period, timeLeft),
+      ));
     }
 
-    // 5: per MELI account — RUTs
+    // 5: por cuenta MELI — RUTs.
     for (const acc of accounts) {
       if (!timeLeft()) break outer;
-      results.push(await runStep(admin, 'enrich_ruts', acc.user_id, acc.id, period,
-        () => enrichRutsLoop(admin, acc, dateFrom, dateTo, timeLeft)));
+      results.push(await recordPipelineStep(
+        admin,
+        'enrich_ruts',
+        acc.user_id,
+        acc.id,
+        period,
+        () => enrichRutsLoop(admin, acc, dateFrom, dateTo, timeLeft),
+      ));
     }
 
-    // 6: per user — Conciliar
+    // 6: por tenant/owner — conciliación.
     for (const userId of userIds) {
       if (!timeLeft()) break outer;
-      results.push(await runStep(admin, 'reconcile', userId, null, period,
-        () => callStep(admin, 'auto-reconcile', { date_from: dateFrom, date_to: dateTo, user_id: userId })));
+      results.push(await recordPipelineStep(
+        admin,
+        'reconcile',
+        userId,
+        null,
+        period,
+        () => reconcilePeriod(admin, userId, period),
+      ));
     }
   }
 
@@ -266,6 +172,6 @@ Deno.serve(async (req) => {
       steps_run: results.length,
       steps_failed: failed.length,
     }),
-    { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
   );
 });
