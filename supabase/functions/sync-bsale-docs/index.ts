@@ -1,33 +1,23 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveUserId } from '../_shared/auth.ts';
+import {
+  VALID_SII_CODES,
+  buildTaxDocumentPayload,
+  filterValidTributaryDocs,
+  normalizeCodeSii,
+} from '../_shared/bsale-document.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
-function splitRut(rut: string | null | undefined): { body: string | null; dv: string | null } {
-  if (!rut) return { body: null, dv: null };
-  const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
-  if (clean.length < 2) return { body: null, dv: null };
-  return { body: clean.slice(0, -1), dv: clean.slice(-1) };
-}
-
-// Valid SII codes for tributary documents.
-// MUST stay sorted ascending: el cursor de reanudación (más abajo) salta los
+// VALID_SII_CODES (módulo compartido) MUST stay sorted ascending: el cursor de reanudación salta los
 // códigos con `codeSii < start_code_sii`, así que un orden no ascendente hace
 // que al reanudar se reprocese un código anterior en loop infinito.
-const VALID_SII_CODES = [33, 34, 39, 41, 56, 61];
 const FETCH_TIMEOUT_MS = 20_000;
 const TIME_BUDGET_MS = 85_000;
 const MAX_PAGES_PER_INVOCATION = 20;
-
-function normalizeCodeSii(codeSii: string | number | null | undefined): number | null {
-  if (codeSii === null || codeSii === undefined || codeSii === '') return null;
-  const normalized = Number(codeSii);
-  return Number.isFinite(normalized) ? normalized : null;
-}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -54,35 +44,6 @@ async function loadPaymentTypeNames(apiUrl: string, token: string): Promise<Map<
     console.warn('No se pudo cargar payment_types:', (e as any)?.message);
   }
   return map;
-}
-
-function idFromHref(href: string | null | undefined): string | null {
-  if (!href) return null;
-  const m = String(href).match(/\/(\d+)\.json/);
-  return m ? m[1] : null;
-}
-
-// Devuelve los pagos del documento normalizados + los nombres únicos de forma
-// de pago REALES (nunca `coin.name`, que es la moneda, no la forma de pago).
-function extractDocPayments(doc: any, typeNames: Map<string, string>) {
-  const items: any[] = doc?.payments?.items || [];
-  const payments = items.map((p: any) => {
-    const ptId = p?.payment_type?.id != null
-      ? String(p.payment_type.id)
-      : idFromHref(p?.payment_type?.href);
-    const name = p?.payment_type?.name
-      || (ptId ? typeNames.get(ptId) : null)
-      || null;
-    return {
-      id: p?.id ?? null,
-      amount: p?.amount ?? null,
-      recordDate: p?.recordDate ?? null,
-      payment_type_id: ptId,
-      payment_type_name: name,
-    };
-  });
-  const names = Array.from(new Set(payments.map((p) => p.payment_type_name).filter(Boolean))) as string[];
-  return { payments, names };
 }
 
 async function fetchBsalePage(url: URL, bsaleToken: string) {
