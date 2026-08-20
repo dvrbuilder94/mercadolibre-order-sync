@@ -615,7 +615,7 @@ Deno.serve(async (req) => {
         const url = new URL(`${BSALE_API_URL}/v1/documents.json`);
         url.searchParams.set('emissiondaterange', `[${emissionDateFrom},${emissionDateTo}]`);
         url.searchParams.set('codesii', String(codeSii));
-        url.searchParams.set('expand', '[details,client,document_type,references,coin]');
+        url.searchParams.set('expand', '[details,client,document_type,references,coin,payments]');
         url.searchParams.set('limit', String(limit));
         url.searchParams.set('offset', String(offset));
 
@@ -656,9 +656,14 @@ Deno.serve(async (req) => {
             docTypeCounts[transformed.document_type] = (docTypeCounts[transformed.document_type] || 0) + 1;
             const detectedChannel = detectChannelFromDoc(doc);
             const referenceReason = doc.references?.items?.[0]?.reason || null;
-            const coinName = doc.coin?.name || null;
             (transformed.raw_data as any).reference_reason = referenceReason;
-            (transformed.raw_data as any).payment_method_name = coinName;
+            // Forma de pago REAL desde Bsale `payments` → `payment_type`.
+            // `coin.name` es la moneda ("Peso Chileno"), NO la forma de pago:
+            // no debe usarse aquí bajo ninguna circunstancia.
+            const { payments: docPayments, names: paymentNames } = extractDocPayments(doc, paymentTypeNames);
+            (transformed.raw_data as any).payments = docPayments;
+            (transformed.raw_data as any).payment_method_names = paymentNames;
+            (transformed.raw_data as any).payment_method_name = paymentNames.length === 1 ? paymentNames[0] : null;
             // NC → documento original: resolver el enlace al sincronizar (las
             // boletas/facturas del mismo período ya se procesaron antes, porque
             // codeSii 61 va último en VALID_SII_CODES).
