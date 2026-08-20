@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { supabase } from "@/integrations/supabase/client";
 import { chileMonthDateRange } from "@/lib/chileDate";
 import { signedTaxDocumentAmount } from "@/lib/financialRules";
@@ -20,6 +21,9 @@ const DOC_LABEL: Record<string, string> = {
   nota_debito: "Notas de débito",
 };
 
+const PIE_COLORS = ["#0ea5e9", "#14b8a6", "#f59e0b", "#a855f7", "#ef4444", "#64748b", "#84cc16", "#f97316"];
+const UNKNOWN_PAYMENT = "Sin información";
+
 function detectChannelFromText(text: string | null): string | null {
   if (!text) return null;
   const u = text.toUpperCase();
@@ -37,8 +41,7 @@ function detectChannelFromText(text: string | null): string | null {
 
 function inferChannel(detected: string | null, rawData: any): string | null {
   if (detected) return detected;
-  const hit = detectChannelFromText(rawData?.reference_reason)
-    ?? detectChannelFromText(rawData?.payment_method_name);
+  const hit = detectChannelFromText(rawData?.reference_reason);
   if (hit) return hit;
   const refs: any[] = rawData?.references?.items ?? [];
   for (const ref of refs) {
@@ -46,6 +49,49 @@ function inferChannel(detected: string | null, rawData: any): string | null {
     if (h) return h;
   }
   return null;
+}
+
+function paymentNames(rawData: any): string[] {
+  const names = rawData?.payment_method_names;
+  if (!Array.isArray(names)) return [];
+  return Array.from(new Set(names.map((name: any) => String(name || "").trim()).filter(Boolean)));
+}
+
+/**
+ * Distribuye el monto del DTE entre formas de pago sin duplicarlo.
+ * - Si Bsale trae `payments[].amount`, usa esa proporción y escala al total del DTE.
+ * - Si sólo hay una forma conocida, usa el total completo del DTE.
+ * - Si no hay desglose suficiente, clasifica el monto como "Sin información".
+ * Las NC se excluyen: son ajustes tributarios, no medios de pago.
+ */
+function addPaymentAmounts(doc: any, map: Map<string, number>) {
+  if (doc.document_type === "nota_credito") return;
+  const docTotal = Math.max(0, Number(doc.total_amount || 0));
+  if (docTotal <= 0) return;
+
+  const rawData = doc.raw_data || {};
+  const rawPayments = Array.isArray(rawData.payments) ? rawData.payments : [];
+  const amountRows = rawPayments
+    .map((payment: any) => ({
+      name: String(payment?.payment_type_name || "").trim() || UNKNOWN_PAYMENT,
+      amount: Number(payment?.amount),
+    }))
+    .filter((payment: { name: string; amount: number }) => Number.isFinite(payment.amount) && payment.amount > 0);
+
+  if (amountRows.length > 0) {
+    const sourceTotal = amountRows.reduce((sum: number, payment: { amount: number }) => sum + payment.amount, 0);
+    if (sourceTotal > 0) {
+      for (const payment of amountRows) {
+        const allocated = docTotal * (payment.amount / sourceTotal);
+        map.set(payment.name, (map.get(payment.name) || 0) + allocated);
+      }
+      return;
+    }
+  }
+
+  const names = paymentNames(rawData);
+  const name = names.length === 1 ? names[0] : UNKNOWN_PAYMENT;
+  map.set(name, (map.get(name) || 0) + docTotal);
 }
 
 type Props = {
@@ -65,6 +111,7 @@ type SummaryState = {
   creditNotesAmount: number;
   composition: Array<{ type: string; count: number; amount: number }>;
   channels: Array<{ channel: string; count: number; amount: number }>;
+  paymentMethods: Array<{ name: string; amount: number }>;
 };
 
 const EMPTY: SummaryState = {
@@ -79,6 +126,7 @@ const EMPTY: SummaryState = {
   creditNotesAmount: 0,
   composition: [],
   channels: [],
+  paymentMethods: [],
 };
 
 export default function DocumentosResumen({ period, channelFilter }: Props) {
@@ -151,6 +199,7 @@ export default function DocumentosResumen({ period, channelFilter }: Props) {
 
         const compositionMap = new Map<string, { count: number; amount: number }>();
         const channelMap = new Map<string, { count: number; amount: number }>();
+        const paymentMethodMap = new Map<string, number>();
         let net = 0;
         let tax = 0;
         let total = 0;
@@ -180,6 +229,8 @@ export default function DocumentosResumen({ period, channelFilter }: Props) {
           cur.count += 1;
           cur.amount += signedTotal;
           channelMap.set(channel, cur);
+
+          addPaymentAmounts(doc, paymentMethodMap);
         }
 
         if (!cancelled) {
@@ -199,6 +250,10 @@ export default function DocumentosResumen({ period, channelFilter }: Props) {
             channels: Array.from(channelMap.entries())
               .map(([channel, value]) => ({ channel, ...value }))
               .sort((a, b) => b.count - a.count),
+            paymentMethods: Array.from(paymentMethodMap.entries())
+              .map(([name, amount]) => ({ name, amount }))
+              .filter((row) => row.amount > 0)
+              .sort((a, b) => b.amount - a.amount),
           });
         }
       } catch (error) {
@@ -224,6 +279,14 @@ export default function DocumentosResumen({ period, channelFilter }: Props) {
   const maxChannels = useMemo(
     () => Math.max(1, ...summary.channels.map((row) => row.count)),
     [summary.channels],
+  );
+  const paymentMethodsTotal = useMemo(
+    () => summary.paymentMethods.reduce((sum, row) => sum + row.amount, 0),
+    [summary.paymentMethods],
+  );
+  const paymentPieData = useMemo(
+    () => summary.paymentMethods.map((row) => ({ name: row.name, value: Math.round(row.amount) })),
+    [summary.paymentMethods],
   );
 
   const kpis = [
@@ -271,7 +334,63 @@ export default function DocumentosResumen({ period, channelFilter }: Props) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="bg-white border rounded-lg p-5">
+          <h2 className="font-semibold text-slate-900">Forma de pago</h2>
+          <p className="text-sm text-slate-400 mt-1">Distribución por monto de los DTE de venta vigentes.</p>
+
+          {loading ? (
+            <div className="h-[220px] flex items-center justify-center text-sm text-slate-400">Cargando…</div>
+          ) : paymentPieData.length === 0 ? (
+            <div className="h-[220px] flex items-center justify-center text-sm text-slate-400">Sin datos de forma de pago.</div>
+          ) : (
+            <>
+              <div className="relative h-[220px] mt-2">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={paymentPieData}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={48}
+                      outerRadius={78}
+                      paddingAngle={2}
+                    >
+                      {paymentPieData.map((_, index) => (
+                        <Cell key={index} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value: any) => CLP(Number(value))} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+                  <span className="text-[11px] text-slate-400">Monto</span>
+                  <span className="text-sm font-semibold text-slate-800">{CLP(paymentMethodsTotal)}</span>
+                </div>
+              </div>
+
+              <div className="space-y-2 mt-1">
+                {summary.paymentMethods.map((row, index) => {
+                  const pct = paymentMethodsTotal > 0 ? (row.amount / paymentMethodsTotal) * 100 : 0;
+                  return (
+                    <div key={row.name} className="flex items-center justify-between gap-3 text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }} />
+                        <span className="text-slate-600 truncate" title={row.name}>{row.name}</span>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="font-medium text-slate-700">{CLP(row.amount)}</span>
+                        <span className="text-slate-400 ml-1.5">{pct.toLocaleString("es-CL", { maximumFractionDigits: 1 })}%</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-4">Notas de crédito excluidas de esta distribución.</p>
+            </>
+          )}
+        </div>
+
         <div className="bg-white border rounded-lg p-5">
           <h2 className="font-semibold text-slate-900">Composición documental</h2>
           <div className="space-y-4 mt-5">
