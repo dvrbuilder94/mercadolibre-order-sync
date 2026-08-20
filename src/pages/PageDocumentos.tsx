@@ -1,16 +1,50 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { DetailPanel } from "@/components/DetailPanel";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Info, FileText } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Info, FileText, Search, SlidersHorizontal, ExternalLink } from "lucide-react";
 import { chileMonthDateRange, chileMonthUnixRange, chilePeriodNow } from "@/lib/chileDate";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 import { signedTaxDocumentAmount } from "@/lib/financialRules";
 
 const PAGE_SIZE = 50;
+const COLS_KEY = "documentos.listado.columns";
+
+type ColKey =
+  | "documento" | "canal" | "fecha" | "neto" | "iva" | "total" | "pago"
+  | "cliente" | "rut" | "orden" | "referencia" | "estado" | "venta" | "link";
+
+const COLUMNS: { key: ColKey; label: string; align?: "right"; fixed?: boolean }[] = [
+  { key: "documento", label: "Documento", fixed: true },
+  { key: "canal", label: "Canal" },
+  { key: "fecha", label: "Fecha" },
+  { key: "neto", label: "Neto", align: "right" },
+  { key: "iva", label: "IVA", align: "right" },
+  { key: "total", label: "Total", align: "right" },
+  { key: "pago", label: "Forma de pago" },
+  { key: "cliente", label: "Cliente" },
+  { key: "rut", label: "RUT" },
+  { key: "orden", label: "Orden externa" },
+  { key: "referencia", label: "Referencia/origen" },
+  { key: "estado", label: "Estado" },
+  { key: "venta", label: "Venta asociada" },
+  { key: "link", label: "Link" },
+];
+
+const DEFAULT_COLS: ColKey[] = ["documento", "canal", "fecha", "neto", "iva", "total", "pago", "venta", "link"];
+
+/** Formas de pago reales vienen de Bsale `payments` → `payment_type`.
+ *  `coin.name` ("Peso Chileno") NO es forma de pago y no se usa aquí. */
+function paymentNames(d: any): string[] {
+  const arr = d?.payment_method_names;
+  return Array.isArray(arr) ? arr.filter(Boolean) : [];
+}
+
+const fullRut = (d: any) =>
+  d?.client_tax_id ? `${d.client_tax_id}${d.client_tax_id_dv ? `-${d.client_tax_id_dv}` : ""}` : null;
 
 const CLP = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("es-CL", {
@@ -68,10 +102,65 @@ function inferChannel(detected: string | null, rawData: any): string | null {
 
 const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
 
+function renderCell(d: any, key: ColKey) {
+  switch (key) {
+    case "documento":
+      return (
+        <div className="flex items-center gap-1.5">
+          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>{DOC_LABEL[d.document_type] || d.document_type}</span>
+          <span className="font-mono text-xs text-slate-500">{d.document_number}</span>
+        </div>
+      );
+    case "canal": {
+      const ch = inferChannel(d.detected_channel, d.raw_data);
+      return ch
+        ? <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[ch] || "bg-slate-100 text-slate-500"}`}>{CHANNEL_LABEL[ch] || ch}</span>
+        : <span className="text-xs text-slate-300">—</span>;
+    }
+    case "fecha":
+      return <span className="text-xs text-slate-500">{d.document_date}</span>;
+    case "neto":
+      return <span className="font-mono text-xs text-slate-600">{CLP(d.net_amount)}</span>;
+    case "iva":
+      return <span className="font-mono text-xs text-slate-600">{CLP(d.tax_amount)}</span>;
+    case "total":
+      return <span className="font-mono text-xs font-semibold">{CLP(d.total_amount)}</span>;
+    case "pago": {
+      const names = paymentNames(d.raw_data ?? d);
+      if (names.length === 0) return <span className="text-xs text-slate-300">—</span>;
+      if (names.length === 1) return <span className="text-xs text-slate-600">{names[0]}</span>;
+      return <span className="text-xs text-slate-600" title={names.join(" + ")}>{names.length} formas</span>;
+    }
+    case "cliente":
+      return <span className="text-xs text-slate-600">{d.client_name || "—"}</span>;
+    case "rut":
+      return <span className="font-mono text-xs text-slate-500">{fullRut(d) || "—"}</span>;
+    case "orden":
+      return <span className="font-mono text-xs text-slate-500">{d.external_order_id || "—"}</span>;
+    case "referencia":
+      return <span className="text-xs text-slate-500">{d.raw_data?.reference_reason || d.reference_reason || "—"}</span>;
+    case "estado":
+      return d.status === "voided"
+        ? <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700">Anulado</span>
+        : <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-emerald-100 text-emerald-700">Vigente</span>;
+    case "venta": {
+      const links = d.order_tax_documents || [];
+      return <span className="text-xs text-slate-500">{links.length ? `${links.length} ${links.length === 1 ? "venta" : "ventas"}` : "—"}</span>;
+    }
+    case "link":
+      return d.external_url
+        ? <a href={d.external_url} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-600 hover:underline inline-flex items-center gap-1">Ver DTE <ExternalLink className="h-3 w-3" /></a>
+        : <span className="text-xs text-slate-300">—</span>;
+    default:
+      return null;
+  }
+}
+
 export default function PageDocumentos() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(chilePeriodNow);
   const [channelFilter, setChannelFilter] = useState("todos");
+  const [allDocs, setAllDocs] = useState<any[]>([]);
   const [docs, setDocs] = useState<any[]>([]);
   const [docsTotal, setDocsTotal] = useState(0);
   const [docsSum, setDocsSum] = useState<number | null>(null);
@@ -82,6 +171,31 @@ export default function PageDocumentos() {
   const [docSyncMsg, setDocSyncMsg] = useState("");
   const [selectedDoc, setSelectedDoc] = useState<any | null>(null);
   const [selectedDocSales, setSelectedDocSales] = useState<any[] | null>(null);
+  const [q, setQ] = useState("");
+  const [typeFilter, setTypeFilter] = useState("todos");
+  const [statusFilter, setStatusFilter] = useState("todos");
+  const [linkFilter, setLinkFilter] = useState("todos");
+  const [payFilter, setPayFilter] = useState("todas");
+  const [colsOpen, setColsOpen] = useState(false);
+  const [visible, setVisible] = useState<Set<ColKey>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLS_KEY) || "null");
+      if (Array.isArray(saved) && saved.length) return new Set(saved as ColKey[]);
+    } catch { /* ignore */ }
+    return new Set(DEFAULT_COLS);
+  });
+
+  useEffect(() => {
+    localStorage.setItem(COLS_KEY, JSON.stringify(Array.from(visible)));
+  }, [visible]);
+
+  const shownCols = COLUMNS.filter((c) => c.fixed || visible.has(c.key));
+  const toggleCol = (key: ColKey) =>
+    setVisible((prev) => {
+      const n = new Set(prev);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -123,7 +237,7 @@ export default function PageDocumentos() {
     setDocsLoading(true);
     try {
       const { from, to } = chileMonthDateRange(period);
-      const LIGHT_COLS = "id, document_type, document_date, total_amount, tax_amount, status, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references";
+      const LIGHT_COLS = "id, document_number, document_type, document_date, net_amount, total_amount, tax_amount, status, detected_channel, client_name, client_tax_id, client_tax_id_dv, external_order_id, external_url, reference_reason:raw_data->>reference_reason, references:raw_data->references, payment_method_names:raw_data->payment_method_names, order_tax_documents(id, order_id)";
       const allDocs: any[] = [];
 
       for (let i = 0; i < 20; i++) {
@@ -140,35 +254,76 @@ export default function PageDocumentos() {
         if (data.length < 1000) break;
       }
 
-      const filtered = channelFilter === "todos"
-        ? allDocs
-        : allDocs.filter((d) => inferChannel(d.detected_channel, {
-            reference_reason: d.reference_reason,
-            references: d.references,
-          }) === channelFilter);
-
-      setDocsTotal(filtered.length);
-      const issued = filtered.filter((d) => d.status === "issued");
-      setDocsSum(issued.reduce((sum, d) => sum + signedTaxDocumentAmount(d.document_type, d.total_amount), 0));
-      setDocsIva(issued.reduce((sum, d) => sum + signedTaxDocumentAmount(d.document_type, d.tax_amount), 0));
-
-      const pageIds = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE).map((d) => d.id);
-      if (!pageIds.length) {
-        setDocs([]);
-        return;
-      }
-
-      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, external_order_id, raw_data, order_tax_documents(id, order_id)";
-      const { data: full } = await supabase.from("tax_documents").select(FULL_COLS).in("id", pageIds);
-      const byId = new Map((full || []).map((d: any) => [d.id, d]));
-      setDocs(pageIds.map((id) => byId.get(id)).filter(Boolean));
+      setAllDocs(allDocs);
     } catch (error) {
       console.error("Error cargando documentos:", error);
-      setDocs([]);
+      setAllDocs([]);
     } finally {
       setDocsLoading(false);
     }
-  }, [period, channelFilter]);
+  }, [period]);
+
+  // Filtrado completo en memoria: KPIs y paginación siempre corresponden al
+  // conjunto filtrado, no a la página visible.
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    return allDocs.filter((d) => {
+      const channel = inferChannel(d.detected_channel, {
+        reference_reason: d.reference_reason,
+        references: d.references,
+      });
+      if (channelFilter !== "todos" && channel !== channelFilter) return false;
+      if (typeFilter !== "todos" && d.document_type !== typeFilter) return false;
+      if (statusFilter !== "todos") {
+        const voided = d.status === "voided";
+        if (statusFilter === "voided" ? !voided : voided) return false;
+      }
+      const hasSale = (d.order_tax_documents?.length ?? 0) > 0;
+      if (linkFilter === "con" && !hasSale) return false;
+      if (linkFilter === "sin" && hasSale) return false;
+      if (payFilter !== "todas") {
+        const names = paymentNames(d);
+        if (payFilter === "__sin__" ? names.length > 0 : !names.includes(payFilter)) return false;
+      }
+      if (term) {
+        const hay = [
+          d.document_number, d.client_name, fullRut(d), d.client_tax_id,
+          d.external_order_id, d.reference_reason,
+        ].filter(Boolean).join(" ").toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
+    });
+  }, [allDocs, q, channelFilter, typeFilter, statusFilter, linkFilter, payFilter]);
+
+  const payOptions = useMemo(() => {
+    const s = new Set<string>();
+    allDocs.forEach((d) => paymentNames(d).forEach((n) => s.add(n)));
+    return Array.from(s).sort();
+  }, [allDocs]);
+
+  // KPIs sobre el conjunto filtrado
+  useEffect(() => {
+    setDocsTotal(filtered.length);
+    const issued = filtered.filter((d) => d.status === "issued");
+    setDocsSum(issued.reduce((sum, d) => sum + signedTaxDocumentAmount(d.document_type, d.total_amount), 0));
+    setDocsIva(issued.reduce((sum, d) => sum + signedTaxDocumentAmount(d.document_type, d.tax_amount), 0));
+  }, [filtered]);
+
+  // La página visible se hidrata con raw_data para el panel de detalle.
+  useEffect(() => {
+    let cancelled = false;
+    const pageIds = filtered.slice(docPage * PAGE_SIZE, docPage * PAGE_SIZE + PAGE_SIZE).map((d) => d.id);
+    if (!pageIds.length) { setDocs([]); return; }
+    (async () => {
+      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, client_tax_id_dv, detected_channel, status, external_url, external_order_id, raw_data, order_tax_documents(id, order_id)";
+      const { data: full } = await supabase.from("tax_documents").select(FULL_COLS).in("id", pageIds);
+      if (cancelled) return;
+      const byId = new Map((full || []).map((d: any) => [d.id, d]));
+      setDocs(pageIds.map((id) => byId.get(id)).filter(Boolean));
+    })();
+    return () => { cancelled = true; };
+  }, [filtered, docPage]);
 
   useEffect(() => {
     setDocPage(0);
@@ -179,9 +334,9 @@ export default function PageDocumentos() {
   useEffect(() => {
     setDocPage(0);
     setSelectedDoc(null);
-  }, [channelFilter]);
+  }, [channelFilter, typeFilter, statusFilter, linkFilter, payFilter, q]);
 
-  useEffect(() => { fetchDocs(docPage); }, [fetchDocs, docPage]);
+  useEffect(() => { fetchDocs(0); }, [fetchDocs]);
 
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
@@ -198,7 +353,7 @@ export default function PageDocumentos() {
       });
       if (error) throw error;
       setDocSyncMsg(`✅ ${data?.summary?.total_upserted ?? 0} documentos`);
-      await fetchDocs(docPage);
+      await fetchDocs(0);
     } catch (error: any) {
       setDocSyncMsg(`❌ ${error?.message || "Error"}`);
     } finally {
@@ -258,50 +413,91 @@ export default function PageDocumentos() {
           </div>
         </div>
 
+        {/* Barra de filtros + selector de columnas */}
+        <div className="bg-white border rounded-lg p-3 mb-3 flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Folio, cliente, RUT, orden externa…"
+              className="text-xs pl-7 pr-3 py-1.5 border rounded-md w-64 focus:outline-none focus:ring-1 focus:ring-slate-300"
+            />
+          </div>
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="text-xs px-2 py-1.5 border rounded-md bg-white">
+            <option value="todos">Todos los tipos</option>
+            <option value="boleta">Boleta</option>
+            <option value="factura">Factura</option>
+            <option value="nota_credito">Nota de crédito</option>
+            <option value="nota_debito">Nota de débito</option>
+            <option value="factura_exenta">Factura exenta</option>
+          </select>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="text-xs px-2 py-1.5 border rounded-md bg-white">
+            <option value="todos">Todo estado</option>
+            <option value="issued">Vigente</option>
+            <option value="voided">Anulado</option>
+          </select>
+          <select value={linkFilter} onChange={(e) => setLinkFilter(e.target.value)} className="text-xs px-2 py-1.5 border rounded-md bg-white">
+            <option value="todos">Toda vinculación</option>
+            <option value="con">Con venta</option>
+            <option value="sin">Sin venta</option>
+          </select>
+          <select value={payFilter} onChange={(e) => setPayFilter(e.target.value)} className="text-xs px-2 py-1.5 border rounded-md bg-white">
+            <option value="todas">Toda forma de pago</option>
+            {payOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+            <option value="__sin__">Sin información</option>
+          </select>
+          <div className="relative ml-auto">
+            <button onClick={() => setColsOpen((v) => !v)} className="text-xs px-2.5 py-1.5 rounded-md border hover:bg-slate-50 flex items-center gap-1.5">
+              <SlidersHorizontal className="h-3.5 w-3.5" /> Columnas
+            </button>
+            {colsOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setColsOpen(false)} />
+                <div className="absolute right-0 mt-1 z-20 w-56 bg-white border rounded-lg shadow-lg p-2">
+                  <div className="flex items-center justify-between px-1 pb-1.5 mb-1 border-b">
+                    <span className="text-[11px] uppercase tracking-wider text-slate-400">Columnas</span>
+                    <button onClick={() => setVisible(new Set(DEFAULT_COLS))} className="text-[11px] text-sky-600 hover:underline">Por defecto</button>
+                  </div>
+                  {COLUMNS.map((c) => (
+                    <label key={c.key} className={`flex items-center gap-2 px-1 py-1 text-xs rounded ${c.fixed ? "text-slate-400" : "text-slate-600 hover:bg-slate-50 cursor-pointer"}`}>
+                      <input type="checkbox" disabled={c.fixed} checked={c.fixed || visible.has(c.key)} onChange={() => toggleCol(c.key)} />
+                      {c.label}
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
         <div className="bg-white border rounded-lg overflow-hidden">
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-slate-50 text-xs text-slate-500">
-                <th className="text-left px-4 py-3 font-medium">Documento</th>
-                <th className="text-left px-4 py-3 font-medium">Canal</th>
-                <th className="text-left px-4 py-3 font-medium">Fecha</th>
-                <th className="text-right px-4 py-3 font-medium">Neto</th>
-                <th className="text-right px-4 py-3 font-medium">IVA</th>
-                <th className="text-right px-4 py-3 font-medium">Total</th>
-                <th className="text-left px-4 py-3 font-medium">Venta asociada</th>
+                {shownCols.map((c) => (
+                  <th key={c.key} className={`px-4 py-3 font-medium ${c.align === "right" ? "text-right" : "text-left"}`}>{c.label}</th>
+                ))}
                 <th className="w-8 px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               {docsLoading ? (
-                <tr><td colSpan={8} className="text-center py-12 text-slate-400"><Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...</td></tr>
+                <tr><td colSpan={shownCols.length + 1} className="text-center py-12 text-slate-400"><Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...</td></tr>
               ) : docs.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-12 text-slate-400 text-sm">Sin documentos para los filtros aplicados.</td></tr>
-              ) : docs.map((d) => {
-                const effectiveChannel = inferChannel(d.detected_channel, d.raw_data);
-                const links = d.order_tax_documents || [];
-                return (
-                  <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${d.status === "voided" ? "opacity-40" : ""}`}>
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>{DOC_LABEL[d.document_type] || d.document_type}</span>
-                        <span className="font-mono text-xs text-slate-500">{d.document_number}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {effectiveChannel ? <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[effectiveChannel] || "bg-slate-100 text-slate-500"}`}>{CHANNEL_LABEL[effectiveChannel] || effectiveChannel}</span> : <span className="text-xs text-slate-300">—</span>}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-slate-500">{d.document_date}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.net_amount)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.tax_amount)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-xs font-semibold">{CLP(d.total_amount)}</td>
-                    <td className="px-4 py-2.5 text-xs text-slate-500">{links.length ? `${links.length} ${links.length === 1 ? "venta" : "ventas"}` : "—"}</td>
-                    <td className="px-4 py-2.5"><button onClick={() => setSelectedDoc(d)} className="text-slate-300 hover:text-slate-500"><Info className="h-3.5 w-3.5" /></button></td>
-                  </tr>
-                );
-              })}
+                <tr><td colSpan={shownCols.length + 1} className="text-center py-12 text-slate-400 text-sm">Sin documentos para los filtros aplicados.</td></tr>
+              ) : docs.map((d) => (
+                <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${d.status === "voided" ? "opacity-40" : ""}`}>
+                  {shownCols.map((c) => (
+                    <td key={c.key} className={`px-4 py-2.5 ${c.align === "right" ? "text-right" : ""}`}>{renderCell(d, c.key)}</td>
+                  ))}
+                  <td className="px-4 py-2.5"><button onClick={() => setSelectedDoc(d)} className="text-slate-300 hover:text-slate-500"><Info className="h-3.5 w-3.5" /></button></td>
+                </tr>
+              ))}
             </tbody>
           </table>
+          </div>
         </div>
 
         {totalPages > 1 && (

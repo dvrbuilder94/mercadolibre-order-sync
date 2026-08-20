@@ -31,6 +31,60 @@ function normalizeCodeSii(codeSii: string | number | null | undefined): number |
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Bsale expone las formas de pago reales del documento vía `payments`, y cada
+// pago referencia un `payment_type` (a veces sólo con id/href). Cargamos el
+// catálogo de payment types UNA vez por invocación para resolver nombres sin
+// hacer N llamadas por documento.
+async function loadPaymentTypeNames(apiUrl: string, token: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    for (let offset = 0; offset < 500; offset += 50) {
+      const u = new URL(`${apiUrl}/v1/payment_types.json`);
+      u.searchParams.set('limit', '50');
+      u.searchParams.set('offset', String(offset));
+      const r = await fetchBsalePage(u, token);
+      if (!r.ok) break;
+      const items: any[] = r.data?.items || [];
+      for (const it of items) {
+        if (it?.id != null && it?.name) map.set(String(it.id), String(it.name));
+      }
+      if (items.length < 50) break;
+    }
+  } catch (e) {
+    console.warn('No se pudo cargar payment_types:', (e as any)?.message);
+  }
+  return map;
+}
+
+function idFromHref(href: string | null | undefined): string | null {
+  if (!href) return null;
+  const m = String(href).match(/\/(\d+)\.json/);
+  return m ? m[1] : null;
+}
+
+// Devuelve los pagos del documento normalizados + los nombres únicos de forma
+// de pago REALES (nunca `coin.name`, que es la moneda, no la forma de pago).
+function extractDocPayments(doc: any, typeNames: Map<string, string>) {
+  const items: any[] = doc?.payments?.items || [];
+  const payments = items.map((p: any) => {
+    const ptId = p?.payment_type?.id != null
+      ? String(p.payment_type.id)
+      : idFromHref(p?.payment_type?.href);
+    const name = p?.payment_type?.name
+      || (ptId ? typeNames.get(ptId) : null)
+      || null;
+    return {
+      id: p?.id ?? null,
+      amount: p?.amount ?? null,
+      recordDate: p?.recordDate ?? null,
+      payment_type_id: ptId,
+      payment_type_name: name,
+    };
+  });
+  const names = Array.from(new Set(payments.map((p) => p.payment_type_name).filter(Boolean))) as string[];
+  return { payments, names };
+}
+
 async function fetchBsalePage(url: URL, bsaleToken: string) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     const controller = new AbortController();
@@ -514,6 +568,10 @@ Deno.serve(async (req) => {
     let nextCursor: { code_sii: number; offset: number } | null = null;
     let pagesThisRun = 0;
 
+    // Catálogo de formas de pago (id → nombre), una sola vez por invocación.
+    const paymentTypeNames = await loadPaymentTypeNames(BSALE_API_URL, bsaleToken);
+    console.log(`payment_types cargados: ${paymentTypeNames.size}`);
+
     // Total disponible (suma del `count` de Bsale por cada código SII), para
     // que el frontend pueda mostrar "X de N". Solo se calcula en arranque
     // fresco (sin cursor); en reanudaciones el front ya lo tiene en el checkpoint.
@@ -561,7 +619,7 @@ Deno.serve(async (req) => {
         const url = new URL(`${BSALE_API_URL}/v1/documents.json`);
         url.searchParams.set('emissiondaterange', `[${emissionDateFrom},${emissionDateTo}]`);
         url.searchParams.set('codesii', String(codeSii));
-        url.searchParams.set('expand', '[details,client,document_type,references,coin]');
+        url.searchParams.set('expand', '[details,client,document_type,references,coin,payments]');
         url.searchParams.set('limit', String(limit));
         url.searchParams.set('offset', String(offset));
 
@@ -602,9 +660,14 @@ Deno.serve(async (req) => {
             docTypeCounts[transformed.document_type] = (docTypeCounts[transformed.document_type] || 0) + 1;
             const detectedChannel = detectChannelFromDoc(doc);
             const referenceReason = doc.references?.items?.[0]?.reason || null;
-            const coinName = doc.coin?.name || null;
             (transformed.raw_data as any).reference_reason = referenceReason;
-            (transformed.raw_data as any).payment_method_name = coinName;
+            // Forma de pago REAL desde Bsale `payments` → `payment_type`.
+            // `coin.name` es la moneda ("Peso Chileno"), NO la forma de pago:
+            // no debe usarse aquí bajo ninguna circunstancia.
+            const { payments: docPayments, names: paymentNames } = extractDocPayments(doc, paymentTypeNames);
+            (transformed.raw_data as any).payments = docPayments;
+            (transformed.raw_data as any).payment_method_names = paymentNames;
+            (transformed.raw_data as any).payment_method_name = paymentNames.length === 1 ? paymentNames[0] : null;
             // NC → documento original: resolver el enlace al sincronizar (las
             // boletas/facturas del mismo período ya se procesaron antes, porque
             // codeSii 61 va último en VALID_SII_CODES).
