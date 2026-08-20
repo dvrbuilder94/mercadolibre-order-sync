@@ -43,6 +43,9 @@ jobs:
           supabase/functions/_shared/sync-pipeline.ts
           supabase/functions/cron-pipeline-sync/index.ts
           supabase/functions/sync-meli-orders/index.ts
+          supabase/functions/sync-bsale-docs/index.ts
+          supabase/functions/sync-shopify-orders/index.ts
+          supabase/functions/sync-mercadopago-payments/index.ts
           supabase/functions/start-sync-run/index.ts
           supabase/functions/sync-runner/index.ts
 
