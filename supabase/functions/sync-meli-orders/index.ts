@@ -3,6 +3,14 @@ import { getMeliAccount, getFreshAccessToken } from '../_shared/meli-account.ts'
 import { resolveUserId } from '../_shared/auth.ts';
 import { mapMeliOrderStatus } from '../_shared/order-status.ts';
 
+interface MeliOrderSyncAccount {
+  id: string;
+  seller_id: string | number | null;
+  site_id?: string | null;
+  access_token: string | null;
+  expires_at?: string | null;
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -60,9 +68,14 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, userId, {
+    // `getMeliAccount` supports dynamic select columns for multiple callers, so
+    // Supabase cannot infer a stable row type from that shared helper. This
+    // worker always requests `*`; narrow that result locally instead of making
+    // the shared helper lie about partial-column callers.
+    const { data: meliAccountRaw, error: accountError } = await getMeliAccount(supabaseClient, userId, {
       accountId: accountIdParam,
     });
+    const meliAccount = meliAccountRaw as unknown as MeliOrderSyncAccount | null;
 
     console.log('=== SYNC MELI ORDERS ===');
     console.log('User ID:', userId);
