@@ -138,12 +138,31 @@ export function getPaymentItems(doc: any): any[] {
   return [];
 }
 
+// Un item de `payments` puede venir ya expandido como el propio payment type
+// (`href` apunta a /payment_types/<id>.json). Sólo en ese caso su `id`/`name`
+// describen la forma de pago; en otros shapes `id` es el id del pago.
+export function paymentTypeIdFromDirectItem(payment: any): string | null {
+  const href = payment?.href;
+  if (!href) return null;
+  const m = String(href).match(/\/payment_types\/(\d+)\.json/);
+  if (m) return m[1];
+  return null;
+}
+
+export function isDirectPaymentTypeItem(payment: any): boolean {
+  return paymentTypeIdFromDirectItem(payment) !== null;
+}
+
 // Resolución segura del id de forma de pago (nunca desde `coin`).
 export function resolvePaymentTypeId(payment: any): string | null {
   if (payment?.payment_type?.id != null) return String(payment.payment_type.id);
   if (payment?.paymentTypeId != null) return String(payment.paymentTypeId);
   if (payment?.payment_type_id != null) return String(payment.payment_type_id);
-  return idFromHref(payment?.payment_type?.href);
+  const nested = idFromHref(payment?.payment_type?.href);
+  if (nested) return nested;
+  const direct = paymentTypeIdFromDirectItem(payment);
+  if (direct) return direct;
+  return null;
 }
 
 // Pagos normalizados + nombres únicos de forma de pago REALES.
@@ -155,6 +174,7 @@ export function extractDocPayments(
   const payments: NormalizedBsalePayment[] = items.map((p: any) => {
     const ptId = resolvePaymentTypeId(p);
     const name = p?.payment_type?.name
+      || (isDirectPaymentTypeItem(p) ? (p?.name ?? null) : null)
       || (ptId ? typeNames.get(ptId) : null)
       || null;
     const amount = typeof p?.amount === 'number'
@@ -162,7 +182,7 @@ export function extractDocPayments(
       : (p?.amount != null && p.amount !== '' && Number.isFinite(Number(p.amount)) ? Number(p.amount) : null);
     const recordDate = p?.recordDate ?? p?.record_date ?? null;
     return {
-      id: p?.id ?? null,
+      id: isDirectPaymentTypeItem(p) ? null : (p?.id ?? null),
       amount,
       recordDate,
       payment_type_id: ptId,
@@ -183,7 +203,7 @@ export function extractDocPayments(
 // documento no trae `payment_type.name`.
 export function unresolvedPaymentTypeIds(doc: any): string[] {
   const ids = getPaymentItems(doc)
-    .filter((p: any) => !p?.payment_type?.name)
+    .filter((p: any) => !p?.payment_type?.name && !(isDirectPaymentTypeItem(p) && p?.name))
     .map((p: any) => resolvePaymentTypeId(p))
     .filter(Boolean) as string[];
   return Array.from(new Set(ids));
