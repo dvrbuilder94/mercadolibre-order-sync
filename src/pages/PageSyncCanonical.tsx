@@ -10,6 +10,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  Terminal,
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -83,6 +84,8 @@ const statusLabel: Record<RunStatus, string> = {
   cancelled: "Cancelado",
 };
 
+const stepLabel = (step: StepKey) => STEP_DEFS.find((item) => item.key === step)?.label ?? step;
+
 function metricText(step: StepKey, metrics: any): string {
   const m = metrics?.[step] ?? {};
   switch (step) {
@@ -107,6 +110,44 @@ function metricText(step: StepKey, metrics: any): string {
   }
 }
 
+function activityText(attempt: StepAttempt): string {
+  const d = attempt.detail ?? {};
+  if (attempt.status === "running") return "Procesando…";
+  if (attempt.status === "error") return d?.error || d?.message || "La ejecución de este bloque falló";
+
+  switch (attempt.step) {
+    case "sync_meli_orders": {
+      const synced = Number(d?.synced ?? d?.summary?.total_synced ?? 0);
+      return `${synced.toLocaleString("es-CL")} órdenes procesadas${d?.partial ? " · quedan páginas por cargar" : ""}`;
+    }
+    case "sync_payments": {
+      const linked = Number(d?.paymentsLinked ?? d?.linked ?? 0);
+      const remaining = Number(d?.remaining ?? 0);
+      return `${linked.toLocaleString("es-CL")} pagos vinculados${remaining > 0 ? ` · ${remaining.toLocaleString("es-CL")} pendientes` : ""}`;
+    }
+    case "sync_mp_cash": {
+      const checked = d?.totalChecked ?? d?.checked ?? d?.paymentsChecked;
+      const unmatched = d?.unmatchedCount ?? d?.unmatched_count;
+      if (checked != null) {
+        return `${Number(checked).toLocaleString("es-CL")} pagos revisados${unmatched != null ? ` · ${Number(unmatched).toLocaleString("es-CL")} sin venta` : ""}`;
+      }
+      return "Caja Mercado Pago revisada";
+    }
+    case "sync_bsale": {
+      const upserted = Number(d?.summary?.total_upserted ?? d?.total_upserted ?? 0);
+      const available = d?.summary?.total_available ?? d?.total_available;
+      return `${upserted.toLocaleString("es-CL")} documentos procesados${available != null ? ` de ${Number(available).toLocaleString("es-CL")}` : ""}${d?.partial ? " · continúa desde checkpoint" : ""}`;
+    }
+    case "enrich_ruts": {
+      const enriched = Number(d?.enriched ?? 0);
+      const remaining = Number(d?.remaining ?? 0);
+      return `${enriched.toLocaleString("es-CL")} RUTs enriquecidos${remaining > 0 ? ` · ${remaining.toLocaleString("es-CL")} pendientes` : ""}`;
+    }
+    case "reconcile":
+      return "Conciliación del período completada";
+  }
+}
+
 export default function PageSyncCanonical() {
   const [period, setPeriod] = useState(chilePeriodNow);
   const [runs, setRuns] = useState<SyncRun[]>([]);
@@ -128,6 +169,11 @@ export default function PageSyncCanonical() {
     for (const attempt of attempts) result.set(attempt.step, attempt);
     return result;
   }, [attempts]);
+
+  const activity = useMemo(
+    () => [...attempts].sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()),
+    [attempts],
+  );
 
   const fetchRole = useCallback(async () => {
     setRoleLoading(true);
@@ -228,14 +274,20 @@ export default function PageSyncCanonical() {
     if (!selectedRun) return "pending" as const;
     if (selectedRun.status === "ok") return "ok" as const;
     const latest = latestAttemptByStep.get(key);
-    if (selectedRun.status === "error" && selectedRun.current_step === key) return "error" as const;
+    if (latest?.status === "error") return "error" as const;
+    if (selectedRun.status === "error" && selectedRun.error?.step === key) return "error" as const;
     if ((selectedRun.status === "running" || selectedRun.status === "queued") && selectedRun.current_step === key) {
       return "running" as const;
     }
-    if (latest?.status === "error") return "error" as const;
     if (latest?.status === "ok" || (currentStepIndex >= 0 && index < currentStepIndex)) return "ok" as const;
     return "pending" as const;
   };
+
+  const runErrorLabel = selectedRun?.error?.stage === "enqueue"
+    ? "No se pudo iniciar Sync:"
+    : selectedRun?.error?.stage === "runner" && attempts.length === 0
+      ? "No se pudo iniciar el runner:"
+      : "Sync detenido:";
 
   return (
     <div className="min-h-screen bg-slate-50 flex">
@@ -359,9 +411,74 @@ export default function PageSyncCanonical() {
 
           {selectedRun?.status === "error" && selectedRun.error?.message && (
             <div className="border border-red-200 bg-red-50 rounded-xl px-4 py-3 text-sm text-red-700">
-              <span className="font-medium">Sync detenido:</span> {selectedRun.error.message}
+              <span className="font-medium">{runErrorLabel}</span> {selectedRun.error.message}
             </div>
           )}
+
+          <section className="bg-white border rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b flex items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Terminal className="h-4 w-4 text-slate-500" />
+                  <h2 className="font-medium">Actividad</h2>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">Registro persistente de lo que está cargando el run seleccionado.</p>
+              </div>
+              {isActive && (
+                <span className="text-xs text-blue-600 flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> En vivo
+                </span>
+              )}
+            </div>
+
+            {!selectedRun ? (
+              <div className="px-5 py-8 text-sm text-slate-400 text-center">Sin actividad todavía.</div>
+            ) : activity.length === 0 ? (
+              <div className="px-5 py-5 text-sm text-slate-500">
+                {selectedRun.status === "queued" || selectedRun.status === "running"
+                  ? "Run creado. Esperando al runner…"
+                  : selectedRun.error?.message
+                    ? `Sistema · ${selectedRun.error.message}`
+                    : "Este run no alcanzó a registrar bloques de trabajo."}
+              </div>
+            ) : (
+              <div className="divide-y max-h-80 overflow-y-auto">
+                {activity.map((attempt) => (
+                  <div key={attempt.id} className="px-5 py-3 flex items-start gap-3 text-sm">
+                    <span className="font-mono text-[11px] text-slate-400 w-16 shrink-0 pt-0.5">
+                      {format(new Date(attempt.started_at), "HH:mm:ss")}
+                    </span>
+                    <div className={cn(
+                      "mt-1 h-2 w-2 rounded-full shrink-0",
+                      attempt.status === "ok" && "bg-emerald-500",
+                      attempt.status === "running" && "bg-blue-500 animate-pulse",
+                      attempt.status === "error" && "bg-red-500",
+                    )} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium text-slate-800">{stepLabel(attempt.step)}</span>
+                        {attempt.attempt > 1 && <span className="text-[10px] text-slate-400">intento {attempt.attempt}</span>}
+                      </div>
+                      <p className={cn(
+                        "text-xs mt-0.5 break-words",
+                        attempt.status === "error" ? "text-red-600" : "text-slate-500",
+                      )}>
+                        {activityText(attempt)}
+                      </p>
+                    </div>
+                    <span className={cn(
+                      "text-[11px] shrink-0",
+                      attempt.status === "ok" && "text-emerald-600",
+                      attempt.status === "running" && "text-blue-600",
+                      attempt.status === "error" && "text-red-600",
+                    )}>
+                      {attempt.status === "ok" ? "Listo" : attempt.status === "running" ? "En curso" : "Error"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
 
           <section className="bg-white border rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b">
