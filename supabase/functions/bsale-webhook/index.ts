@@ -200,13 +200,21 @@ Deno.serve(async (req) => {
     }
 
     // Un webhook incompleto no debe borrar la forma de pago ya conocida.
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from('tax_documents')
       .select('raw_data')
       .eq('user_id', bsaleAccount.user_id)
       .eq('external_system', 'bsale')
       .eq('external_id', taxDocumentData.external_id)
       .maybeSingle()
+
+    if (existingError) {
+      console.error('Error reading existing tax document before upsert:', existingError)
+      return new Response(JSON.stringify({ error: 'Failed to read existing document' }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
     taxDocumentData.raw_data = mergePaymentEnrichment(
       taxDocumentData.raw_data,
