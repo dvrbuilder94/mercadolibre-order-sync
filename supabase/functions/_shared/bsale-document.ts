@@ -130,23 +130,41 @@ export function idFromHref(href: string | null | undefined): string | null {
   return m ? m[1] : null;
 }
 
+// Bsale entrega `payments` como array directo o como colección `{ items: [] }`.
+export function getPaymentItems(doc: any): any[] {
+  const raw = doc?.payments;
+  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw?.items)) return raw.items;
+  return [];
+}
+
+// Resolución segura del id de forma de pago (nunca desde `coin`).
+export function resolvePaymentTypeId(payment: any): string | null {
+  if (payment?.payment_type?.id != null) return String(payment.payment_type.id);
+  if (payment?.paymentTypeId != null) return String(payment.paymentTypeId);
+  if (payment?.payment_type_id != null) return String(payment.payment_type_id);
+  return idFromHref(payment?.payment_type?.href);
+}
+
 // Pagos normalizados + nombres únicos de forma de pago REALES.
 export function extractDocPayments(
   doc: any,
   typeNames: Map<string, string> = new Map(),
 ): BsalePaymentEnrichment {
-  const items: any[] = doc?.payments?.items || [];
+  const items: any[] = getPaymentItems(doc);
   const payments: NormalizedBsalePayment[] = items.map((p: any) => {
-    const ptId = p?.payment_type?.id != null
-      ? String(p.payment_type.id)
-      : idFromHref(p?.payment_type?.href);
+    const ptId = resolvePaymentTypeId(p);
     const name = p?.payment_type?.name
       || (ptId ? typeNames.get(ptId) : null)
       || null;
+    const amount = typeof p?.amount === 'number'
+      ? p.amount
+      : (p?.amount != null && p.amount !== '' && Number.isFinite(Number(p.amount)) ? Number(p.amount) : null);
+    const recordDate = p?.recordDate ?? p?.record_date ?? null;
     return {
       id: p?.id ?? null,
-      amount: p?.amount ?? null,
-      recordDate: p?.recordDate ?? null,
+      amount,
+      recordDate,
       payment_type_id: ptId,
       payment_type_name: name,
     };
@@ -164,10 +182,9 @@ export function extractDocPayments(
 // IDs de payment_type que necesitan resolverse contra el catálogo porque el
 // documento no trae `payment_type.name`.
 export function unresolvedPaymentTypeIds(doc: any): string[] {
-  const items: any[] = doc?.payments?.items || [];
-  const ids = items
+  const ids = getPaymentItems(doc)
     .filter((p: any) => !p?.payment_type?.name)
-    .map((p: any) => (p?.payment_type?.id != null ? String(p.payment_type.id) : idFromHref(p?.payment_type?.href)))
+    .map((p: any) => resolvePaymentTypeId(p))
     .filter(Boolean) as string[];
   return Array.from(new Set(ids));
 }
