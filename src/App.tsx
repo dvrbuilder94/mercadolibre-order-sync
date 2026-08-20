@@ -20,7 +20,6 @@ import PageTrazabilidadPagosV2   from "./pages/PageTrazabilidadPagosV2";
 import PageDevoluciones          from "./pages/PageDevoluciones";
 import PageDocumentos            from "./pages/PageDocumentos";
 import PageDocumentosResumen     from "./pages/PageDocumentosResumen";
-import PageWorkflow              from "./pages/PageWorkflow";
 import PageConciliacion          from "./pages/PageConciliacion";
 import PageFeedback              from "./pages/PageFeedback";
 import PageModeloDatos           from "./pages/PageModeloDatos";
@@ -51,10 +50,14 @@ const App = () => (
           <Route path="/liquidaciones" element={<Navigate to="/tesoreria" replace />} />
           <Route path="/billing"       element={<Navigate to="/tesoreria?tab=cargos" replace />} />
           <Route path="/devoluciones"  element={<PageDevoluciones />} />
-          <Route path="/pipeline"     element={<Pipeline />} />
-          <Route path="/workflow"     element={<PageWorkflow />} />
+
+          {/* Sync es la única experiencia operativa de sincronización. */}
+          <Route path="/sync"          element={<Pipeline />} />
+          <Route path="/pipeline"      element={<Navigate to="/sync" replace />} />
+          <Route path="/workflow"      element={<Navigate to="/sync" replace />} />
+
           <Route path="/modelo-datos" element={<PageModeloDatos />} />
-          <Route path="/arquitectura" element={<Navigate to="/workflow" replace />} />
+          <Route path="/arquitectura" element={<Navigate to="/modelo-datos" replace />} />
           <Route path="/asistente"    element={<Navigate to="/tesoreria" replace />} />
           <Route path="/config"       element={<ConfigNew />} />
           <Route path="/perfil"       element={<PageProfile />} />
@@ -72,15 +75,15 @@ const App = () => (
           <Route path="/bsale"            element={<Navigate to="/ventas" replace />} />
           <Route path="/flujo"            element={<Navigate to="/tesoreria" replace />} />
           <Route path="/sales"            element={<Navigate to="/mercadolibre" replace />} />
-          <Route path="/payments"         element={<Navigate to="/pipeline" replace />} />
-          <Route path="/payments/:id"     element={<Navigate to="/pipeline" replace />} />
+          <Route path="/payments"         element={<Navigate to="/sync" replace />} />
+          <Route path="/payments/:id"     element={<Navigate to="/sync" replace />} />
           <Route path="/orders/:id"       element={<Navigate to="/mercadolibre" replace />} />
           <Route path="/bsale-documents"  element={<Navigate to="/bsale" replace />} />
-          <Route path="/reports/*"        element={<Navigate to="/pipeline" replace />} />
+          <Route path="/reports/*"        element={<Navigate to="/sync" replace />} />
           <Route path="/pending-sales"    element={<Navigate to="/mercadolibre" replace />} />
           <Route path="/sales/issues"     element={<Navigate to="/mercadolibre" replace />} />
-          <Route path="/closing"          element={<Navigate to="/pipeline" replace />} />
-          <Route path="/ledger"           element={<Navigate to="/pipeline" replace />} />
+          <Route path="/closing"          element={<Navigate to="/sync" replace />} />
+          <Route path="/ledger"           element={<Navigate to="/sync" replace />} />
 
           <Route path="*" element={<NotFound />} />
         </Routes>
