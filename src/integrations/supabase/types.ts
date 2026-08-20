@@ -1235,6 +1235,8 @@ export type Database = {
           id: string
           meli_account_id: string | null
           period: string | null
+          source_connection_id: string | null
+          source_type: string | null
           started_at: string
           status: string
           step: string
@@ -1248,6 +1250,8 @@ export type Database = {
           id?: string
           meli_account_id?: string | null
           period?: string | null
+          source_connection_id?: string | null
+          source_type?: string | null
           started_at?: string
           status?: string
           step: string
@@ -1261,6 +1265,8 @@ export type Database = {
           id?: string
           meli_account_id?: string | null
           period?: string | null
+          source_connection_id?: string | null
+          source_type?: string | null
           started_at?: string
           status?: string
           step?: string
@@ -1710,6 +1716,8 @@ export type Database = {
           period: string
           requested_by: string | null
           runner_lease_until: string | null
+          source_connection_id: string | null
+          source_type: string | null
           started_at: string
           status: string
           summary: Json
@@ -1728,6 +1736,8 @@ export type Database = {
           period: string
           requested_by?: string | null
           runner_lease_until?: string | null
+          source_connection_id?: string | null
+          source_type?: string | null
           started_at?: string
           status?: string
           summary?: Json
@@ -1746,6 +1756,8 @@ export type Database = {
           period?: string
           requested_by?: string | null
           runner_lease_until?: string | null
+          source_connection_id?: string | null
+          source_type?: string | null
           started_at?: string
           status?: string
           summary?: Json
@@ -2035,6 +2047,15 @@ export type Database = {
         }
         Returns: boolean
       }
+      list_sync_connections: {
+        Args: never
+        Returns: {
+          connection_id: string
+          label: string
+          source_type: string
+          status: string
+        }[]
+      }
       remove_org_member: { Args: { p_user_id: string }; Returns: boolean }
       requeue_sync_runner: { Args: { p_run_id: string }; Returns: number }
       same_organization_as: { Args: { p_user_id: string }; Returns: boolean }
@@ -2043,6 +2064,10 @@ export type Database = {
         Returns: boolean
       }
       user_owns_order: { Args: { _order_id: string }; Returns: boolean }
+      verify_sync_runner_secret: {
+        Args: { p_secret: string }
+        Returns: boolean
+      }
     }
     Enums: {
       app_role: "admin" | "user"
