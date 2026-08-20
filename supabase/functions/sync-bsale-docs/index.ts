@@ -410,19 +410,16 @@ Deno.serve(async (req) => {
         const taxDocsToUpsert: any[] = [];
         for (const doc of validDocs) {
           try {
-            const transformed = transformBsaleDoc(doc, user.id, batchId);
+            // Normalizador canónico compartido con `bsale-webhook`.
+            // Forma de pago REAL desde Bsale `payments` → `payment_type`.
+            // `coin.name` es la moneda ("Peso Chileno"), NO la forma de pago.
+            const transformed = buildTaxDocumentPayload(doc, {
+              userId: user.id,
+              paymentTypeNames,
+              batchId,
+            });
             if (!transformed) continue;
             docTypeCounts[transformed.document_type] = (docTypeCounts[transformed.document_type] || 0) + 1;
-            const detectedChannel = detectChannelFromDoc(doc);
-            const referenceReason = doc.references?.items?.[0]?.reason || null;
-            (transformed.raw_data as any).reference_reason = referenceReason;
-            // Forma de pago REAL desde Bsale `payments` → `payment_type`.
-            // `coin.name` es la moneda ("Peso Chileno"), NO la forma de pago:
-            // no debe usarse aquí bajo ninguna circunstancia.
-            const { payments: docPayments, names: paymentNames } = extractDocPayments(doc, paymentTypeNames);
-            (transformed.raw_data as any).payments = docPayments;
-            (transformed.raw_data as any).payment_method_names = paymentNames;
-            (transformed.raw_data as any).payment_method_name = paymentNames.length === 1 ? paymentNames[0] : null;
             // NC → documento original: resolver el enlace al sincronizar (las
             // boletas/facturas del mismo período ya se procesaron antes, porque
             // codeSii 61 va último en VALID_SII_CODES).
@@ -432,8 +429,6 @@ Deno.serve(async (req) => {
             }
             taxDocsToUpsert.push({
               ...transformed,
-              sales_channel: 'MARKETPLACE',
-              detected_channel: detectedChannel,
               ...(originalDocId ? { original_tax_document_id: originalDocId } : {}),
             });
           } catch (error) {
