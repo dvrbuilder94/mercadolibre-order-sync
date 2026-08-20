@@ -3,6 +3,13 @@
 
 create extension if not exists pg_net with schema extensions;
 
+-- Request idempotency is tenant-scoped. The previous migration creates the
+-- first version of this index globally; replace it before the model is used.
+drop index if exists public.uq_sync_runs_idempotency_key;
+create unique index if not exists uq_sync_runs_org_idempotency_key
+  on public.sync_runs (organization_id, idempotency_key)
+  where idempotency_key is not null;
+
 alter table public.sync_runs
   add column if not exists runner_lease_until timestamptz;
 
@@ -22,7 +29,7 @@ declare
   v_claimed boolean := false;
 begin
   update public.sync_runs
-  set runner_lease_until = now() + interval '110 seconds',
+  set runner_lease_until = now() + interval '130 seconds',
       status = case when status = 'queued' then 'running' else status end,
       updated_at = now()
   where id = p_run_id
