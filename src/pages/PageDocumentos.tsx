@@ -359,50 +359,91 @@ export default function PageDocumentos() {
           </div>
         </div>
 
+        {/* Barra de filtros + selector de columnas */}
+        <div className="bg-white border rounded-lg p-3 mb-3 flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Folio, cliente, RUT, orden externa…"
+              className="text-xs pl-7 pr-3 py-1.5 border rounded-md w-64 focus:outline-none focus:ring-1 focus:ring-slate-300"
+            />
+          </div>
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="text-xs px-2 py-1.5 border rounded-md bg-white">
+            <option value="todos">Todos los tipos</option>
+            <option value="boleta">Boleta</option>
+            <option value="factura">Factura</option>
+            <option value="nota_credito">Nota de crédito</option>
+            <option value="nota_debito">Nota de débito</option>
+            <option value="factura_exenta">Factura exenta</option>
+          </select>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="text-xs px-2 py-1.5 border rounded-md bg-white">
+            <option value="todos">Todo estado</option>
+            <option value="issued">Vigente</option>
+            <option value="voided">Anulado</option>
+          </select>
+          <select value={linkFilter} onChange={(e) => setLinkFilter(e.target.value)} className="text-xs px-2 py-1.5 border rounded-md bg-white">
+            <option value="todos">Toda vinculación</option>
+            <option value="con">Con venta</option>
+            <option value="sin">Sin venta</option>
+          </select>
+          <select value={payFilter} onChange={(e) => setPayFilter(e.target.value)} className="text-xs px-2 py-1.5 border rounded-md bg-white">
+            <option value="todas">Toda forma de pago</option>
+            {payOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+            <option value="__sin__">Sin información</option>
+          </select>
+          <div className="relative ml-auto">
+            <button onClick={() => setColsOpen((v) => !v)} className="text-xs px-2.5 py-1.5 rounded-md border hover:bg-slate-50 flex items-center gap-1.5">
+              <SlidersHorizontal className="h-3.5 w-3.5" /> Columnas
+            </button>
+            {colsOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setColsOpen(false)} />
+                <div className="absolute right-0 mt-1 z-20 w-56 bg-white border rounded-lg shadow-lg p-2">
+                  <div className="flex items-center justify-between px-1 pb-1.5 mb-1 border-b">
+                    <span className="text-[11px] uppercase tracking-wider text-slate-400">Columnas</span>
+                    <button onClick={() => setVisible(new Set(DEFAULT_COLS))} className="text-[11px] text-sky-600 hover:underline">Por defecto</button>
+                  </div>
+                  {COLUMNS.map((c) => (
+                    <label key={c.key} className={`flex items-center gap-2 px-1 py-1 text-xs rounded ${c.fixed ? "text-slate-400" : "text-slate-600 hover:bg-slate-50 cursor-pointer"}`}>
+                      <input type="checkbox" disabled={c.fixed} checked={c.fixed || visible.has(c.key)} onChange={() => toggleCol(c.key)} />
+                      {c.label}
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
         <div className="bg-white border rounded-lg overflow-hidden">
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-slate-50 text-xs text-slate-500">
-                <th className="text-left px-4 py-3 font-medium">Documento</th>
-                <th className="text-left px-4 py-3 font-medium">Canal</th>
-                <th className="text-left px-4 py-3 font-medium">Fecha</th>
-                <th className="text-right px-4 py-3 font-medium">Neto</th>
-                <th className="text-right px-4 py-3 font-medium">IVA</th>
-                <th className="text-right px-4 py-3 font-medium">Total</th>
-                <th className="text-left px-4 py-3 font-medium">Venta asociada</th>
+                {shownCols.map((c) => (
+                  <th key={c.key} className={`px-4 py-3 font-medium ${c.align === "right" ? "text-right" : "text-left"}`}>{c.label}</th>
+                ))}
                 <th className="w-8 px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               {docsLoading ? (
-                <tr><td colSpan={8} className="text-center py-12 text-slate-400"><Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...</td></tr>
+                <tr><td colSpan={shownCols.length + 1} className="text-center py-12 text-slate-400"><Loader2 className="h-5 w-5 animate-spin inline mr-2" />Cargando...</td></tr>
               ) : docs.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-12 text-slate-400 text-sm">Sin documentos para los filtros aplicados.</td></tr>
-              ) : docs.map((d) => {
-                const effectiveChannel = inferChannel(d.detected_channel, d.raw_data);
-                const links = d.order_tax_documents || [];
-                return (
-                  <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${d.status === "voided" ? "opacity-40" : ""}`}>
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${DOC_COLOR[d.document_type] || "bg-slate-100 text-slate-600"}`}>{DOC_LABEL[d.document_type] || d.document_type}</span>
-                        <span className="font-mono text-xs text-slate-500">{d.document_number}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {effectiveChannel ? <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[effectiveChannel] || "bg-slate-100 text-slate-500"}`}>{CHANNEL_LABEL[effectiveChannel] || effectiveChannel}</span> : <span className="text-xs text-slate-300">—</span>}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-slate-500">{d.document_date}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.net_amount)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">{CLP(d.tax_amount)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-xs font-semibold">{CLP(d.total_amount)}</td>
-                    <td className="px-4 py-2.5 text-xs text-slate-500">{links.length ? `${links.length} ${links.length === 1 ? "venta" : "ventas"}` : "—"}</td>
-                    <td className="px-4 py-2.5"><button onClick={() => setSelectedDoc(d)} className="text-slate-300 hover:text-slate-500"><Info className="h-3.5 w-3.5" /></button></td>
-                  </tr>
-                );
-              })}
+                <tr><td colSpan={shownCols.length + 1} className="text-center py-12 text-slate-400 text-sm">Sin documentos para los filtros aplicados.</td></tr>
+              ) : docs.map((d) => (
+                <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${d.status === "voided" ? "opacity-40" : ""}`}>
+                  {shownCols.map((c) => (
+                    <td key={c.key} className={`px-4 py-2.5 ${c.align === "right" ? "text-right" : ""}`}>{renderCell(d, c.key)}</td>
+                  ))}
+                  <td className="px-4 py-2.5"><button onClick={() => setSelectedDoc(d)} className="text-slate-300 hover:text-slate-500"><Info className="h-3.5 w-3.5" /></button></td>
+                </tr>
+              ))}
             </tbody>
           </table>
+          </div>
         </div>
 
         {totalPages > 1 && (
