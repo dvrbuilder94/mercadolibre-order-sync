@@ -16,14 +16,19 @@ const MAX_RETRIES_PER_CHUNK = 3;
 const MAX_PAYMENT_ROUNDS_PER_ACCOUNT = 20;
 const MAX_RUT_ROUNDS_PER_ACCOUNT = 20;
 
+type SourceType = 'meli' | 'shopify' | 'mercadopago' | 'bsale';
+type RunnerStep = CanonicalSyncStep | 'sync_shopify_orders' | 'sync_mercadopago_payments';
+
 interface SyncRunRow {
   id: string;
   organization_id: string;
   owner_user_id: string;
   period: string;
-  mode: string;
+  mode: 'full' | 'source' | 'reconcile_only';
+  source_type: SourceType | null;
+  source_connection_id: string | null;
   status: string;
-  current_step: CanonicalSyncStep | null;
+  current_step: RunnerStep | null;
   summary: any;
 }
 
@@ -34,6 +39,7 @@ interface RunnerState {
   meli_offsets?: Record<string, number>;
   payment_rounds?: Record<string, number>;
   rut_rounds?: Record<string, number>;
+  shopify_cursor?: string | null;
   failures?: Record<string, number>;
   bsale?: {
     cursor?: { code_sii: number; offset: number } | null;
@@ -60,7 +66,7 @@ function ensureSummary(raw: any) {
   return summary;
 }
 
-function touchMetric(summary: any, step: CanonicalSyncStep, patch: Record<string, unknown> = {}) {
+function touchMetric(summary: any, step: RunnerStep, patch: Record<string, unknown> = {}) {
   const previous = summary.metrics?.[step] ?? {};
   summary.metrics[step] = {
     ...previous,
@@ -78,15 +84,28 @@ function advance(summary: any, currentStep: CanonicalSyncStep): CanonicalSyncSte
   return next;
 }
 
-async function nextAttempt(admin: any, runId: string, step: CanonicalSyncStep, accountId: string | null) {
+async function nextAttempt(
+  admin: any,
+  run: SyncRunRow,
+  step: RunnerStep,
+  accountId: string | null,
+) {
   let query = admin
     .from('pipeline_sync_runs')
     .select('attempt')
-    .eq('sync_run_id', runId)
+    .eq('sync_run_id', run.id)
     .eq('step', step)
     .order('attempt', { ascending: false })
     .limit(1);
-  query = accountId ? query.eq('meli_account_id', accountId) : query.is('meli_account_id', null);
+
+  if (run.mode === 'source') {
+    query = query
+      .eq('source_type', run.source_type)
+      .eq('source_connection_id', run.source_connection_id);
+  } else {
+    query = accountId ? query.eq('meli_account_id', accountId) : query.is('meli_account_id', null);
+  }
+
   const { data } = await query.maybeSingle();
   return Number((data as any)?.attempt ?? 0) + 1;
 }
@@ -94,11 +113,22 @@ async function nextAttempt(admin: any, runId: string, step: CanonicalSyncStep, a
 async function runChunkAttempt(
   admin: any,
   run: SyncRunRow,
-  step: CanonicalSyncStep,
+  step: RunnerStep,
   accountId: string | null,
   fn: () => Promise<any>,
 ): Promise<{ ok: boolean; data?: any; error?: string }> {
-  const attempt = await nextAttempt(admin, run.id, step, accountId);
+  const attempt = await nextAttempt(admin, run, step, accountId);
+  const sourceType = run.mode === 'source'
+    ? run.source_type
+    : accountId
+      ? 'meli'
+      : step === 'sync_bsale'
+        ? 'bsale'
+        : null;
+  const sourceConnectionId = run.mode === 'source'
+    ? run.source_connection_id
+    : accountId;
+
   const { data: rowRaw, error: insertError } = await admin
     .from('pipeline_sync_runs')
     .insert({
@@ -106,7 +136,9 @@ async function runChunkAttempt(
       attempt,
       step,
       user_id: run.owner_user_id,
-      meli_account_id: accountId,
+      meli_account_id: sourceType === 'meli' ? sourceConnectionId : null,
+      source_type: sourceType,
+      source_connection_id: sourceConnectionId,
       period: run.period,
       status: 'running',
     })
@@ -145,7 +177,7 @@ async function failOrRetry(
   admin: any,
   run: SyncRunRow,
   summary: any,
-  step: CanonicalSyncStep,
+  step: RunnerStep,
   key: string,
   error: string,
 ) {
@@ -176,7 +208,7 @@ async function failOrRetry(
 async function saveAndRequeue(
   admin: any,
   runId: string,
-  currentStep: CanonicalSyncStep,
+  currentStep: RunnerStep,
   summary: any,
 ) {
   const { error: saveError } = await admin.from('sync_runs').update({
@@ -201,6 +233,239 @@ async function finishRun(admin: any, runId: string, summary: any) {
     updated_at: new Date().toISOString(),
   }).eq('id', runId).eq('status', 'running');
   if (error) throw new Error(`Failed to finish Sync run: ${error.message}`);
+}
+
+async function runReconcileOnly(admin: any, run: SyncRunRow, summary: any) {
+  const { from: dateFrom, to: dateTo } = chileMonthIsoRange(run.period);
+  const step: RunnerStep = 'reconcile';
+  const attempt = await runChunkAttempt(admin, run, step, null, () => callSyncWorker(admin, 'auto-reconcile', {
+    date_from: dateFrom,
+    date_to: dateTo,
+    user_id: run.owner_user_id,
+  }));
+  if (!attempt.ok) {
+    await failOrRetry(admin, run, summary, step, step, attempt.error || 'Auto-reconcile failed');
+  } else {
+    touchMetric(summary, step, { completed: true });
+    await finishRun(admin, run.id, summary);
+  }
+}
+
+async function runSourceChunk(admin: any, run: SyncRunRow, summary: any) {
+  if (!run.source_type || !run.source_connection_id) {
+    throw new Error('Source run is missing source_type/source_connection_id');
+  }
+
+  const state = summary.state as RunnerState;
+  const connectionId = run.source_connection_id;
+  const { from: dateFrom, to: dateTo } = chileMonthIsoRange(run.period);
+  const step = run.current_step as RunnerStep;
+
+  if (run.source_type === 'meli') {
+    if (step === 'sync_meli_orders') {
+      state.meli_offsets = state.meli_offsets ?? {};
+      const offset = Number(state.meli_offsets[connectionId] ?? 0);
+      const attempt = await runChunkAttempt(admin, run, step, connectionId, () => callSyncWorker(admin, 'sync-meli-orders', {
+        date_from: dateFrom,
+        date_to: dateTo,
+        max_pages: 10,
+        start_offset: offset,
+        account_id: connectionId,
+        user_id: run.owner_user_id,
+      }));
+      if (!attempt.ok) {
+        await failOrRetry(admin, run, summary, step, `${step}:${offset}`, attempt.error || 'MELI order chunk failed');
+        return;
+      }
+
+      const data = attempt.data ?? {};
+      touchMetric(summary, step, {
+        synced: Number(summary.metrics?.[step]?.synced ?? 0) + Number(data?.synced ?? 0),
+        available: data?.available ?? summary.metrics?.[step]?.available ?? null,
+      });
+      if (data?.partial) {
+        const nextOffset = Number(data?.next_cursor?.offset);
+        if (!Number.isSafeInteger(nextOffset) || nextOffset < 0 || nextOffset === offset) {
+          await failOrRetry(admin, run, summary, step, `${step}:${offset}`, 'MELI returned a stalled/invalid cursor');
+        } else {
+          state.meli_offsets[connectionId] = nextOffset;
+          await saveAndRequeue(admin, run.id, step, summary);
+        }
+      } else {
+        delete state.meli_offsets[connectionId];
+        delete state.failures;
+        await saveAndRequeue(admin, run.id, 'sync_payments', summary);
+      }
+      return;
+    }
+
+    if (step === 'sync_payments') {
+      state.payment_rounds = state.payment_rounds ?? {};
+      const rounds = Number(state.payment_rounds[connectionId] ?? 0);
+      const attempt = await runChunkAttempt(admin, run, step, connectionId, () => callSyncWorker(admin, 'sync-meli-payment-details', {
+        date_from: dateFrom,
+        date_to: dateTo,
+        limit: 50,
+        account_id: connectionId,
+        user_id: run.owner_user_id,
+      }));
+      if (!attempt.ok) {
+        await failOrRetry(admin, run, summary, step, `${step}:${rounds}`, attempt.error || 'MELI payment chunk failed');
+        return;
+      }
+
+      const data = attempt.data ?? {};
+      const nextRounds = rounds + 1;
+      state.payment_rounds[connectionId] = nextRounds;
+      touchMetric(summary, step, {
+        linked: Number(summary.metrics?.[step]?.linked ?? 0) + Number(data?.paymentsLinked ?? 0),
+        remaining: Number(data?.remaining ?? 0),
+      });
+      const keepGoing = Number(data?.remaining ?? 0) > 0
+        && Number(data?.updated ?? 0) > 0
+        && nextRounds < MAX_PAYMENT_ROUNDS_PER_ACCOUNT;
+      if (keepGoing) {
+        await saveAndRequeue(admin, run.id, step, summary);
+      } else {
+        delete state.failures;
+        await saveAndRequeue(admin, run.id, 'enrich_ruts', summary);
+      }
+      return;
+    }
+
+    if (step === 'enrich_ruts') {
+      state.rut_rounds = state.rut_rounds ?? {};
+      const rounds = Number(state.rut_rounds[connectionId] ?? 0);
+      const attempt = await runChunkAttempt(admin, run, step, connectionId, () => callSyncWorker(admin, 'enrich-meli-billing', {
+        date_from: dateFrom,
+        date_to: dateTo,
+        account_id: connectionId,
+        user_id: run.owner_user_id,
+      }));
+      if (!attempt.ok) {
+        await failOrRetry(admin, run, summary, step, `${step}:${rounds}`, attempt.error || 'RUT enrichment chunk failed');
+        return;
+      }
+
+      const data = attempt.data ?? {};
+      const nextRounds = rounds + 1;
+      state.rut_rounds[connectionId] = nextRounds;
+      touchMetric(summary, step, {
+        enriched: Number(summary.metrics?.[step]?.enriched ?? 0) + Number(data?.enriched ?? 0),
+        remaining: Number(data?.remaining ?? 0),
+      });
+      const keepGoing = Number(data?.remaining ?? 0) > 0
+        && Number(data?.enriched ?? 0) > 0
+        && nextRounds < MAX_RUT_ROUNDS_PER_ACCOUNT;
+      if (keepGoing) await saveAndRequeue(admin, run.id, step, summary);
+      else await finishRun(admin, run.id, summary);
+      return;
+    }
+
+    throw new Error(`Unexpected MELI source step: ${step}`);
+  }
+
+  if (run.source_type === 'shopify') {
+    if (step !== 'sync_shopify_orders') throw new Error(`Unexpected Shopify source step: ${step}`);
+    const attempt = await runChunkAttempt(admin, run, step, null, () => callSyncWorker(admin, 'sync-shopify-orders', {
+      date_from: dateFrom,
+      date_to: dateTo,
+      max_pages: 10,
+      account_id: connectionId,
+      ...(state.shopify_cursor ? { cursor: state.shopify_cursor } : {}),
+      user_id: run.owner_user_id,
+    }));
+    if (!attempt.ok) {
+      await failOrRetry(admin, run, summary, step, `${step}:${state.shopify_cursor ?? 'start'}`, attempt.error || 'Shopify chunk failed');
+      return;
+    }
+
+    const data = attempt.data ?? {};
+    touchMetric(summary, step, {
+      synced: Number(summary.metrics?.[step]?.synced ?? 0) + Number(data?.synced ?? 0),
+      fetched: Number(summary.metrics?.[step]?.fetched ?? 0) + Number(data?.total ?? 0),
+    });
+    if (data?.partial) {
+      if (!data?.next_cursor || data.next_cursor === state.shopify_cursor) {
+        await failOrRetry(admin, run, summary, step, `${step}:cursor`, 'Shopify returned partial without a usable next_cursor');
+      } else {
+        state.shopify_cursor = data.next_cursor;
+        await saveAndRequeue(admin, run.id, step, summary);
+      }
+    } else {
+      state.shopify_cursor = null;
+      await finishRun(admin, run.id, summary);
+    }
+    return;
+  }
+
+  if (run.source_type === 'mercadopago') {
+    if (step !== 'sync_mercadopago_payments') throw new Error(`Unexpected Mercado Pago source step: ${step}`);
+    const attempt = await runChunkAttempt(admin, run, step, null, () => callSyncWorker(admin, 'sync-mercadopago-payments', {
+      date_from: dateFrom,
+      date_to: dateTo,
+      account_id: connectionId,
+      user_id: run.owner_user_id,
+    }));
+    if (!attempt.ok) {
+      await failOrRetry(admin, run, summary, step, step, attempt.error || 'Mercado Pago sync failed');
+      return;
+    }
+
+    const data = attempt.data ?? {};
+    touchMetric(summary, step, {
+      fetched: Number(data?.totalFetched ?? 0),
+      approved: Number(data?.approvedCount ?? 0),
+      ingested: Number(data?.ingestedCount ?? 0),
+      reversals: Number(data?.reversalCount ?? 0),
+    });
+    await finishRun(admin, run.id, summary);
+    return;
+  }
+
+  if (run.source_type === 'bsale') {
+    if (step !== 'sync_bsale') throw new Error(`Unexpected Bsale source step: ${step}`);
+    const { from: bsaleFrom, to: bsaleTo } = chileMonthUnixRange(run.period);
+    state.bsale = state.bsale ?? {};
+    const attempt = await runChunkAttempt(admin, run, step, null, () => callSyncWorker(admin, 'sync-bsale-docs', {
+      date_from: bsaleFrom,
+      date_to: bsaleTo,
+      max_pages: 10,
+      account_id: connectionId,
+      ...(state.bsale?.batch_id ? { resync_batch: state.bsale.batch_id } : {}),
+      ...(state.bsale?.cursor ? {
+        start_code_sii: state.bsale.cursor.code_sii,
+        start_offset: state.bsale.cursor.offset,
+      } : {}),
+      user_id: run.owner_user_id,
+    }));
+    if (!attempt.ok) {
+      await failOrRetry(admin, run, summary, step, `${step}:${state.bsale?.cursor?.code_sii ?? 0}:${state.bsale?.cursor?.offset ?? 0}`, attempt.error || 'Bsale chunk failed');
+      return;
+    }
+
+    const data = attempt.data ?? {};
+    state.bsale.batch_id = data?.resync_batch ?? state.bsale.batch_id ?? null;
+    state.bsale.total_available = data?.summary?.total_available ?? state.bsale.total_available ?? null;
+    state.bsale.cursor = data?.next_cursor ?? null;
+    touchMetric(summary, step, {
+      upserted: Number(summary.metrics?.[step]?.upserted ?? 0) + Number(data?.summary?.total_upserted ?? 0),
+      available: state.bsale.total_available,
+    });
+
+    if (data?.partial) {
+      if (!state.bsale.cursor) {
+        await failOrRetry(admin, run, summary, step, `${step}:missing_cursor`, 'Bsale returned partial without next_cursor');
+      } else {
+        await saveAndRequeue(admin, run.id, step, summary);
+      }
+    } else {
+      await finishRun(admin, run.id, summary);
+    }
+    return;
+  }
+
+  throw new Error(`Unsupported source type: ${run.source_type}`);
 }
 
 Deno.serve(async (req) => {
@@ -234,18 +499,37 @@ Deno.serve(async (req) => {
 
     const { data: runRaw, error: runError } = await admin
       .from('sync_runs')
-      .select('id, organization_id, owner_user_id, period, mode, status, current_step, summary')
+      .select('id, organization_id, owner_user_id, period, mode, source_type, source_connection_id, status, current_step, summary')
       .eq('id', runId)
       .single();
     const run = runRaw as unknown as SyncRunRow | null;
     if (runError || !run) throw new Error(runError?.message || 'Sync run not found');
-    if (run.mode !== 'full') throw new Error(`Unsupported Sync mode: ${run.mode}`);
 
     const summary = ensureSummary(run.summary);
+
+    if (run.mode === 'source') {
+      await runSourceChunk(admin, run, summary);
+      return new Response(JSON.stringify({ success: true, run_id: run.id, mode: run.mode, step: run.current_step }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (run.mode === 'reconcile_only') {
+      await runReconcileOnly(admin, run, summary);
+      return new Response(JSON.stringify({ success: true, run_id: run.id, mode: run.mode, step: 'reconcile' }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (run.mode !== 'full') throw new Error(`Unsupported Sync mode: ${run.mode}`);
+
     const state = summary.state as RunnerState;
 
-    // Snapshot source accounts once so the run is deterministic even if a new
-    // connection is added halfway through the month sync.
+    // Legacy full pipeline remains deterministic while source-scoped runs are
+    // introduced. The next phase will make `full` discover every connector
+    // type (Shopify/MP/etc.) instead of only the original MELI+Bsale chain.
     if (!Array.isArray(state.meli_account_ids)) {
       const { data: accountRows, error: accountError } = await admin
         .from('meli_accounts')
@@ -486,7 +770,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    return new Response(JSON.stringify({ success: true, run_id: run.id, step }), {
+    return new Response(JSON.stringify({ success: true, run_id: run.id, mode: run.mode, step }), {
       status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
