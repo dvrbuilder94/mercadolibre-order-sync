@@ -45,18 +45,21 @@ Deno.serve(async (req) => {
       return json({ error: 'No autorizado para administrar usuarios' }, 403)
     }
 
-    const { data: existingMember } = await admin
-      .from('organization_members')
-      .select('user_id, profiles!organization_members_user_id_fkey(email)')
-      .eq('organization_id', membership.organization_id)
-      .limit(100)
+    const { data: existingProfile } = await admin
+      .from('profiles')
+      .select('id')
+      .ilike('email', email)
+      .limit(1)
+      .maybeSingle()
 
-    if (Array.isArray(existingMember)) {
-      const already = existingMember.some((m: any) => {
-        const p = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles
-        return p?.email?.toLowerCase() === email
-      })
-      if (already) return json({ error: 'Ese usuario ya pertenece a la organización' }, 409)
+    if (existingProfile?.id) {
+      const { data: existingMembership } = await admin
+        .from('organization_members')
+        .select('user_id')
+        .eq('organization_id', membership.organization_id)
+        .eq('user_id', existingProfile.id)
+        .maybeSingle()
+      if (existingMembership) return json({ error: 'Ese usuario ya pertenece a la organización' }, 409)
     }
 
     const redirectTo = /^https?:\/\//.test(redirectOrigin)
@@ -75,7 +78,6 @@ Deno.serve(async (req) => {
 
     const invitedUserId = inviteData.user.id
 
-    // handle_new_user creates the profile; ensure the visible email is present.
     await admin.from('profiles').upsert({ id: invitedUserId, email }, { onConflict: 'id' })
 
     const { error: memberError } = await admin
