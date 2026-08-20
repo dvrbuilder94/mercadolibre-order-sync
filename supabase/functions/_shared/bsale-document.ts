@@ -232,7 +232,7 @@ export function buildTaxDocumentPayload(doc: any, options: BuildTaxDocumentOptio
     external_system: 'bsale',
     external_id: String(doc?.id),
     external_order_id: externalOrderId,
-    external_url: doc?.urlPublicView || null,
+    external_url: doc?.urlPublicView || doc?.urlPublicViewOriginal || doc?.urlPdf || null,
     erp: 'BSALE',
     status: doc?.state === 0 ? 'issued' : 'voided',
     sales_channel: 'MARKETPLACE',
