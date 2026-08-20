@@ -5,13 +5,13 @@ import { Nav } from "@/components/Nav";
 import { DetailPanel } from "@/components/DetailPanel";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Info, FileText, Search, SlidersHorizontal, ExternalLink } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Info, FileText, Search, SlidersHorizontal, ExternalLink, X } from "lucide-react";
 import { chileMonthDateRange, chileMonthUnixRange, chilePeriodNow } from "@/lib/chileDate";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 import { signedTaxDocumentAmount } from "@/lib/financialRules";
 
 const PAGE_SIZE = 50;
-const COLS_KEY = "documentos.listado.columns.v2";
+const COLS_KEY = "documentos.listado.columns.v3";
 
 type ColKey =
   | "tipo" | "numero" | "canal" | "fecha" | "neto" | "iva" | "total" | "pago"
@@ -34,10 +34,10 @@ const COLUMNS: { key: ColKey; label: string; align?: "right"; fixed?: boolean }[
   { key: "link", label: "Link" },
 ];
 
-const DEFAULT_COLS: ColKey[] = ["tipo", "numero", "canal", "fecha", "neto", "iva", "total", "pago", "venta", "link"];
+const DEFAULT_COLS: ColKey[] = ["tipo", "numero", "canal", "fecha", "neto", "iva", "total", "pago", "orden", "venta", "link"];
 
 /** Formas de pago reales vienen de Bsale `payments` → `payment_type`.
- *  `coin.name` ("Peso Chileno") NO es forma de pago y no se usa aquí. */
+ * `coin.name` ("Peso Chileno") NO es forma de pago y no se usa aquí. */
 function paymentNames(d: any): string[] {
   const arr = d?.payment_method_names;
   return Array.isArray(arr) ? arr.filter(Boolean) : [];
@@ -87,10 +87,18 @@ function detectChannelFromText(text: string | null): string | null {
   return null;
 }
 
+function referenceItems(d: any): any[] {
+  const items = d?.raw_data?.references?.items ?? d?.references?.items ?? [];
+  return Array.isArray(items) ? items : [];
+}
+
+function referenceReason(d: any): string | null {
+  return d?.raw_data?.reference_reason ?? d?.reference_reason ?? null;
+}
+
 function inferChannel(detected: string | null, rawData: any): string | null {
   if (detected) return detected;
-  const hit = detectChannelFromText(rawData?.reference_reason)
-    ?? detectChannelFromText(rawData?.payment_method_name);
+  const hit = detectChannelFromText(rawData?.reference_reason);
   if (hit) return hit;
   const refs: any[] = rawData?.references?.items ?? [];
   for (const ref of refs) {
@@ -98,6 +106,22 @@ function inferChannel(detected: string | null, rawData: any): string | null {
     if (h) return h;
   }
   return null;
+}
+
+/** Orden externa/OC de la fuente. Prioriza el ID explícito guardado por Quadra.
+ * Si no existe (caso frecuente Shopify), usa una referencia Bsale cuyo motivo
+ * identifica al mismo canal. Nunca usa document_number: ese es el folio DTE. */
+function sourceOrderNumber(d: any): string | null {
+  if (d?.external_order_id) return String(d.external_order_id);
+  const refs = referenceItems(d);
+  const channel = inferChannel(d?.detected_channel ?? null, {
+    reference_reason: referenceReason(d),
+    references: { items: refs },
+  });
+  const sourceRef = refs.find((ref: any) =>
+    ref?.number != null && channel && detectChannelFromText(ref?.reason ?? null) === channel
+  );
+  return sourceRef?.number != null ? String(sourceRef.number) : null;
 }
 
 const ALL_CHANNELS = Object.keys(CHANNEL_LABEL);
@@ -111,7 +135,10 @@ function renderCell(d: any, key: ColKey) {
     case "numero":
       return <span className="font-mono text-xs text-slate-600">{d.document_number || "—"}</span>;
     case "canal": {
-      const ch = inferChannel(d.detected_channel, d.raw_data);
+      const ch = inferChannel(d.detected_channel, {
+        reference_reason: referenceReason(d),
+        references: { items: referenceItems(d) },
+      });
       return ch
         ? <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${CHANNEL_COLOR[ch] || "bg-slate-100 text-slate-500"}`}>{CHANNEL_LABEL[ch] || ch}</span>
         : <span className="text-xs text-slate-300">—</span>;
@@ -132,10 +159,12 @@ function renderCell(d: any, key: ColKey) {
     }
     case "rut":
       return <span className="font-mono text-xs text-slate-500">{fullRut(d) || "—"}</span>;
-    case "orden":
-      return <span className="font-mono text-xs text-slate-500">{d.external_order_id || "—"}</span>;
+    case "orden": {
+      const orderNumber = sourceOrderNumber(d);
+      return <span className="font-mono text-xs text-slate-500">{orderNumber || "—"}</span>;
+    }
     case "referencia":
-      return <span className="text-xs text-slate-500">{d.raw_data?.reference_reason || d.reference_reason || "—"}</span>;
+      return <span className="text-xs text-slate-500">{referenceReason(d) || "—"}</span>;
     case "estado":
       return d.status === "voided"
         ? <span className="text-[11px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700">Anulado</span>
@@ -230,12 +259,12 @@ export default function PageDocumentos() {
     return () => { cancelled = true; };
   }, [selectedDoc]);
 
-  const fetchDocs = useCallback(async (page: number) => {
+  const fetchDocs = useCallback(async () => {
     setDocsLoading(true);
     try {
       const { from, to } = chileMonthDateRange(period);
       const LIGHT_COLS = "id, document_number, document_type, document_date, net_amount, total_amount, tax_amount, status, detected_channel, client_name, client_tax_id, client_tax_id_dv, external_order_id, external_url, reference_reason:raw_data->>reference_reason, references:raw_data->references, payment_method_names:raw_data->payment_method_names, order_tax_documents(id, order_id)";
-      const allDocs: any[] = [];
+      const loadedDocs: any[] = [];
 
       for (let i = 0; i < 20; i++) {
         const { data, error } = await (supabase.from("tax_documents") as any)
@@ -247,11 +276,11 @@ export default function PageDocumentos() {
           .range(i * 1000, i * 1000 + 999);
         if (error) throw error;
         if (!data?.length) break;
-        allDocs.push(...data);
+        loadedDocs.push(...data);
         if (data.length < 1000) break;
       }
 
-      setAllDocs(allDocs);
+      setAllDocs(loadedDocs);
     } catch (error) {
       console.error("Error cargando documentos:", error);
       setAllDocs([]);
@@ -260,14 +289,12 @@ export default function PageDocumentos() {
     }
   }, [period]);
 
-  // Filtrado completo en memoria: KPIs y paginación siempre corresponden al
-  // conjunto filtrado, no a la página visible.
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
     return allDocs.filter((d) => {
       const channel = inferChannel(d.detected_channel, {
-        reference_reason: d.reference_reason,
-        references: d.references,
+        reference_reason: referenceReason(d),
+        references: { items: referenceItems(d) },
       });
       if (channelFilter !== "todos" && channel !== channelFilter) return false;
       if (typeFilter !== "todos" && d.document_type !== typeFilter) return false;
@@ -284,8 +311,11 @@ export default function PageDocumentos() {
       }
       if (term) {
         const hay = [
-          d.document_number, d.client_name, fullRut(d), d.client_tax_id,
-          d.external_order_id, d.reference_reason,
+          d.document_number,
+          fullRut(d),
+          d.client_tax_id,
+          sourceOrderNumber(d),
+          referenceReason(d),
         ].filter(Boolean).join(" ").toLowerCase();
         if (!hay.includes(term)) return false;
       }
@@ -299,7 +329,6 @@ export default function PageDocumentos() {
     return Array.from(s).sort();
   }, [allDocs]);
 
-  // KPIs sobre el conjunto filtrado
   useEffect(() => {
     setDocsTotal(filtered.length);
     const issued = filtered.filter((d) => d.status === "issued");
@@ -307,7 +336,6 @@ export default function PageDocumentos() {
     setDocsIva(issued.reduce((sum, d) => sum + signedTaxDocumentAmount(d.document_type, d.tax_amount), 0));
   }, [filtered]);
 
-  // La página visible se hidrata con raw_data para el panel de detalle.
   useEffect(() => {
     let cancelled = false;
     const pageIds = filtered.slice(docPage * PAGE_SIZE, docPage * PAGE_SIZE + PAGE_SIZE).map((d) => d.id);
@@ -333,12 +361,28 @@ export default function PageDocumentos() {
     setSelectedDoc(null);
   }, [channelFilter, typeFilter, statusFilter, linkFilter, payFilter, q]);
 
-  useEffect(() => { fetchDocs(0); }, [fetchDocs]);
+  useEffect(() => { fetchDocs(); }, [fetchDocs]);
 
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
     setPeriod(format(new Date(y, m - 1 + delta, 1), "yyyy-MM"));
   };
+
+  const clearFilters = () => {
+    setQ("");
+    setChannelFilter("todos");
+    setTypeFilter("todos");
+    setStatusFilter("todos");
+    setLinkFilter("todos");
+    setPayFilter("todas");
+  };
+
+  const hasActiveFilters = q.trim() !== ""
+    || channelFilter !== "todos"
+    || typeFilter !== "todos"
+    || statusFilter !== "todos"
+    || linkFilter !== "todos"
+    || payFilter !== "todas";
 
   const syncDocs = async () => {
     setDocSyncing(true);
@@ -350,7 +394,7 @@ export default function PageDocumentos() {
       });
       if (error) throw error;
       setDocSyncMsg(`✅ ${data?.summary?.total_upserted ?? 0} documentos`);
-      await fetchDocs(0);
+      await fetchDocs();
     } catch (error: any) {
       setDocSyncMsg(`❌ ${error?.message || "Error"}`);
     } finally {
@@ -410,14 +454,13 @@ export default function PageDocumentos() {
           </div>
         </div>
 
-        {/* Barra de filtros + selector de columnas */}
         <div className="bg-white border rounded-lg p-3 mb-3 flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Folio, cliente, RUT, orden externa…"
+              placeholder="Nº documento, RUT, orden, referencia…"
               className="text-xs pl-7 pr-3 py-1.5 border rounded-md w-64 focus:outline-none focus:ring-1 focus:ring-slate-300"
             />
           </div>
@@ -435,7 +478,7 @@ export default function PageDocumentos() {
             <option value="voided">Anulado</option>
           </select>
           <select value={linkFilter} onChange={(e) => setLinkFilter(e.target.value)} className="text-xs px-2 py-1.5 border rounded-md bg-white">
-            <option value="todos">Toda vinculación</option>
+            <option value="todos">Toda venta asociada</option>
             <option value="con">Con venta</option>
             <option value="sin">Sin venta</option>
           </select>
@@ -444,6 +487,11 @@ export default function PageDocumentos() {
             {payOptions.map((n) => <option key={n} value={n}>{n}</option>)}
             <option value="__sin__">Sin información</option>
           </select>
+          {hasActiveFilters && (
+            <button onClick={clearFilters} className="text-xs px-2.5 py-1.5 rounded-md text-slate-500 hover:bg-slate-100 inline-flex items-center gap-1">
+              <X className="h-3.5 w-3.5" /> Limpiar
+            </button>
+          )}
           <div className="relative ml-auto">
             <button onClick={() => setColsOpen((v) => !v)} className="text-xs px-2.5 py-1.5 rounded-md border hover:bg-slate-50 flex items-center gap-1.5">
               <SlidersHorizontal className="h-3.5 w-3.5" /> Columnas
@@ -474,7 +522,7 @@ export default function PageDocumentos() {
             <thead>
               <tr className="border-b bg-slate-50 text-xs text-slate-500">
                 {shownCols.map((c) => (
-                  <th key={c.key} className={`px-4 py-3 font-medium ${c.align === "right" ? "text-right" : "text-left"}`}>{c.label}</th>
+                  <th key={c.key} className={`px-4 py-3 font-medium whitespace-nowrap ${c.align === "right" ? "text-right" : "text-left"}`}>{c.label}</th>
                 ))}
                 <th className="w-8 px-4 py-3"></th>
               </tr>
@@ -487,7 +535,7 @@ export default function PageDocumentos() {
               ) : docs.map((d) => (
                 <tr key={d.id} className={`border-b last:border-0 hover:bg-slate-50 ${d.status === "voided" ? "opacity-40" : ""}`}>
                   {shownCols.map((c) => (
-                    <td key={c.key} className={`px-4 py-2.5 ${c.align === "right" ? "text-right" : ""}`}>{renderCell(d, c.key)}</td>
+                    <td key={c.key} className={`px-4 py-2.5 whitespace-nowrap ${c.align === "right" ? "text-right" : ""}`}>{renderCell(d, c.key)}</td>
                   ))}
                   <td className="px-4 py-2.5"><button onClick={() => setSelectedDoc(d)} className="text-slate-300 hover:text-slate-500"><Info className="h-3.5 w-3.5" /></button></td>
                 </tr>
