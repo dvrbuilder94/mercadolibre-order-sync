@@ -223,4 +223,24 @@ describe("payments en array directo (formato Bsale alternativo)", () => {
     expect(payload!.raw_data.payment_method_names).toEqual(["Transferencia"]);
     expect(JSON.stringify(payload!.raw_data.payment_method_names)).not.toContain("Peso Chileno");
   });
+
+  it("shape LIVE: item es payment type expandido (href /payment_types/11.json)", () => {
+    const doc = baseDoc({
+      payments: [{ href: "https://api.bsale.cl/v1/payment_types/11.json", id: 11, name: "Mercado Pago", amount: 64980 }],
+    });
+    const res = extractDocPayments(doc);
+    expect(res.payments[0].payment_type_id).toBe("11");
+    expect(res.payments[0].payment_type_name).toBe("Mercado Pago");
+    expect(res.payments[0].amount).toBe(64980);
+    expect(res.payment_method_names).toEqual(["Mercado Pago"]);
+    expect(unresolvedPaymentTypeIds(doc)).toEqual([]);
+  });
+
+  it("item genérico sin href payment_types no usa su id como payment_type_id", () => {
+    const res = extractDocPayments(baseDoc({ payments: [{ id: 999, amount: 100 }] }));
+    expect(res.payments[0].payment_type_id).toBeNull();
+    expect(res.payments[0].payment_type_name).toBeNull();
+    expect(res.payments[0].id).toBe(999);
+    expect(res.payment_method_names).toEqual([]);
+  });
 });
