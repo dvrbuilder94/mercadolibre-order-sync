@@ -182,3 +182,45 @@ describe("external_url fallback", () => {
     expect(buildTaxDocumentPayload(baseDoc(), { userId: "u1" })!.external_url).toBeNull();
   });
 });
+
+describe("payments en array directo (formato Bsale alternativo)", () => {
+  it("resuelve nombre vía paymentTypeId + catálogo", () => {
+    const doc = baseDoc({
+      payments: [{ id: 7, amount: 11900, recordDate: 1_754_006_400, paymentTypeId: 4 }],
+    });
+    const res = extractDocPayments(doc, new Map([["4", "Transferencia"]]));
+    expect(res.payments).toHaveLength(1);
+    expect(res.payments[0].payment_type_id).toBe("4");
+    expect(res.payments[0].amount).toBe(11900);
+    expect(res.payments[0].recordDate).toBe(1_754_006_400);
+    expect(res.payment_method_name).toBe("Transferencia");
+  });
+
+  it("sigue funcionando con payments.items y payment_type anidado", () => {
+    const doc = baseDoc({
+      payments: { items: [{ id: 1, amount: 100, recordDate: 1, payment_type: { id: 9, name: "Efectivo" } }] },
+    });
+    const res = extractDocPayments(doc);
+    expect(res.payment_method_names).toEqual(["Efectivo"]);
+  });
+
+  it("unresolvedPaymentTypeIds funciona en ambos formatos", () => {
+    expect(unresolvedPaymentTypeIds(baseDoc({ payments: [{ paymentTypeId: 4 }, { payment_type_id: 5 }] })))
+      .toEqual(["4", "5"]);
+    expect(unresolvedPaymentTypeIds(baseDoc({
+      payments: { items: [{ payment_type: { href: "https://api.bsale.cl/v1/payment_types/8.json" } }] },
+    }))).toEqual(["8"]);
+    expect(unresolvedPaymentTypeIds(baseDoc({
+      payments: [{ payment_type: { id: 3, name: "Débito" } }],
+    }))).toEqual([]);
+  });
+
+  it("coin Peso Chileno nunca es forma de pago", () => {
+    const payload = buildTaxDocumentPayload(
+      baseDoc({ coin: { name: "Peso Chileno" }, payments: [{ paymentTypeId: 4, amount: 10 }] }),
+      { userId: "u1", paymentTypeNames: new Map([["4", "Transferencia"]]) },
+    );
+    expect(payload!.raw_data.payment_method_names).toEqual(["Transferencia"]);
+    expect(JSON.stringify(payload!.raw_data.payment_method_names)).not.toContain("Peso Chileno");
+  });
+});
