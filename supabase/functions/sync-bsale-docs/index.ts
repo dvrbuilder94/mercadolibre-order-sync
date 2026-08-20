@@ -150,6 +150,7 @@ Deno.serve(async (req) => {
       resync_batch = null,
       start_code_sii = null,
       start_offset = 0,
+      account_id: accountIdParam = null,
       reclassify_b2b = false,  // If true: fix existing B2B docs to MARKETPLACE (no new sync)
       link_credit_notes = false, // If true: vincular NCs existentes a su doc original (sin API Bsale)
       user_id: userIdParam = null,
@@ -262,18 +263,20 @@ Deno.serve(async (req) => {
 
     const batchId = resync_batch || crypto.randomUUID();
 
-    // Get user's Bsale account and token
-    const { data: bsaleAccount, error: bsaleError } = await supabaseClient
+    // Get the requested Bsale connection. Legacy callers that omit account_id
+    // keep the previous behavior (the user's single connected Bsale account).
+    let bsaleAccountQuery = supabaseClient
       .from('bsale_accounts')
       .select('id, access_token, cpn_id, client_name, status')
       .eq('user_id', user.id)
-      .eq('status', 'connected')
-      .maybeSingle();
+      .eq('status', 'connected');
+    if (accountIdParam) bsaleAccountQuery = bsaleAccountQuery.eq('id', accountIdParam);
+    const { data: bsaleAccount, error: bsaleError } = await bsaleAccountQuery.maybeSingle();
 
     if (bsaleError || !bsaleAccount) {
       console.error('Bsale account not found or not connected:', bsaleError);
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           error: 'Bsale no conectado',
           message: 'Por favor conecta tu cuenta Bsale en Configuración'
         }),
@@ -438,7 +441,7 @@ Deno.serve(async (req) => {
         }
 
         if (taxDocsToUpsert.length > 0) {
-            const { error: upsertError } = await supabaseClient
+          const { error: upsertError } = await supabaseClient
             .from('tax_documents')
             .upsert(taxDocsToUpsert, {
               onConflict: 'user_id,external_system,external_id',
@@ -490,6 +493,7 @@ Deno.serve(async (req) => {
           ? 'Sincronización parcial de Bsale (volvé a correrla para continuar)'
           : 'Sincronización de documentos Bsale completada',
         partial,
+        account_id: bsaleAccount.id,
         ...(apiError ? { error_detail: apiError } : {}),
         resync_batch: batchId,
         ...(nextCursor ? { next_cursor: nextCursor } : {}),
