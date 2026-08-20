@@ -163,111 +163,58 @@ Deno.serve(async (req) => {
     }
 
     const document = await bsaleResponse.json()
-    const rawCodeSii = document.document_type?.codeSii;
-    const codeSii = rawCodeSii != null ? Number(rawCodeSii) : undefined;
-    const typeName = (document.document_type?.name || '').toUpperCase();
-    
-    console.log('Fetched document:', document.id, document.number, 'codeSii:', codeSii, 'type:', typeName)
+    const codeSii = normalizeCodeSii(document?.document_type?.codeSii)
+    const typeName = String(document?.document_type?.name || '').toUpperCase()
 
-    // Filter non-tributary documents (Guías, Notas de Venta, etc.)
-    // Valid SII codes: 33=Factura, 34=Factura Exenta, 39/41=Boleta, 61=NC, 56=ND
-    const validSiiCodes = [33, 34, 39, 41, 61, 56];
-    
-    if (codeSii === 52 || 
-        typeName.includes('GUÍA DE DESPACHO') || 
-        typeName.includes('GUIA DE DESPACHO') ||
-        (!codeSii && typeName.includes('NOTA VENTA')) ||
-        (codeSii && !validSiiCodes.includes(codeSii))) {
-      console.log(`Ignoring non-tributary document: ${document.id} (codeSii: ${codeSii}, type: ${typeName})`);
-      return new Response(JSON.stringify({ 
-        success: true, 
+    console.log('Fetched document:', document?.id, document?.number, 'codeSii:', codeSii, 'type:', typeName)
+
+    // Filtro estricto: sólo documentos tributarios válidos (33/34/39/41/56/61).
+    // Sin fallback por nombre a `boleta`.
+    if (!isValidTributaryDoc(document)) {
+      console.log(`Ignoring non-tributary document: ${document?.id} (codeSii: ${codeSii}, type: ${typeName})`)
+      return new Response(JSON.stringify({
+        success: true,
         message: 'Ignored - non-tributary document',
-        documentId: document.id,
-        typeName: typeName,
-        codeSii: codeSii
+        documentId: document?.id,
+        typeName,
+        codeSii,
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      })
     }
 
-    // Map document type using codeSii
-    const documentType = mapBsaleDocType(codeSii, document.document_type?.name || '');
+    // Resolver nombres de forma de pago sólo si el documento no los trae.
+    const pendingTypeIds = unresolvedPaymentTypeIds(document)
+    const paymentTypeNames = await resolvePaymentTypeNames(bsaleAccount.access_token, pendingTypeIds)
 
-    // Enhanced extraction of external order id from multiple fields
-    let externalOrderId: string | null = null;
-    
-    // 1. Check client note first
-    if (document.client?.note) {
-      const orderMatch = document.client.note.match(/(\d{10,})/);
-      if (orderMatch) {
-        externalOrderId = orderMatch[1];
-        console.log('Found order ID in client.note:', externalOrderId);
-      }
-    }
-    
-    // 2. Check reference field
-    if (!externalOrderId && document.reference) {
-      const orderMatch = document.reference.match(/(\d{10,})/);
-      if (orderMatch) {
-        externalOrderId = orderMatch[1];
-        console.log('Found order ID in reference:', externalOrderId);
-      }
+    // Normalizador canónico compartido con el full sync.
+    const taxDocumentData = buildTaxDocumentPayload(document, {
+      userId: bsaleAccount.user_id,
+      paymentTypeNames,
+    })
+
+    if (!taxDocumentData) {
+      return new Response(JSON.stringify({ success: true, message: 'Ignored - unmapped document type' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
     }
 
-    // 3. Check references array (from expand)
-    if (!externalOrderId && document.references?.items?.length > 0) {
-      for (const ref of document.references.items) {
-        const searchText = `${ref.reason || ''} ${ref.number || ''}`;
-        const orderMatch = searchText.match(/(\d{10,})/);
-        if (orderMatch) {
-          externalOrderId = orderMatch[1];
-          console.log('Found order ID in references:', externalOrderId);
-          break;
-        }
-      }
-    }
+    // Un webhook incompleto no debe borrar la forma de pago ya conocida.
+    const { data: existing } = await supabase
+      .from('tax_documents')
+      .select('raw_data')
+      .eq('user_id', bsaleAccount.user_id)
+      .eq('external_system', 'bsale')
+      .eq('external_id', taxDocumentData.external_id)
+      .maybeSingle()
 
-    // 4. Check details comments
-    if (!externalOrderId && document.details?.items?.length > 0) {
-      for (const detail of document.details.items) {
-        if (detail.comment) {
-          const orderMatch = detail.comment.match(/(\d{10,})/);
-          if (orderMatch) {
-            externalOrderId = orderMatch[1];
-            console.log('Found order ID in detail comment:', externalOrderId);
-            break;
-          }
-        }
-      }
-    }
+    taxDocumentData.raw_data = mergePaymentEnrichment(
+      taxDocumentData.raw_data,
+      (existing as any)?.raw_data ?? null,
+    )
 
-    // Prepare tax document data
-    const taxDocumentData = {
-      user_id: bsaleAccount.user_id,
-      external_system: 'bsale',
-      external_id: String(document.id),
-      document_number: String(document.number || document.id),
-      document_type: documentType,
-      document_date: document.emissionDate 
-        ? new Date(document.emissionDate * 1000).toISOString().split('T')[0]
-        : new Date().toISOString().split('T')[0],
-      total_amount: document.totalAmount || 0,
-      net_amount: document.netAmount || 0,
-      tax_amount: document.taxAmount || 0,
-      client_name: document.client?.firstName 
-        ? `${document.client.firstName} ${document.client.lastName || ''}`.trim()
-        : document.client?.company || null,
-      client_tax_id: splitRut(document.client?.code).body,
-      client_tax_id_dv: splitRut(document.client?.code).dv,
-      external_order_id: externalOrderId,
-      external_url: document.urlPublicViewOriginal || document.urlPdf || null,
-      status: document.state === 0 ? 'issued' : document.state === 1 ? 'voided' : 'issued',
-      raw_data: document,
-    }
+    console.log('Upserting tax document:', taxDocumentData.document_number, 'type:', taxDocumentData.document_type)
 
-    console.log('Upserting tax document:', taxDocumentData.document_number, 'type:', documentType)
-
-    // Upsert the tax document
     const { data: taxDoc, error: upsertError } = await supabase
       .from('tax_documents')
       .upsert(taxDocumentData, {
@@ -286,113 +233,14 @@ Deno.serve(async (req) => {
 
     console.log('Tax document saved:', taxDoc.id)
 
-    // Try to auto-link to an order
-    let linkedOrderId: string | null = null
-    
-    // Stage 1: Exact match by external_order_id
-    if (externalOrderId) {
-      console.log('Attempting exact match with external_sale_id:', externalOrderId)
-
-      const { data: matchingOrder } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('external_sale_id', externalOrderId)
-        .maybeSingle()
-
-      if (matchingOrder) {
-        // Check if link already exists
-        const { data: existingLink } = await supabase
-          .from('order_tax_documents')
-          .select('id')
-          .eq('order_id', matchingOrder.id)
-          .eq('tax_document_id', taxDoc.id)
-          .maybeSingle()
-
-        if (!existingLink) {
-          const { error: linkError } = await supabase
-            .from('order_tax_documents')
-            .insert({
-              order_id: matchingOrder.id,
-              tax_document_id: taxDoc.id,
-              created_by: bsaleAccount.user_id,
-              match_source: 'webhook_external_order_id',
-              match_score: 100,
-            })
-
-          if (linkError) {
-            console.error('Error linking document to order:', linkError)
-          } else {
-            console.log('Document auto-linked to order via exact match:', matchingOrder.id)
-            linkedOrderId = matchingOrder.id
-          }
-        } else {
-          linkedOrderId = matchingOrder.id
-        }
-      } else {
-        console.log('No matching order found for external_sale_id:', externalOrderId)
-      }
-    }
-
-    // Stage 2: Fallback scoring for boletas (amount + date match)
-    if (!linkedOrderId && documentType === 'boleta' && document.emissionDate) {
-      console.log('Attempting fallback scoring for boleta...');
-      
-      const docDate = new Date(document.emissionDate * 1000);
-      const dayBefore = new Date(docDate.getTime() - 86400000).toISOString();
-      const dayAfter = new Date(docDate.getTime() + 86400000).toISOString();
-      
-      // Find orders with exact amount and date ±1 day
-      const { data: candidateOrders } = await supabase
-        .from('orders')
-        .select('id, order_id, gross_amount, customer_name, customer_tax_id, order_date')
-        .eq('gross_amount', document.totalAmount)
-        .gte('order_date', dayBefore)
-        .lte('order_date', dayAfter);
-
-      console.log(`Found ${candidateOrders?.length || 0} candidate orders for boleta matching`);
-
-      if (candidateOrders?.length === 1) {
-        // Single match = auto-link with score 80
-        const order = candidateOrders[0];
-        
-        // Verify the order doesn't already have a linked document
-        const { data: existingLink } = await supabase
-          .from('order_tax_documents')
-          .select('id')
-          .eq('order_id', order.id)
-          .maybeSingle();
-
-        if (!existingLink) {
-          const { error: linkError } = await supabase
-            .from('order_tax_documents')
-            .insert({
-              order_id: order.id,
-              tax_document_id: taxDoc.id,
-              created_by: bsaleAccount.user_id,
-              match_source: 'webhook_fallback_boleta',
-              match_score: 80,
-            });
-
-          if (!linkError) {
-            linkedOrderId = order.id;
-            console.log(`Boleta auto-linked via fallback to order ${order.order_id} (score 80)`);
-          } else {
-            console.error('Error in fallback link:', linkError);
-          }
-        } else {
-          console.log('Order already has a linked document, skipping fallback');
-        }
-      } else if (candidateOrders && candidateOrders.length > 1) {
-        console.log(`Multiple candidates (${candidateOrders.length}) for boleta - skipping auto-link to avoid ambiguity`);
-      }
-    }
-
-    return new Response(JSON.stringify({ 
-      success: true, 
+    // El matching venta ↔ DTE pertenece exclusivamente a `auto-reconcile`.
+    // El webhook sólo ingiere/actualiza la verdad tributaria.
+    return new Response(JSON.stringify({
+      success: true,
       documentId: taxDoc.id,
-      documentType: documentType,
-      linkedOrderId: linkedOrderId,
-      externalOrderId: externalOrderId,
+      documentType: taxDocumentData.document_type,
+      externalOrderId: taxDocumentData.external_order_id,
+      matching: 'deferred_to_auto_reconcile',
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
