@@ -127,6 +127,7 @@ export type Database = {
           created_at: string
           id: string
           oauth_state: string | null
+          organization_id: string | null
           refresh_token: string | null
           status: string | null
           token_expires_at: string | null
@@ -144,6 +145,7 @@ export type Database = {
           created_at?: string
           id?: string
           oauth_state?: string | null
+          organization_id?: string | null
           refresh_token?: string | null
           status?: string | null
           token_expires_at?: string | null
@@ -161,6 +163,7 @@ export type Database = {
           created_at?: string
           id?: string
           oauth_state?: string | null
+          organization_id?: string | null
           refresh_token?: string | null
           status?: string | null
           token_expires_at?: string | null
@@ -168,7 +171,15 @@ export type Database = {
           user_id?: string
           webhook_url?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "bsale_accounts_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       bsale_sync_checkpoints: {
         Row: {
@@ -289,6 +300,7 @@ export type Database = {
           created_at: string
           expires_at: string | null
           id: string
+          organization_id: string | null
           redirect_uri: string
           refresh_token: string | null
           seller_id: string | null
@@ -303,6 +315,7 @@ export type Database = {
           created_at?: string
           expires_at?: string | null
           id?: string
+          organization_id?: string | null
           redirect_uri: string
           refresh_token?: string | null
           seller_id?: string | null
@@ -317,6 +330,7 @@ export type Database = {
           created_at?: string
           expires_at?: string | null
           id?: string
+          organization_id?: string | null
           redirect_uri?: string
           refresh_token?: string | null
           seller_id?: string | null
@@ -325,6 +339,13 @@ export type Database = {
           user_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "meli_accounts_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "meli_accounts_user_id_fkey"
             columns: ["user_id"]
@@ -483,6 +504,7 @@ export type Database = {
           last_sync_at: string | null
           mp_user_id: string | null
           nickname: string | null
+          organization_id: string | null
           public_key: string | null
           refresh_token: string | null
           scope: string | null
@@ -502,6 +524,7 @@ export type Database = {
           last_sync_at?: string | null
           mp_user_id?: string | null
           nickname?: string | null
+          organization_id?: string | null
           public_key?: string | null
           refresh_token?: string | null
           scope?: string | null
@@ -521,6 +544,7 @@ export type Database = {
           last_sync_at?: string | null
           mp_user_id?: string | null
           nickname?: string | null
+          organization_id?: string | null
           public_key?: string | null
           refresh_token?: string | null
           scope?: string | null
@@ -529,7 +553,15 @@ export type Database = {
           updated_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "mercadopago_accounts_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       mercadopago_oauth_states: {
         Row: {
@@ -963,6 +995,91 @@ export type Database = {
           },
         ]
       }
+      organization_members: {
+        Row: {
+          created_at: string
+          organization_id: string
+          role: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          organization_id: string
+          role?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          organization_id?: string
+          role?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "organization_members_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      organization_security: {
+        Row: {
+          failed_attempts: number
+          locked_until: string | null
+          organization_id: string
+          pin_hash: string | null
+          updated_at: string
+        }
+        Insert: {
+          failed_attempts?: number
+          locked_until?: string | null
+          organization_id: string
+          pin_hash?: string | null
+          updated_at?: string
+        }
+        Update: {
+          failed_attempts?: number
+          locked_until?: string | null
+          organization_id?: string
+          pin_hash?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "organization_security_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: true
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      organizations: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          owner_user_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          owner_user_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          owner_user_id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       payment_sales: {
         Row: {
           allocated_amount: number
@@ -1143,6 +1260,7 @@ export type Database = {
           company_website: string | null
           created_at: string
           email: string
+          full_name: string | null
           id: string
           updated_at: string
         }
@@ -1154,6 +1272,7 @@ export type Database = {
           company_website?: string | null
           created_at?: string
           email: string
+          full_name?: string | null
           id: string
           updated_at?: string
         }
@@ -1165,6 +1284,7 @@ export type Database = {
           company_website?: string | null
           created_at?: string
           email?: string
+          full_name?: string | null
           id?: string
           updated_at?: string
         }
@@ -1436,6 +1556,7 @@ export type Database = {
           client_secret: string | null
           created_at: string
           id: string
+          organization_id: string | null
           shop_domain: string
           status: string | null
           token_expires_at: string | null
@@ -1450,6 +1571,7 @@ export type Database = {
           client_secret?: string | null
           created_at?: string
           id?: string
+          organization_id?: string | null
           shop_domain: string
           status?: string | null
           token_expires_at?: string | null
@@ -1464,13 +1586,22 @@ export type Database = {
           client_secret?: string | null
           created_at?: string
           id?: string
+          organization_id?: string | null
           shop_domain?: string
           status?: string | null
           token_expires_at?: string | null
           updated_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "shopify_accounts_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       shopify_products: {
         Row: {
@@ -1711,6 +1842,7 @@ export type Database = {
           vat_amount: number
         }[]
       }
+      current_user_organization_id: { Args: never; Returns: string }
       get_meli_billing_summary: {
         Args: { p_period: string }
         Returns: {
@@ -1790,6 +1922,7 @@ export type Database = {
           udt_name: string
         }[]
       }
+      has_org_pin: { Args: never; Returns: boolean }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
@@ -1797,7 +1930,9 @@ export type Database = {
         }
         Returns: boolean
       }
+      set_org_pin: { Args: { p_pin: string }; Returns: boolean }
       user_owns_order: { Args: { _order_id: string }; Returns: boolean }
+      verify_org_pin: { Args: { p_pin: string }; Returns: boolean }
     }
     Enums: {
       app_role: "admin" | "user"
