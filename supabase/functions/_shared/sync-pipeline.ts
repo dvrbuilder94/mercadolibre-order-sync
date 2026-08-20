@@ -86,10 +86,14 @@ export async function syncOrdersLoop(
   dateFrom: string,
   dateTo: string,
   timeLeft: () => boolean,
+  startOffset = 0,
 ) {
   let totalSynced = 0;
   let round = 0;
   let partial = true;
+  let cursorOffset = startOffset;
+  let nextCursor: { offset: number } | null = { offset: startOffset };
+  let cursorStalled = false;
 
   while (partial && round < 5 && timeLeft()) {
     round++;
@@ -97,14 +101,49 @@ export async function syncOrdersLoop(
       date_from: dateFrom,
       date_to: dateTo,
       max_pages: 50,
+      start_offset: cursorOffset,
       account_id: acc.id,
       user_id: acc.user_id,
     });
+
     totalSynced += data?.synced ?? 0;
     partial = !!data?.partial;
+
+    if (!partial) {
+      nextCursor = null;
+      break;
+    }
+
+    const rawNextOffset = Number(data?.next_cursor?.offset);
+    if (!Number.isSafeInteger(rawNextOffset) || rawNextOffset < 0) {
+      // A partial response without a usable cursor must never replay offset 0
+      // silently. Surface the unfinished state so the future runner can stop
+      // and report it instead of looping forever.
+      cursorStalled = true;
+      nextCursor = { offset: cursorOffset };
+      break;
+    }
+
+    nextCursor = { offset: rawNextOffset };
+    if (rawNextOffset === cursorOffset) {
+      // Same offset is valid after a transient page/write error, but retry it
+      // at most once inside this loop. Persistence/retry policy belongs to the
+      // orchestrator, not an unbounded worker loop.
+      if (cursorStalled) break;
+      cursorStalled = true;
+    } else {
+      cursorStalled = false;
+    }
+    cursorOffset = rawNextOffset;
   }
 
-  return { rounds: round, totalSynced, partial };
+  return {
+    rounds: round,
+    totalSynced,
+    partial,
+    nextCursor,
+    cursorStalled: partial && cursorStalled,
+  };
 }
 
 export async function syncPaymentsLoop(
