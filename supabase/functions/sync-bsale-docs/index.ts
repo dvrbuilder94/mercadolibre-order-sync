@@ -1,33 +1,23 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveUserId } from '../_shared/auth.ts';
+import {
+  VALID_SII_CODES,
+  buildTaxDocumentPayload,
+  filterValidTributaryDocs,
+  normalizeCodeSii,
+} from '../_shared/bsale-document.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Split RUT into body + DV. Body = digits only, DV = last char (0-9 or K).
-function splitRut(rut: string | null | undefined): { body: string | null; dv: string | null } {
-  if (!rut) return { body: null, dv: null };
-  const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
-  if (clean.length < 2) return { body: null, dv: null };
-  return { body: clean.slice(0, -1), dv: clean.slice(-1) };
-}
-
-// Valid SII codes for tributary documents.
-// MUST stay sorted ascending: el cursor de reanudación (más abajo) salta los
+// VALID_SII_CODES (módulo compartido) MUST stay sorted ascending: el cursor de reanudación salta los
 // códigos con `codeSii < start_code_sii`, así que un orden no ascendente hace
 // que al reanudar se reprocese un código anterior en loop infinito.
-const VALID_SII_CODES = [33, 34, 39, 41, 56, 61];
 const FETCH_TIMEOUT_MS = 20_000;
 const TIME_BUDGET_MS = 85_000;
 const MAX_PAGES_PER_INVOCATION = 20;
-
-function normalizeCodeSii(codeSii: string | number | null | undefined): number | null {
-  if (codeSii === null || codeSii === undefined || codeSii === '') return null;
-  const normalized = Number(codeSii);
-  return Number.isFinite(normalized) ? normalized : null;
-}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -54,35 +44,6 @@ async function loadPaymentTypeNames(apiUrl: string, token: string): Promise<Map<
     console.warn('No se pudo cargar payment_types:', (e as any)?.message);
   }
   return map;
-}
-
-function idFromHref(href: string | null | undefined): string | null {
-  if (!href) return null;
-  const m = String(href).match(/\/(\d+)\.json/);
-  return m ? m[1] : null;
-}
-
-// Devuelve los pagos del documento normalizados + los nombres únicos de forma
-// de pago REALES (nunca `coin.name`, que es la moneda, no la forma de pago).
-function extractDocPayments(doc: any, typeNames: Map<string, string>) {
-  const items: any[] = doc?.payments?.items || [];
-  const payments = items.map((p: any) => {
-    const ptId = p?.payment_type?.id != null
-      ? String(p.payment_type.id)
-      : idFromHref(p?.payment_type?.href);
-    const name = p?.payment_type?.name
-      || (ptId ? typeNames.get(ptId) : null)
-      || null;
-    return {
-      id: p?.id ?? null,
-      amount: p?.amount ?? null,
-      recordDate: p?.recordDate ?? null,
-      payment_type_id: ptId,
-      payment_type_name: name,
-    };
-  });
-  const names = Array.from(new Set(payments.map((p) => p.payment_type_name).filter(Boolean))) as string[];
-  return { payments, names };
 }
 
 async function fetchBsalePage(url: URL, bsaleToken: string) {
@@ -142,121 +103,6 @@ async function fetchBsalePage(url: URL, bsaleToken: string) {
   return { ok: false as const, error: 'Bsale fetch failed', detail: '' };
 }
 
-// Map Bsale document type to our enum - STRICT: returns null if not valid SII code
-function mapBsaleDocType(codeSii: number | undefined): 'boleta' | 'factura' | 'nota_credito' | 'nota_debito' | 'factura_exenta' | null {
-  const normalized = normalizeCodeSii(codeSii);
-  if (normalized === 33) return 'factura';
-  if (normalized === 34) return 'factura_exenta';
-  if (normalized === 39 || normalized === 41) return 'boleta';
-  if (normalized === 61) return 'nota_credito';
-  if (normalized === 56) return 'nota_debito';
-  
-  // STRICT: No fallback - only valid codeSii accepted
-  return null;
-}
-
-// Detect channel from any text string (reference reason, payment name, etc.)
-function detectChannelFromText(text: string | null): string | null {
-  if (!text) return null;
-  const upper = text.toUpperCase();
-  // MercadoLibre / MercadoPago (same marketplace)
-  if (upper.includes('MERCADO LIBRE') || upper.includes('MERCADOLIBRE') ||
-      upper.includes('MERCADO PAGO') || upper.includes('MERCADOPAGO') ||
-      upper.includes('ML ') || upper.includes(' ML') || upper === 'ML') return 'meli';
-  // Falabella / CMR
-  if (upper.includes('FALABELLA') || upper.includes('CMR')) return 'falabella';
-  // Paris / Cencosud
-  if (upper.includes('PARIS') || upper.includes('CENCOSUD') || upper.includes('PARIS.CL')) return 'paris';
-  // Ripley
-  if (upper.includes('RIPLEY')) return 'ripley';
-  // Amazon
-  if (upper.includes('AMAZON')) return 'amazon';
-  // Shopify
-  if (upper.includes('SHOPIFY')) return 'shopify';
-  // Linio / Allegro
-  if (upper.includes('LINIO')) return 'linio';
-  // Rappi
-  if (upper.includes('RAPPI')) return 'rappi';
-  // Walmart / Líder
-  if (upper.includes('WALMART') || upper.includes('LIDER') || upper.includes('LÍDER')) return 'walmart';
-  return null;
-}
-
-// Legacy alias kept for compatibility
-const detectChannelFromReference = detectChannelFromText;
-
-// Detect channel from a Bsale document using all available signals
-function detectChannelFromDoc(doc: any): string | null {
-  // 1. Check all references (not just first)
-  if (doc.references?.items?.length > 0) {
-    for (const ref of doc.references.items) {
-      const hit = detectChannelFromText(ref.reason) || detectChannelFromText(ref.number?.toString());
-      if (hit) return hit;
-    }
-  }
-  // 2. Check coin/payment method name (e.g. "Mercado Pago")
-  if (doc.coin?.name) {
-    const hit = detectChannelFromText(doc.coin.name);
-    if (hit) return hit;
-  }
-  // 3. Check client note
-  if (doc.client?.note) {
-    const hit = detectChannelFromText(doc.client.note);
-    if (hit) return hit;
-  }
-  // 4. Check detail comments
-  if (doc.details?.items?.length > 0) {
-    for (const detail of doc.details.items) {
-      const hit = detectChannelFromText(detail.comment);
-      if (hit) return hit;
-    }
-  }
-  return null;
-}
-
-// Classify sales channel based on reference reason and order match.
-// Default is MARKETPLACE — docs without a matching order are likely mis-timed syncs,
-// not genuine B2B wholesale. auto-reconcile will leave unmatched docs unlinked.
-function classifySalesChannel(referenceReason: string | null, hasMatchingOrder: boolean): string {
-  const channel = detectChannelFromReference(referenceReason);
-  if (channel) return 'MARKETPLACE';
-  if (hasMatchingOrder) return 'MARKETPLACE';
-  return 'MARKETPLACE'; // Default: don't exclude from reconciliation engine
-}
-
-// Extract external order ID from various fields
-function extractExternalOrderId(doc: any): string | null {
-  // Pattern: 10+ digit number (typical ML order ID format)
-  const orderIdPattern = /(\d{10,})/;
-  
-  // 1. Search in client.note
-  if (doc.client?.note) {
-    const match = doc.client.note.match(orderIdPattern);
-    if (match) return match[1];
-  }
-  
-  // 2. Search in references (expanded)
-  if (doc.references?.items?.length > 0) {
-    for (const ref of doc.references.items) {
-      const searchText = `${ref.reason || ''} ${ref.number || ''}`;
-      const match = searchText.match(orderIdPattern);
-      if (match) return match[1];
-    }
-  }
-  
-  // 3. Search in details comments
-  if (doc.details?.items?.length > 0) {
-    for (const detail of doc.details.items) {
-      if (detail.comment) {
-        const match = detail.comment.match(orderIdPattern);
-        if (match) return match[1];
-      }
-    }
-  }
-  
-  return null;
-}
-
 // Resuelve el documento ORIGINAL que anula una Nota de Crédito.
 // Las references de Bsale en una NC llevan el folio del documento original;
 // lo cruzamos contra nuestros propios tax_documents (mismo usuario) para setear
@@ -279,97 +125,6 @@ async function resolveOriginalDocId(
     .in('document_type', ['boleta', 'factura', 'factura_exenta']);
   if (!data || data.length === 0) return null;
   return data[0].id;
-}
-
-// Transform a Bsale document to our tax_documents schema
-function transformBsaleDoc(doc: any, userId: string, batchId: string) {
-  const codeSii = normalizeCodeSii(doc.document_type?.codeSii);
-  const docType = mapBsaleDocType(codeSii);
-  
-  // STRICT: Skip if not a valid tributary document
-  if (!docType) {
-    return null;
-  }
-  
-  const clientName = doc.client?.firstName && doc.client?.lastName 
-    ? `${doc.client.firstName} ${doc.client.lastName}`.trim()
-    : doc.client?.company || doc.client?.activity || 'Cliente';
-
-  const { body: clientTaxId, dv: clientTaxIdDv } = splitRut(doc.client?.code);
-  
-  const netAmount = parseFloat(doc.netAmount || 0);
-  const taxAmount = parseFloat(doc.taxAmount || 0);
-  const totalAmount = parseFloat(doc.totalAmount || 0) || (netAmount + taxAmount);
-
-  // Use Chile's calendar date, not UTC — emissionDate near midnight shifts
-  // to the next/previous UTC day and lands in the wrong month otherwise.
-  const emissionDate = doc.emissionDate
-    ? new Date(doc.emissionDate * 1000).toLocaleDateString('en-CA', { timeZone: 'America/Santiago' })
-    : new Date().toLocaleDateString('en-CA', { timeZone: 'America/Santiago' });
-
-  // Bsale: state=0 is ACTIVE/issued, state=1 is VOIDED
-  const docStatus = doc.state === 0 ? 'issued' : 'voided';
-
-  // Extract external order ID for auto-linking
-  const externalOrderId = extractExternalOrderId(doc);
-
-  return {
-    user_id: userId,
-    document_type: docType,
-    document_number: doc.number?.toString() || doc.id.toString(),
-    document_date: emissionDate,
-    net_amount: netAmount,
-    tax_amount: taxAmount,
-    total_amount: totalAmount,
-    client_name: clientName,
-    client_tax_id: clientTaxId,
-    client_tax_id_dv: clientTaxIdDv,
-    external_system: 'bsale',
-    external_id: doc.id.toString(),
-    external_order_id: externalOrderId,
-    external_url: doc.urlPublicView || null,
-    erp: 'BSALE',
-    status: docStatus,
-    resync_batch: batchId,
-    raw_data: {
-      id: doc.id,
-      number: doc.number,
-      emissionDate: doc.emissionDate,
-      codeSii: codeSii,
-      typeName: doc.document_type?.name,
-      clientNote: doc.client?.note,
-      references: doc.references,
-      coin: doc.coin || null,
-      office: doc.office,
-      external_order_id: externalOrderId,
-      details: doc.details?.items?.map((d: any) => ({
-        description: d.comment,
-        quantity: d.quantity,
-        netAmount: d.netAmount,
-      })) || [],
-    },
-  };
-}
-
-// Filter documents to only valid tributary types (post-fetch security)
-function filterValidTributaryDocs(docs: any[]): { valid: any[], ignored: number } {
-  const validDocs = docs.filter((doc: any) => {
-    const codeSii = normalizeCodeSii(doc.document_type?.codeSii);
-    const typeName = (doc.document_type?.name || '').toUpperCase();
-    
-    // Explicitly exclude dispatch guides and sales notes
-    if (codeSii === 52) return false; // Guía de Despacho
-    if (!codeSii && typeName.includes('NOTA VENTA')) return false;
-    if (!codeSii && typeName.includes('GUÍA')) return false;
-    
-    // Only accept valid SII codes
-    return codeSii && VALID_SII_CODES.includes(codeSii);
-  });
-  
-  return {
-    valid: validDocs,
-    ignored: docs.length - validDocs.length
-  };
 }
 
 Deno.serve(async (req) => {
@@ -655,19 +410,16 @@ Deno.serve(async (req) => {
         const taxDocsToUpsert: any[] = [];
         for (const doc of validDocs) {
           try {
-            const transformed = transformBsaleDoc(doc, user.id, batchId);
+            // Normalizador canónico compartido con `bsale-webhook`.
+            // Forma de pago REAL desde Bsale `payments` → `payment_type`.
+            // `coin.name` es la moneda ("Peso Chileno"), NO la forma de pago.
+            const transformed = buildTaxDocumentPayload(doc, {
+              userId: user.id,
+              paymentTypeNames,
+              batchId,
+            });
             if (!transformed) continue;
             docTypeCounts[transformed.document_type] = (docTypeCounts[transformed.document_type] || 0) + 1;
-            const detectedChannel = detectChannelFromDoc(doc);
-            const referenceReason = doc.references?.items?.[0]?.reason || null;
-            (transformed.raw_data as any).reference_reason = referenceReason;
-            // Forma de pago REAL desde Bsale `payments` → `payment_type`.
-            // `coin.name` es la moneda ("Peso Chileno"), NO la forma de pago:
-            // no debe usarse aquí bajo ninguna circunstancia.
-            const { payments: docPayments, names: paymentNames } = extractDocPayments(doc, paymentTypeNames);
-            (transformed.raw_data as any).payments = docPayments;
-            (transformed.raw_data as any).payment_method_names = paymentNames;
-            (transformed.raw_data as any).payment_method_name = paymentNames.length === 1 ? paymentNames[0] : null;
             // NC → documento original: resolver el enlace al sincronizar (las
             // boletas/facturas del mismo período ya se procesaron antes, porque
             // codeSii 61 va último en VALID_SII_CODES).
@@ -677,8 +429,6 @@ Deno.serve(async (req) => {
             }
             taxDocsToUpsert.push({
               ...transformed,
-              sales_channel: 'MARKETPLACE',
-              detected_channel: detectedChannel,
               ...(originalDocId ? { original_tax_document_id: originalDocId } : {}),
             });
           } catch (error) {
