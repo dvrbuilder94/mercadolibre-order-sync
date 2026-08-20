@@ -1,16 +1,50 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Nav } from "@/components/Nav";
 import { DetailPanel } from "@/components/DetailPanel";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Info, FileText } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Loader2, Info, FileText, Search, SlidersHorizontal, ExternalLink } from "lucide-react";
 import { chileMonthDateRange, chileMonthUnixRange, chilePeriodNow } from "@/lib/chileDate";
 import { CHANNEL_LABEL, CHANNEL_COLOR } from "@/lib/constants";
 import { signedTaxDocumentAmount } from "@/lib/financialRules";
 
 const PAGE_SIZE = 50;
+const COLS_KEY = "documentos.listado.columns";
+
+type ColKey =
+  | "documento" | "canal" | "fecha" | "neto" | "iva" | "total" | "pago"
+  | "cliente" | "rut" | "orden" | "referencia" | "estado" | "venta" | "link";
+
+const COLUMNS: { key: ColKey; label: string; align?: "right"; fixed?: boolean }[] = [
+  { key: "documento", label: "Documento", fixed: true },
+  { key: "canal", label: "Canal" },
+  { key: "fecha", label: "Fecha" },
+  { key: "neto", label: "Neto", align: "right" },
+  { key: "iva", label: "IVA", align: "right" },
+  { key: "total", label: "Total", align: "right" },
+  { key: "pago", label: "Forma de pago" },
+  { key: "cliente", label: "Cliente" },
+  { key: "rut", label: "RUT" },
+  { key: "orden", label: "Orden externa" },
+  { key: "referencia", label: "Referencia/origen" },
+  { key: "estado", label: "Estado" },
+  { key: "venta", label: "Venta asociada" },
+  { key: "link", label: "Link" },
+];
+
+const DEFAULT_COLS: ColKey[] = ["documento", "canal", "fecha", "neto", "iva", "total", "pago", "venta", "link"];
+
+/** Formas de pago reales vienen de Bsale `payments` → `payment_type`.
+ *  `coin.name` ("Peso Chileno") NO es forma de pago y no se usa aquí. */
+function paymentNames(d: any): string[] {
+  const arr = d?.payment_method_names;
+  return Array.isArray(arr) ? arr.filter(Boolean) : [];
+}
+
+const fullRut = (d: any) =>
+  d?.client_tax_id ? `${d.client_tax_id}${d.client_tax_id_dv ? `-${d.client_tax_id_dv}` : ""}` : null;
 
 const CLP = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("es-CL", {
@@ -72,6 +106,7 @@ export default function PageDocumentos() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(chilePeriodNow);
   const [channelFilter, setChannelFilter] = useState("todos");
+  const [allDocs, setAllDocs] = useState<any[]>([]);
   const [docs, setDocs] = useState<any[]>([]);
   const [docsTotal, setDocsTotal] = useState(0);
   const [docsSum, setDocsSum] = useState<number | null>(null);
@@ -82,6 +117,31 @@ export default function PageDocumentos() {
   const [docSyncMsg, setDocSyncMsg] = useState("");
   const [selectedDoc, setSelectedDoc] = useState<any | null>(null);
   const [selectedDocSales, setSelectedDocSales] = useState<any[] | null>(null);
+  const [q, setQ] = useState("");
+  const [typeFilter, setTypeFilter] = useState("todos");
+  const [statusFilter, setStatusFilter] = useState("todos");
+  const [linkFilter, setLinkFilter] = useState("todos");
+  const [payFilter, setPayFilter] = useState("todas");
+  const [colsOpen, setColsOpen] = useState(false);
+  const [visible, setVisible] = useState<Set<ColKey>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLS_KEY) || "null");
+      if (Array.isArray(saved) && saved.length) return new Set(saved as ColKey[]);
+    } catch { /* ignore */ }
+    return new Set(DEFAULT_COLS);
+  });
+
+  useEffect(() => {
+    localStorage.setItem(COLS_KEY, JSON.stringify(Array.from(visible)));
+  }, [visible]);
+
+  const shownCols = COLUMNS.filter((c) => c.fixed || visible.has(c.key));
+  const toggleCol = (key: ColKey) =>
+    setVisible((prev) => {
+      const n = new Set(prev);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -123,7 +183,7 @@ export default function PageDocumentos() {
     setDocsLoading(true);
     try {
       const { from, to } = chileMonthDateRange(period);
-      const LIGHT_COLS = "id, document_type, document_date, total_amount, tax_amount, status, detected_channel, reference_reason:raw_data->>reference_reason, references:raw_data->references";
+      const LIGHT_COLS = "id, document_number, document_type, document_date, net_amount, total_amount, tax_amount, status, detected_channel, client_name, client_tax_id, client_tax_id_dv, external_order_id, external_url, reference_reason:raw_data->>reference_reason, references:raw_data->references, payment_method_names:raw_data->payment_method_names, order_tax_documents(id, order_id)";
       const allDocs: any[] = [];
 
       for (let i = 0; i < 20; i++) {
@@ -140,35 +200,76 @@ export default function PageDocumentos() {
         if (data.length < 1000) break;
       }
 
-      const filtered = channelFilter === "todos"
-        ? allDocs
-        : allDocs.filter((d) => inferChannel(d.detected_channel, {
-            reference_reason: d.reference_reason,
-            references: d.references,
-          }) === channelFilter);
-
-      setDocsTotal(filtered.length);
-      const issued = filtered.filter((d) => d.status === "issued");
-      setDocsSum(issued.reduce((sum, d) => sum + signedTaxDocumentAmount(d.document_type, d.total_amount), 0));
-      setDocsIva(issued.reduce((sum, d) => sum + signedTaxDocumentAmount(d.document_type, d.tax_amount), 0));
-
-      const pageIds = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE).map((d) => d.id);
-      if (!pageIds.length) {
-        setDocs([]);
-        return;
-      }
-
-      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, detected_channel, status, external_url, external_order_id, raw_data, order_tax_documents(id, order_id)";
-      const { data: full } = await supabase.from("tax_documents").select(FULL_COLS).in("id", pageIds);
-      const byId = new Map((full || []).map((d: any) => [d.id, d]));
-      setDocs(pageIds.map((id) => byId.get(id)).filter(Boolean));
+      setAllDocs(allDocs);
     } catch (error) {
       console.error("Error cargando documentos:", error);
-      setDocs([]);
+      setAllDocs([]);
     } finally {
       setDocsLoading(false);
     }
-  }, [period, channelFilter]);
+  }, [period]);
+
+  // Filtrado completo en memoria: KPIs y paginación siempre corresponden al
+  // conjunto filtrado, no a la página visible.
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    return allDocs.filter((d) => {
+      const channel = inferChannel(d.detected_channel, {
+        reference_reason: d.reference_reason,
+        references: d.references,
+      });
+      if (channelFilter !== "todos" && channel !== channelFilter) return false;
+      if (typeFilter !== "todos" && d.document_type !== typeFilter) return false;
+      if (statusFilter !== "todos") {
+        const voided = d.status === "voided";
+        if (statusFilter === "voided" ? !voided : voided) return false;
+      }
+      const hasSale = (d.order_tax_documents?.length ?? 0) > 0;
+      if (linkFilter === "con" && !hasSale) return false;
+      if (linkFilter === "sin" && hasSale) return false;
+      if (payFilter !== "todas") {
+        const names = paymentNames(d);
+        if (payFilter === "__sin__" ? names.length > 0 : !names.includes(payFilter)) return false;
+      }
+      if (term) {
+        const hay = [
+          d.document_number, d.client_name, fullRut(d), d.client_tax_id,
+          d.external_order_id, d.reference_reason,
+        ].filter(Boolean).join(" ").toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
+    });
+  }, [allDocs, q, channelFilter, typeFilter, statusFilter, linkFilter, payFilter]);
+
+  const payOptions = useMemo(() => {
+    const s = new Set<string>();
+    allDocs.forEach((d) => paymentNames(d).forEach((n) => s.add(n)));
+    return Array.from(s).sort();
+  }, [allDocs]);
+
+  // KPIs sobre el conjunto filtrado
+  useEffect(() => {
+    setDocsTotal(filtered.length);
+    const issued = filtered.filter((d) => d.status === "issued");
+    setDocsSum(issued.reduce((sum, d) => sum + signedTaxDocumentAmount(d.document_type, d.total_amount), 0));
+    setDocsIva(issued.reduce((sum, d) => sum + signedTaxDocumentAmount(d.document_type, d.tax_amount), 0));
+  }, [filtered]);
+
+  // La página visible se hidrata con raw_data para el panel de detalle.
+  useEffect(() => {
+    let cancelled = false;
+    const pageIds = filtered.slice(docPage * PAGE_SIZE, docPage * PAGE_SIZE + PAGE_SIZE).map((d) => d.id);
+    if (!pageIds.length) { setDocs([]); return; }
+    (async () => {
+      const FULL_COLS = "id, document_number, document_type, document_date, total_amount, net_amount, tax_amount, client_name, client_tax_id, client_tax_id_dv, detected_channel, status, external_url, external_order_id, raw_data, order_tax_documents(id, order_id)";
+      const { data: full } = await supabase.from("tax_documents").select(FULL_COLS).in("id", pageIds);
+      if (cancelled) return;
+      const byId = new Map((full || []).map((d: any) => [d.id, d]));
+      setDocs(pageIds.map((id) => byId.get(id)).filter(Boolean));
+    })();
+    return () => { cancelled = true; };
+  }, [filtered, docPage]);
 
   useEffect(() => {
     setDocPage(0);
@@ -179,9 +280,9 @@ export default function PageDocumentos() {
   useEffect(() => {
     setDocPage(0);
     setSelectedDoc(null);
-  }, [channelFilter]);
+  }, [channelFilter, typeFilter, statusFilter, linkFilter, payFilter, q]);
 
-  useEffect(() => { fetchDocs(docPage); }, [fetchDocs, docPage]);
+  useEffect(() => { fetchDocs(0); }, [fetchDocs]);
 
   const changePeriod = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
@@ -198,7 +299,7 @@ export default function PageDocumentos() {
       });
       if (error) throw error;
       setDocSyncMsg(`✅ ${data?.summary?.total_upserted ?? 0} documentos`);
-      await fetchDocs(docPage);
+      await fetchDocs(0);
     } catch (error: any) {
       setDocSyncMsg(`❌ ${error?.message || "Error"}`);
     } finally {
