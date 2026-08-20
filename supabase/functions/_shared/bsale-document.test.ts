@@ -160,3 +160,25 @@ describe("mergePaymentEnrichment", () => {
     expect(mergePaymentEnrichment(incoming, null)).toBe(incoming);
   });
 });
+describe("external_url fallback", () => {
+  it("prefiere urlPublicView", () => {
+    const payload = buildTaxDocumentPayload(
+      baseDoc({ urlPublicView: "a", urlPublicViewOriginal: "b", urlPdf: "c" }),
+      { userId: "u1" },
+    );
+    expect(payload!.external_url).toBe("a");
+  });
+
+  it("cae a urlPublicViewOriginal y luego a urlPdf", () => {
+    expect(
+      buildTaxDocumentPayload(baseDoc({ urlPublicViewOriginal: "b", urlPdf: "c" }), { userId: "u1" })!.external_url,
+    ).toBe("b");
+    expect(
+      buildTaxDocumentPayload(baseDoc({ urlPdf: "c" }), { userId: "u1" })!.external_url,
+    ).toBe("c");
+  });
+
+  it("queda null si no hay ninguna URL", () => {
+    expect(buildTaxDocumentPayload(baseDoc(), { userId: "u1" })!.external_url).toBeNull();
+  });
+});
