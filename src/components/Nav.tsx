@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   ShoppingBag, Activity, Settings, LogOut,
-  Wrench, Landmark, FileText, Undo2, Workflow, GitMerge, MessageSquare, Route, Database, UserRound,
+  Wrench, Landmark, FileText, Undo2, GitMerge, MessageSquare, Route, Database, UserRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FeedbackWidget } from "@/components/FeedbackWidget";
@@ -18,14 +18,13 @@ const primary = [
   { to: "/documentos",    label: "Documentos",    icon: FileText },
   { to: "/conciliacion", label: "Revisión",      icon: GitMerge },
   { to: "/devoluciones",  label: "Devoluciones",  icon: Undo2 },
+  { to: "/sync",          label: "Sync",          icon: Activity },
   { to: "/config",        label: "Conexiones",    icon: Settings },
   { to: "/perfil",        label: "Perfil",        icon: UserRound },
 ];
 
 const advanced = [
-  { to: "/modelo-datos", label: "Modelo de datos",   icon: Database },
-  { to: "/workflow",     label: "Workflow",          icon: Workflow },
-  { to: "/pipeline",     label: "Sync (avanzada)",   icon: Activity },
+  { to: "/modelo-datos", label: "Modelo de datos", icon: Database },
 ];
 
 export function Nav() {
