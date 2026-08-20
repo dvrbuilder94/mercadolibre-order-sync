@@ -63,6 +63,14 @@ verify_jwt = false
 [functions.cron-pipeline-sync]
 verify_jwt = false
 
+[functions.start-sync-run]
+verify_jwt = true
+
+# Internal only: pg_net calls it with x-cron-secret and the function itself
+# validates that secret/service-role via _shared/internal-request.ts.
+[functions.sync-runner]
+verify_jwt = false
+
 [functions.connect-shopify]
 verify_jwt = false
 
