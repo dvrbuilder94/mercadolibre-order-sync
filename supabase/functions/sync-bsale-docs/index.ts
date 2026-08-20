@@ -31,6 +31,60 @@ function normalizeCodeSii(codeSii: string | number | null | undefined): number |
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Bsale expone las formas de pago reales del documento vía `payments`, y cada
+// pago referencia un `payment_type` (a veces sólo con id/href). Cargamos el
+// catálogo de payment types UNA vez por invocación para resolver nombres sin
+// hacer N llamadas por documento.
+async function loadPaymentTypeNames(apiUrl: string, token: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    for (let offset = 0; offset < 500; offset += 50) {
+      const u = new URL(`${apiUrl}/v1/payment_types.json`);
+      u.searchParams.set('limit', '50');
+      u.searchParams.set('offset', String(offset));
+      const r = await fetchBsalePage(u, token);
+      if (!r.ok) break;
+      const items: any[] = r.data?.items || [];
+      for (const it of items) {
+        if (it?.id != null && it?.name) map.set(String(it.id), String(it.name));
+      }
+      if (items.length < 50) break;
+    }
+  } catch (e) {
+    console.warn('No se pudo cargar payment_types:', (e as any)?.message);
+  }
+  return map;
+}
+
+function idFromHref(href: string | null | undefined): string | null {
+  if (!href) return null;
+  const m = String(href).match(/\/(\d+)\.json/);
+  return m ? m[1] : null;
+}
+
+// Devuelve los pagos del documento normalizados + los nombres únicos de forma
+// de pago REALES (nunca `coin.name`, que es la moneda, no la forma de pago).
+function extractDocPayments(doc: any, typeNames: Map<string, string>) {
+  const items: any[] = doc?.payments?.items || [];
+  const payments = items.map((p: any) => {
+    const ptId = p?.payment_type?.id != null
+      ? String(p.payment_type.id)
+      : idFromHref(p?.payment_type?.href);
+    const name = p?.payment_type?.name
+      || (ptId ? typeNames.get(ptId) : null)
+      || null;
+    return {
+      id: p?.id ?? null,
+      amount: p?.amount ?? null,
+      recordDate: p?.recordDate ?? null,
+      payment_type_id: ptId,
+      payment_type_name: name,
+    };
+  });
+  const names = Array.from(new Set(payments.map((p) => p.payment_type_name).filter(Boolean))) as string[];
+  return { payments, names };
+}
+
 async function fetchBsalePage(url: URL, bsaleToken: string) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     const controller = new AbortController();
