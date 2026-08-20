@@ -1229,6 +1229,7 @@ export type Database = {
       }
       pipeline_sync_runs: {
         Row: {
+          attempt: number
           detail: Json | null
           finished_at: string | null
           id: string
@@ -1237,9 +1238,11 @@ export type Database = {
           started_at: string
           status: string
           step: string
+          sync_run_id: string | null
           user_id: string | null
         }
         Insert: {
+          attempt?: number
           detail?: Json | null
           finished_at?: string | null
           id?: string
@@ -1248,9 +1251,11 @@ export type Database = {
           started_at?: string
           status?: string
           step: string
+          sync_run_id?: string | null
           user_id?: string | null
         }
         Update: {
+          attempt?: number
           detail?: Json | null
           finished_at?: string | null
           id?: string
@@ -1259,9 +1264,18 @@ export type Database = {
           started_at?: string
           status?: string
           step?: string
+          sync_run_id?: string | null
           user_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "pipeline_sync_runs_sync_run_id_fkey"
+            columns: ["sync_run_id"]
+            isOneToOne: false
+            referencedRelation: "sync_runs"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       profiles: {
         Row: {
@@ -1683,6 +1697,71 @@ export type Database = {
           },
         ]
       }
+      sync_runs: {
+        Row: {
+          current_step: string | null
+          error: Json | null
+          finished_at: string | null
+          id: string
+          idempotency_key: string | null
+          mode: string
+          organization_id: string
+          owner_user_id: string
+          period: string
+          requested_by: string | null
+          runner_lease_until: string | null
+          started_at: string
+          status: string
+          summary: Json
+          trigger: string
+          updated_at: string
+        }
+        Insert: {
+          current_step?: string | null
+          error?: Json | null
+          finished_at?: string | null
+          id?: string
+          idempotency_key?: string | null
+          mode?: string
+          organization_id: string
+          owner_user_id: string
+          period: string
+          requested_by?: string | null
+          runner_lease_until?: string | null
+          started_at?: string
+          status?: string
+          summary?: Json
+          trigger?: string
+          updated_at?: string
+        }
+        Update: {
+          current_step?: string | null
+          error?: Json | null
+          finished_at?: string | null
+          id?: string
+          idempotency_key?: string | null
+          mode?: string
+          organization_id?: string
+          owner_user_id?: string
+          period?: string
+          requested_by?: string | null
+          runner_lease_until?: string | null
+          started_at?: string
+          status?: string
+          summary?: Json
+          trigger?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sync_runs_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tax_documents: {
         Row: {
           client_name: string | null
@@ -1855,9 +1934,11 @@ export type Database = {
         }[]
       }
       can_manage_org: { Args: never; Returns: boolean }
+      claim_sync_run: { Args: { p_run_id: string }; Returns: boolean }
       current_org_id: { Args: never; Returns: string }
       current_org_role: { Args: never; Returns: string }
       current_user_organization_id: { Args: never; Returns: string }
+      enqueue_sync_runner: { Args: { p_run_id: string }; Returns: number }
       get_meli_billing_summary: {
         Args: { p_period: string }
         Returns: {
@@ -1955,6 +2036,7 @@ export type Database = {
         Returns: boolean
       }
       remove_org_member: { Args: { p_user_id: string }; Returns: boolean }
+      requeue_sync_runner: { Args: { p_run_id: string }; Returns: number }
       same_organization_as: { Args: { p_user_id: string }; Returns: boolean }
       update_org_member_role: {
         Args: { p_role: string; p_user_id: string }
