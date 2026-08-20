@@ -1,9 +1,8 @@
 -- Connection-scoped canonical Sync.
 --
--- `mode = source` must identify one concrete external connection. This lets
--- Bsale, Shopify, MELI and Mercado Pago be refreshed independently while the
--- full pipeline remains available. Locks are per connection, so two different
--- sources do not block each other unnecessarily.
+-- `mode = source` identifies one concrete external connection. Full and
+-- reconciliation runs are exclusive for an organization+period, while source
+-- runs may coexist only when they target different connections.
 
 alter table public.sync_runs
   add column if not exists source_type text,
@@ -13,8 +12,6 @@ alter table public.pipeline_sync_runs
   add column if not exists source_type text,
   add column if not exists source_connection_id uuid;
 
--- Keep source kinds intentionally small and explicit. New adapters can extend
--- this constraint in a later migration without changing run semantics.
 do $$
 begin
   if not exists (
@@ -35,8 +32,7 @@ begin
   end if;
 end $$;
 
--- Replace the old org+period+mode lock. Source runs now lock only the concrete
--- connection, while full/reconcile runs keep their single tenant-period lock.
+-- Same-scope uniqueness: prevents two active runs for the exact same source.
 drop index if exists public.uq_sync_runs_active;
 
 create unique index if not exists uq_sync_runs_active_scope
@@ -49,6 +45,59 @@ create unique index if not exists uq_sync_runs_active_scope
   )
   where status in ('queued', 'running');
 
+-- Cross-scope exclusivity. The advisory xact lock serializes competing inserts
+-- for the same tenant+period, closing the race that an application-level
+-- "check then insert" cannot close by itself.
+create or replace function public.guard_sync_run_scope()
+returns trigger
+language plpgsql
+set search_path=public
+as $$
+declare
+  v_conflict uuid;
+begin
+  if new.status not in ('queued', 'running') then
+    return new;
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtextextended(new.organization_id::text || ':' || new.period, 0)
+  );
+
+  if new.mode in ('full', 'reconcile_only') then
+    select r.id into v_conflict
+    from public.sync_runs r
+    where r.organization_id=new.organization_id
+      and r.period=new.period
+      and r.status in ('queued', 'running')
+      and r.id<>new.id
+    limit 1;
+  elsif new.mode='source' then
+    select r.id into v_conflict
+    from public.sync_runs r
+    where r.organization_id=new.organization_id
+      and r.period=new.period
+      and r.status in ('queued', 'running')
+      and r.id<>new.id
+      and r.mode in ('full', 'reconcile_only')
+    limit 1;
+  end if;
+
+  if v_conflict is not null then
+    raise exception 'Another Sync is active for this organization and period'
+      using errcode='23505', detail=v_conflict::text;
+  end if;
+
+  return new;
+end
+$$;
+
+drop trigger if exists trg_guard_sync_run_scope on public.sync_runs;
+create trigger trg_guard_sync_run_scope
+before insert or update of organization_id, period, mode, source_type, source_connection_id, status
+on public.sync_runs
+for each row execute function public.guard_sync_run_scope();
+
 create index if not exists idx_sync_runs_source_started
   on public.sync_runs (organization_id, source_type, source_connection_id, started_at desc)
   where mode = 'source';
@@ -58,10 +107,8 @@ create index if not exists idx_pipeline_sync_runs_source
   where source_type is not null;
 
 -- Safe metadata surface for the Sync UI. Integration account tables contain
--- credentials, so the browser must never select those tables directly just to
--- render connection cards. This SECURITY DEFINER function returns only benign
--- identifiers/labels/status and scopes legacy null-organization rows to the
--- organization owner's user_id.
+-- credentials, so the browser never selects those tables directly just to
+-- render connection cards.
 create or replace function public.list_sync_connections()
 returns table(
   source_type text,
