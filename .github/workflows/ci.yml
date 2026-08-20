@@ -38,7 +38,7 @@ jobs:
         run: npm run typecheck
 
       - name: Deno check Sync backend
-        run: deno check supabase/functions/_shared/sync-pipeline.ts supabase/functions/cron-pipeline-sync/index.ts
+        run: deno check supabase/functions/_shared/sync-pipeline.ts supabase/functions/cron-pipeline-sync/index.ts supabase/functions/sync-meli-orders/index.ts
 
       - name: Production build
         run: npm run build
