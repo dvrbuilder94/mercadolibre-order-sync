@@ -84,8 +84,12 @@ export async function refreshMeliAccountToken(client: SupabaseClient, account: M
 // an actionable message rather than attempt a refresh that may kill the token.
 export async function getFreshAccessToken(
   client: SupabaseClient,
-  account: { id: string; access_token: string; expires_at?: string | null },
+  account: { id: string; access_token: string | null; expires_at?: string | null },
 ): Promise<string> {
+  if (!account.access_token) {
+    throw new Error('Cuenta MercadoLibre sin access token — reconectá la cuenta en /config.');
+  }
+
   if (account.expires_at && new Date(account.expires_at) > new Date()) {
     return account.access_token;
   }
@@ -96,7 +100,7 @@ export async function getFreshAccessToken(
     .eq('id', account.id)
     .maybeSingle();
 
-  if (fresh?.expires_at && new Date(fresh.expires_at) > new Date()) {
+  if (fresh?.access_token && fresh?.expires_at && new Date(fresh.expires_at) > new Date()) {
     return fresh.access_token;
   }
 
