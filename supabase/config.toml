@@ -24,6 +24,9 @@ verify_jwt = true
 [functions.get-meli-auth-url]
 verify_jwt = true
 
+[functions.save-meli-app-credentials]
+verify_jwt = true
+
 [functions.meli-callback]
 verify_jwt = true
 
