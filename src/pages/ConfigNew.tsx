@@ -208,41 +208,29 @@ export default function ConfigNew() {
 
   const connectShopify = async () => {
     setShopifyError(null);
-    if (!shopifyDomain.trim()) {
-      setShopifyError("Completa el shop domain (mitienda.myshopify.com)");
-      return;
-    }
-    if (!shopifyClientId.trim()) {
-      setShopifyError("Completa el Client ID de la app");
-      return;
-    }
-    if (!shopifyClientSecret.trim()) {
-      setShopifyError("Completa el Client Secret de la app (empieza con shpss_)");
+    const domain = shopifyDomain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(domain)) {
+      setShopifyError("Ingresá el dominio interno de la tienda (mitienda.myshopify.com)");
       return;
     }
     setConnectingShopify(true);
     try {
-      const { data, error } = await supabase.functions.invoke("connect-shopify", {
-        body: {
-          shop_domain: shopifyDomain.trim(),
-          client_id: shopifyClientId.trim(),
-          client_secret: shopifyClientSecret.trim(),
-        },
+      const { data, error } = await supabase.functions.invoke("get-shopify-auth-url", {
+        body: { shop_domain: domain },
       });
-      if (error || !data?.success) {
-        setShopifyError(data?.error || "Error al conectar con Shopify");
+      const authUrl = data?.authUrl;
+      if (error || !authUrl) {
+        setShopifyError(data?.error || "No se pudo iniciar la autorización con Shopify");
         return;
       }
-      setShopifyClientId("");
-      setShopifyClientSecret("");
-      setShowShopifyForm(false);
-      await fetchConnections();
+      window.location.assign(authUrl);
     } catch (e) {
-      setShopifyError("Error al conectar con Shopify");
+      setShopifyError("No se pudo iniciar la autorización con Shopify");
     } finally {
       setConnectingShopify(false);
     }
   };
+
 
   const connectMercadoPago = async () => {
     setMpError(null);
