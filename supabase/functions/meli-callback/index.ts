@@ -1,6 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { jwtVerify } from 'https://esm.sh/jose@5.2.0';
-import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -76,17 +75,42 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Get user's Mercado Libre account configuration
-    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
-      accountId,
-    });
+    // Admin client: the account row may be owned by the organization owner
+    // (not necessarily the signed-in admin), so RLS-scoped writes silently
+    // affect 0 rows. Ownership is verified below via organization membership.
+    const admin = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+    );
 
-    if (accountError || !meliAccount) {
+    const { data: memberships } = await admin
+      .from('organization_members')
+      .select('organization_id, role')
+      .eq('user_id', user.id);
+
+    const orgIds = (memberships ?? [])
+      .filter((m) => ['owner', 'admin'].includes(String(m.role)))
+      .map((m) => m.organization_id);
+
+    let accountQuery = admin.from('meli_accounts').select('*');
+    accountQuery = accountId
+      ? accountQuery.eq('id', accountId)
+      : accountQuery.order('updated_at', { ascending: false }).limit(1);
+
+    const { data: meliAccount, error: accountError } = await accountQuery.maybeSingle();
+
+    const ownsAccount = !!meliAccount && (
+      meliAccount.user_id === user.id ||
+      (meliAccount.organization_id && orgIds.includes(meliAccount.organization_id))
+    );
+
+    if (accountError || !meliAccount || !ownsAccount) {
       return new Response(
         JSON.stringify({ error: 'No Mercado Libre account configured' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+
 
     // Exchange code for access token
     const tokenResponse = await fetch('https://api.mercadolibre.com/oauth/token', {
@@ -147,7 +171,7 @@ Deno.serve(async (req) => {
     console.log('Expires At:', expiresAt.toISOString());
 
     // Update account with tokens
-    const { error: updateError } = await supabaseClient
+    const { data: updatedRows, error: updateError } = await admin
       .from('meli_accounts')
       .update({
         access_token: tokenData.access_token,
@@ -155,9 +179,10 @@ Deno.serve(async (req) => {
         expires_at: expiresAt.toISOString(),
         seller_id: userInfo.id.toString(),
       })
-      .eq('id', meliAccount.id);
+      .eq('id', meliAccount.id)
+      .select('id');
 
-    if (updateError) {
+    if (updateError || !updatedRows?.length) {
       console.error('Error updating account:', updateError);
       return new Response(
         JSON.stringify({ error: 'Failed to save tokens' }),
@@ -166,7 +191,7 @@ Deno.serve(async (req) => {
     }
 
     // Verify what was saved in database
-    const { data: savedAccount, error: fetchError } = await supabaseClient
+    const { data: savedAccount, error: fetchError } = await admin
       .from('meli_accounts')
       .select('*')
       .eq('id', meliAccount.id)

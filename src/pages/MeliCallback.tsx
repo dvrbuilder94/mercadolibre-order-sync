@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Loader2 } from "lucide-react";
@@ -8,8 +8,14 @@ const MeliCallback = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [processing, setProcessing] = useState(true);
+  const startedRef = useRef(false);
 
   const handleCallback = useCallback(async () => {
+    // El código de autorización de MercadoLibre es de un solo uso: evitamos
+    // el doble disparo del efecto en modo estricto de React.
+    if (startedRef.current) return;
+    startedRef.current = true;
+
     const code = searchParams.get('code');
     const state = searchParams.get('state');
     
