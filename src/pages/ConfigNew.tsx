@@ -71,6 +71,30 @@ export default function ConfigNew() {
     });
   }, [navigate]);
 
+  // Resultado del retorno de Shopify (?shopify=connected|error&reason=...)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("shopify");
+    if (!result) return;
+    if (result === "connected") {
+      toast.success("Tienda Shopify conectada");
+    } else {
+      const reasons: Record<string, string> = {
+        denied: "Cancelaste la autorización en Shopify.",
+        invalid_shop: "El dominio de la tienda no es válido.",
+        invalid_state: "La autorización expiró o ya fue usada. Intentá de nuevo.",
+        shop_mismatch: "La tienda autorizada no coincide con la solicitada.",
+        invalid_signature: "No pudimos verificar la respuesta de Shopify.",
+        missing_scopes: "La app no tiene permisos de lectura sobre la tienda.",
+        app_not_configured: "La aplicación de Shopify no está configurada.",
+      };
+      toast.error(reasons[params.get("reason") || ""] || "No se pudo conectar Shopify.");
+    }
+    window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
+
+
   const fetchConnections = async () => {
     setLoading(true);
     try {
