@@ -2,12 +2,20 @@ import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 // Quarterly Shopify API version (YYYY-MM). Single source of truth for every
 // Shopify call in the project.
-export const SHOPIFY_API_VERSION = '2026-04';
+export const SHOPIFY_API_VERSION = '2026-07';
 
-// Modern Shopify apps (Dev Dashboard, 2026) no longer expose a permanent
-// `shpat_` token: the backend mints a 24h access token with the
-// client_credentials grant using the app's client id/secret. Tokens are
-// cached in shopify_accounts and rotated before expiry (or after a 401).
+// Read-only scopes required by the syncs in this project. Do not widen.
+export const SHOPIFY_OAUTH_SCOPES = 'read_orders,read_all_orders,read_products,read_inventory';
+
+// Exact callback registered in the Shopify Dev Dashboard.
+export const SHOPIFY_OAUTH_REDIRECT_URI =
+  'https://opdclqitvxyqzeqzegih.supabase.co/functions/v1/shopify-oauth-callback';
+
+// New connections use the OAuth Authorization Code grant: the merchant grants
+// access and Shopify returns an offline (non-expiring) token that we store in
+// shopify_accounts. Legacy connections created with the client_credentials
+// grant keep working: they carry client_id/client_secret and a 24h token that
+// is still rotated below.
 const TOKEN_SKEW_MS = 5 * 60 * 1000;
 
 export interface ShopifyAccount {
@@ -28,6 +36,16 @@ export function normalizeShopDomain(input: string): string {
 }
 
 export class ShopifyAuthError extends Error {}
+
+/** Backend-only Shopify app credentials (never exposed to the browser). */
+export function shopifyAppCredentials(): { clientId: string; clientSecret: string } {
+  const clientId = Deno.env.get('SHOPIFY_CLIENT_ID');
+  const clientSecret = Deno.env.get('SHOPIFY_CLIENT_SECRET');
+  if (!clientId || !clientSecret) {
+    throw new ShopifyAuthError('SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET no están configurados');
+  }
+  return { clientId, clientSecret };
+}
 
 /** Exchanges client_id/client_secret for a short-lived Admin API token. */
 export async function mintAccessToken(shopDomain: string, clientId: string, clientSecret: string) {
@@ -69,8 +87,8 @@ export async function getValidAccessToken(
   account: ShopifyAccount,
   force = false,
 ): Promise<string> {
-  // Token permanente de Custom App (shpat_): no expira ni se renueva.
-  if (account.access_token && !account.token_expires_at && !account.client_id) {
+  // Token offline de OAuth (o token permanente legacy): no expira ni se renueva.
+  if (account.access_token && !account.token_expires_at) {
     return account.access_token;
   }
 

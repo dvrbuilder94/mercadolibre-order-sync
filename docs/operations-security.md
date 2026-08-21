@@ -96,3 +96,42 @@ La conexión nueva de MercadoLibre requiere estos secrets de Edge Functions:
 
 Bsale no requiere secrets globales: cada cliente pega su access token desde
 Conexiones y la función `connect-bsale` lo valida antes de guardarlo.
+
+## Conexión Shopify (OAuth Authorization Code)
+
+Las tiendas de comerciantes externos se conectan con el flujo OAuth oficial de
+Shopify. El usuario solo escribe el dominio `*.myshopify.com` en `/config`;
+nunca se le piden Client ID ni Client Secret.
+
+Secrets de Edge Functions requeridos (solo nombres, nunca valores en el repo):
+
+- `SHOPIFY_CLIENT_ID`
+- `SHOPIFY_CLIENT_SECRET`
+
+Valores exactos a configurar en el Shopify Dev Dashboard (app de distribución
+personalizada):
+
+- App URL: `https://mercadolibre-order-sync.lovable.app/config`
+- Allowed redirection URL:
+  `https://opdclqitvxyqzeqzegih.supabase.co/functions/v1/shopify-oauth-callback`
+- Scopes (solo lectura): `read_orders,read_all_orders,read_products,read_inventory`
+  (`read_all_orders` requiere aprobación de Shopify para ver más de 60 días).
+- Webhook API version: `2026-07` (misma versión que `SHOPIFY_API_VERSION`).
+
+Funciones involucradas:
+
+- `get-shopify-auth-url` (verify_jwt = true): exige administrador de la
+  organización, valida el dominio, crea un `state` aleatorio de un solo uso con
+  vencimiento en `shopify_oauth_states` y devuelve la URL de autorización.
+- `shopify-oauth-callback` (verify_jwt = false): valida el HMAC firmado por
+  Shopify, el dominio y el `state` (vigencia, pertenencia y consumo único),
+  canjea el código por un token offline, hace una consulta de prueba
+  (`shop { name myshopifyDomain }`) y guarda la conexión con el `user_id`
+  canónico de la organización. El token nunca se registra en logs ni vuelve al
+  navegador.
+
+La tabla `shopify_oauth_states` es backend-only (sin acceso para `anon` ni
+`authenticated`). En `shopify_accounts` el frontend solo puede leer
+`id, user_id, organization_id, shop_domain, status, created_at, updated_at,
+token_expires_at`: `access_token`, `client_id` y `client_secret` quedan fuera
+del alcance del Data API.

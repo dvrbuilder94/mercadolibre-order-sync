@@ -56,8 +56,6 @@ export default function ConfigNew() {
   const [bsaleError, setBsaleError] = useState<string | null>(null);
   const [showShopifyForm, setShowShopifyForm] = useState(false);
   const [shopifyDomain, setShopifyDomain] = useState("");
-  const [shopifyClientId, setShopifyClientId] = useState("");
-  const [shopifyClientSecret, setShopifyClientSecret] = useState("");
   const [connectingShopify, setConnectingShopify] = useState(false);
   const [shopifyError, setShopifyError] = useState<string | null>(null);
   const [mercadopago, setMercadopago] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
@@ -72,6 +70,30 @@ export default function ConfigNew() {
       else fetchConnections();
     });
   }, [navigate]);
+
+  // Resultado del retorno de Shopify (?shopify=connected|error&reason=...)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("shopify");
+    if (!result) return;
+    if (result === "connected") {
+      toast.success("Tienda Shopify conectada");
+    } else {
+      const reasons: Record<string, string> = {
+        denied: "Cancelaste la autorización en Shopify.",
+        invalid_shop: "El dominio de la tienda no es válido.",
+        invalid_state: "La autorización expiró o ya fue usada. Intentá de nuevo.",
+        shop_mismatch: "La tienda autorizada no coincide con la solicitada.",
+        invalid_signature: "No pudimos verificar la respuesta de Shopify.",
+        missing_scopes: "La app no tiene permisos de lectura sobre la tienda.",
+        app_not_configured: "La aplicación de Shopify no está configurada.",
+      };
+      toast.error(reasons[params.get("reason") || ""] || "No se pudo conectar Shopify.");
+    }
+    window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
+
 
   const fetchConnections = async () => {
     setLoading(true);
@@ -210,41 +232,29 @@ export default function ConfigNew() {
 
   const connectShopify = async () => {
     setShopifyError(null);
-    if (!shopifyDomain.trim()) {
-      setShopifyError("Completa el shop domain (mitienda.myshopify.com)");
-      return;
-    }
-    if (!shopifyClientId.trim()) {
-      setShopifyError("Completa el Client ID de la app");
-      return;
-    }
-    if (!shopifyClientSecret.trim()) {
-      setShopifyError("Completa el Client Secret de la app (empieza con shpss_)");
+    const domain = shopifyDomain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(domain)) {
+      setShopifyError("Ingresá el dominio interno de la tienda (mitienda.myshopify.com)");
       return;
     }
     setConnectingShopify(true);
     try {
-      const { data, error } = await supabase.functions.invoke("connect-shopify", {
-        body: {
-          shop_domain: shopifyDomain.trim(),
-          client_id: shopifyClientId.trim(),
-          client_secret: shopifyClientSecret.trim(),
-        },
+      const { data, error } = await supabase.functions.invoke("get-shopify-auth-url", {
+        body: { shop_domain: domain },
       });
-      if (error || !data?.success) {
-        setShopifyError(data?.error || "Error al conectar con Shopify");
+      const authUrl = data?.authUrl;
+      if (error || !authUrl) {
+        setShopifyError(data?.error || "No se pudo iniciar la autorización con Shopify");
         return;
       }
-      setShopifyClientId("");
-      setShopifyClientSecret("");
-      setShowShopifyForm(false);
-      await fetchConnections();
+      window.location.assign(authUrl);
     } catch (e) {
-      setShopifyError("Error al conectar con Shopify");
+      setShopifyError("No se pudo iniciar la autorización con Shopify");
     } finally {
       setConnectingShopify(false);
     }
   };
+
 
   const connectMercadoPago = async () => {
     setMpError(null);
@@ -456,67 +466,40 @@ export default function ConfigNew() {
           }
         />
 
-        {/* Shopify — pasos según shopify.dev (custom app + Admin API token) */}
+        {/* Shopify — OAuth: el comerciante autoriza en su tienda, sin credenciales */}
         <ConnectGuideDialog
           open={showShopifyForm}
           onOpenChange={(o) => { setShowShopifyForm(o); if (!o) setShopifyError(null); }}
           title="Conectar Shopify"
-          subtitle="Creá la app en el Dev Dashboard, instalala en tu tienda y pegá el Client ID + Secret."
-          docsUrl="https://shopify.dev/docs/apps/build/authentication-authorization/client-credentials"
-          docsLabel="Ver guía oficial (client credentials)"
+          subtitle="Ingresá el dominio de tu tienda y autorizá el acceso en Shopify. No pedimos credenciales."
+          docsUrl="https://shopify.dev/docs/apps/build/authentication-authorization"
+          docsLabel="Ver documentación de Shopify"
           steps={[
-            { title: "Creá la app", body: <>En el <strong>Dev Dashboard</strong> de Shopify creá una app y ponele “Quadra”.</> },
-            { title: "Permisos de solo lectura", body: <>En <strong>Configuration → Admin API scopes</strong> marcá:<CopyableValue label="Copiar scopes" value="read_orders, read_all_orders, read_products, read_customers, read_fulfillments" /></> },
-            { title: "Instalá la app en la tienda", body: <>Paso obligatorio: en la app, elegí tu tienda y hacé clic en <strong>Install</strong>. Sin instalar, Shopify devuelve un token pero rechaza todas las consultas. Si te redirige a otra página, volvé acá: la instalación ya quedó hecha.</> },
-            { title: "Copiá Client ID y Client Secret", body: <>Están en <strong>Overview / API credentials</strong>. El secret empieza con <code className="rounded bg-muted px-1">shpss_</code>. Quadra genera solo el token de 24 h.</> },
-            { title: "Usá el dominio .myshopify.com", body: <>En el shop domain va el dominio interno (<code className="rounded bg-muted px-1">mitienda.myshopify.com</code>), no tu dominio público.</> },
+            { title: "Ingresá el dominio interno", body: <>Es el dominio <code className="rounded bg-muted px-1">.myshopify.com</code> de tu tienda (por ejemplo <code className="rounded bg-muted px-1">mitienda.myshopify.com</code>), no tu dominio público.</> },
+            { title: "Autorizá en Shopify", body: <>Te llevamos a la pantalla oficial de Shopify para aprobar el acceso con tu usuario de la tienda.</> },
+            { title: "Permisos solicitados (solo lectura)", body: <>Quadra pide únicamente:<CopyableValue label="Copiar permisos" value="read_orders, read_all_orders, read_products, read_inventory" /></> },
+            { title: "Volvés automáticamente", body: <>Al aprobar, Shopify te devuelve a esta página y la conexión queda marcada como <strong>Conectada</strong> luego de una consulta real a la tienda.</> },
           ]}
-          note={<>El token se envía directo al backend, que es el único que habla con Shopify, y nunca vuelve al navegador. La conexión se marca <strong>Conectada</strong> solo después de una consulta real a la tienda.</>}
+          note={<>Quadra nunca ve ni te pide Client ID ni Client Secret: el acceso lo otorga tu tienda y el token queda solo en el backend. Podés revocarlo desde <strong>Configuración → Apps</strong> en tu panel de Shopify.</>}
           error={shopifyError}
           submitting={connectingShopify}
           onSubmit={connectShopify}
           form={
-            <>
-              <div className="space-y-1.5">
-                <label htmlFor="shopify-domain" className="text-xs text-slate-600">Shop domain</label>
-                <input
-                  id="shopify-domain"
-                  type="text"
-                  value={shopifyDomain}
-                  onChange={(e) => setShopifyDomain(e.target.value)}
-                  placeholder="mitienda.myshopify.com"
-                  className="w-full rounded-md border px-3 py-1.5 text-sm"
-                />
-                <p className="text-xs text-muted-foreground">Debe terminar en <code className="rounded bg-muted px-1">.myshopify.com</code>.</p>
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="shopify-client-id" className="text-xs text-slate-600">Client ID</label>
-                <input
-                  id="shopify-client-id"
-                  type="text"
-                  value={shopifyClientId}
-                  onChange={(e) => setShopifyClientId(e.target.value)}
-                  placeholder="Client ID de la app"
-                  autoComplete="off"
-                  className="w-full rounded-md border px-3 py-1.5 text-sm"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="shopify-client-secret" className="text-xs text-slate-600">Client Secret</label>
-                <input
-                  id="shopify-client-secret"
-                  type="password"
-                  value={shopifyClientSecret}
-                  onChange={(e) => setShopifyClientSecret(e.target.value)}
-                  placeholder="shpss_..."
-                  autoComplete="off"
-                  className="w-full rounded-md border px-3 py-1.5 text-sm"
-                />
-                <p className="text-xs text-muted-foreground">Pegá aquí el valor <code className="rounded bg-muted px-1">shpss_…</code>. Quadra obtiene automáticamente el access token de 24 horas; no tenés que buscar ni pegar un <code className="rounded bg-muted px-1">shpat_</code>.</p>
-              </div>
-            </>
+            <div className="space-y-1.5">
+              <label htmlFor="shopify-domain" className="text-xs text-slate-600">Dominio de la tienda</label>
+              <input
+                id="shopify-domain"
+                type="text"
+                value={shopifyDomain}
+                onChange={(e) => setShopifyDomain(e.target.value)}
+                placeholder="mitienda.myshopify.com"
+                className="w-full rounded-md border px-3 py-1.5 text-sm"
+              />
+              <p className="text-xs text-muted-foreground">Debe terminar en <code className="rounded bg-muted px-1">.myshopify.com</code>.</p>
+            </div>
           }
         />
+
 
         {/* Mercado Pago — access token de producción (developers.mercadopago.cl) */}
         <ConnectGuideDialog

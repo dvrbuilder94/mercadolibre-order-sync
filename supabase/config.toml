@@ -109,3 +109,11 @@ verify_jwt = false
 
 [functions.sync-shopify-products]
 verify_jwt = true
+
+[functions.get-shopify-auth-url]
+verify_jwt = true
+
+# Shopify redirects the merchant browser here; trust comes from the signed HMAC
+# plus the single-use state row, not from a Supabase JWT.
+[functions.shopify-oauth-callback]
+verify_jwt = false
