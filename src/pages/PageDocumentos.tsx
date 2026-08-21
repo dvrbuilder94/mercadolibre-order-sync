@@ -262,12 +262,12 @@ export default function PageDocumentos() {
           <div className="flex gap-2"><button disabled={page === 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))} className="px-3 py-1.5 border rounded disabled:opacity-40">Anterior</button><button disabled={page + 1 >= totalPages || loading} onClick={() => setPage((p) => p + 1)} className="px-3 py-1.5 border rounded disabled:opacity-40">Siguiente</button></div>
         </div>
 
-        <DetailPanel open={!!selectedDoc} onClose={() => setSelectedDoc(null)} title={selectedDoc ? `${DOC_LABEL[selectedDoc.document_type] || selectedDoc.document_type} ${selectedDoc.document_number || ""}` : "Documento"}>
-          {selectedDoc && <div className="space-y-4 text-sm">
-            <div className="grid grid-cols-2 gap-3"><div><p className="text-xs text-slate-400">Total</p><p className="font-semibold">{CLP(selectedDoc.total_amount)}</p></div><div><p className="text-xs text-slate-400">RUT</p><p className="font-mono">{fullRut(selectedDoc) || "—"}</p></div><div><p className="text-xs text-slate-400">Orden externa</p><p className="font-mono">{sourceOrderNumber(selectedDoc) || "—"}</p></div><div><p className="text-xs text-slate-400">Referencia</p><p>{referenceReason(selectedDoc) || "—"}</p></div></div>
-            <div><p className="text-xs text-slate-400 mb-2">Ventas asociadas</p>{selectedDocSales === null ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : selectedDocSales.length === 0 ? <p className="text-slate-400">Sin venta asociada.</p> : <div className="space-y-2">{selectedDocSales.map((sale: any) => <div key={sale.id} className="border rounded p-2"><p className="font-medium">Orden {sale.order_id}</p><p className="text-xs text-slate-400">{sale.channel || "—"} · {CLP(sale.gross_amount)}</p></div>)}</div>}</div>
-          </div>}
-        </DetailPanel>
+        <DetailPanel
+          data={selectedDoc}
+          onClose={() => setSelectedDoc(null)}
+          linkedSales={selectedDocSales}
+          title={selectedDoc ? `${DOC_LABEL[selectedDoc.document_type] || selectedDoc.document_type} ${selectedDoc.document_number || ""}` : "Documento"}
+        />
       </main>
     </div>
   );
