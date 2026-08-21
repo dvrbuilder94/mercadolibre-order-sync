@@ -5,6 +5,7 @@ import {
   mintAccessToken,
   ShopifyAuthError,
 } from '../_shared/shopify-account.ts'
+import { orgAdminErrorStatus, requireOrgAdmin } from '../_shared/org-admin.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -26,23 +27,16 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     )
 
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader?.startsWith('Bearer ')) {
-      return json({ success: false, error: 'No authorization header' }, 401)
+    let adminContext
+    try {
+      adminContext = await requireOrgAdmin(supabase, req.headers.get('Authorization'))
+    } catch (error) {
+      return json({ success: false, error: 'No autorizado para administrar conexiones' }, orgAdminErrorStatus(error))
     }
-
-    const { data: claimsData, error: claimsError } = await supabase.auth.getUser(
-      authHeader.replace('Bearer ', ''),
-    )
-    if (claimsError || !claimsData.user) {
-      return json({ success: false, error: 'Unauthorized' }, 401)
-    }
-    const userId = claimsData.user.id
 
     const body = await req.json().catch(() => ({}))
     const shopDomainRaw = typeof body.shop_domain === 'string' ? body.shop_domain : ''
     const clientId = typeof body.client_id === 'string' ? body.client_id.trim() : ''
-    // El secret puede venir del formulario o estar guardado como secreto del backend.
     const clientSecret = (typeof body.client_secret === 'string' && body.client_secret.trim())
       || Deno.env.get('SHOPIFY_CLIENT_SECRET')
       || ''
@@ -53,18 +47,14 @@ Deno.serve(async (req) => {
       return json({ success: false, error: 'Pegá el token de la app (shpat_…) o el Client ID + Client Secret' }, 400)
     }
     if (pastedToken && !/^shp(at|ca|ss)_/.test(pastedToken)) {
-      return json({ success: false, error: 'El token de la Admin API debe empezar con shpat_ (lo copiás al instalar la Custom App).' }, 400)
+      return json({ success: false, error: 'El token de la Admin API debe empezar con shpat_.' }, 400)
     }
 
     const shopDomain = normalizeShopDomain(shopDomainRaw)
     if (!shopDomain.endsWith('.myshopify.com')) {
-      return json({
-        success: false,
-        error: `El shop domain debe ser el dominio interno de Shopify (ej: mitienda.myshopify.com), no "${shopDomain}". Lo encontrás en la URL del admin: admin.shopify.com/store/mitienda.`,
-      }, 400)
+      return json({ success: false, error: `El shop domain debe terminar en .myshopify.com, no "${shopDomain}".` }, 400)
     }
 
-    // 1) Token: pegado (Custom App, permanente) o generado vía client_credentials (24h).
     let minted: { accessToken: string; expiresAt: string | null }
     if (pastedToken) {
       minted = { accessToken: pastedToken, expiresAt: null }
@@ -75,12 +65,10 @@ Deno.serve(async (req) => {
         const message = e instanceof ShopifyAuthError
           ? e.message
           : 'No se pudo obtener el token de Shopify. Verificá el dominio y las credenciales.'
-        console.error('Shopify token exchange failed for shop:', shopDomain)
         return json({ success: false, error: message }, 400)
       }
     }
 
-    // 2) Validación real: consulta GraphQL de solo lectura.
     const probe = await fetch(`https://${shopDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
       method: 'POST',
       headers: { 'X-Shopify-Access-Token': minted.accessToken, 'Content-Type': 'application/json' },
@@ -88,28 +76,26 @@ Deno.serve(async (req) => {
     })
 
     if (!probe.ok) {
-      console.error('Shopify shop query failed with status', probe.status)
       return json({
         success: false,
         error: probe.status === 401 || probe.status === 403
-          ? `Shopify entregó el token pero rechazó la consulta (${probe.status}). Casi siempre es porque la app todavía no está instalada en ${shopDomain}: abrí la app en el Dev Dashboard, elegí esa tienda y hacé clic en "Install". Verificá también los scopes read_orders y read_products.`
+          ? `Shopify rechazó la consulta (${probe.status}). Verificá instalación y scopes.`
           : 'No se pudo consultar la tienda en Shopify.',
       }, 400)
     }
 
     const probeData = await probe.json().catch(() => null)
     if (probeData?.errors || !probeData?.data?.shop) {
-      console.error('Shopify GraphQL rejected the shop query')
       return json({ success: false, error: 'La app no tiene permisos de lectura sobre la tienda.' }, 400)
     }
 
     const shopName = probeData.data.shop.name || shopDomain
 
-    // 3) Recién con la consulta OK persistimos y marcamos conectado.
     const { error: upsertError } = await supabase
       .from('shopify_accounts')
       .upsert({
-        user_id: userId,
+        user_id: adminContext.ownerUserId,
+        organization_id: adminContext.organizationId,
         shop_domain: shopDomain,
         client_id: pastedToken ? null : clientId,
         client_secret: pastedToken ? null : clientSecret,
@@ -124,10 +110,9 @@ Deno.serve(async (req) => {
       return json({ success: false, error: 'Error al guardar la conexión. Intentá nuevamente.' }, 500)
     }
 
-    console.log('Shopify connected for user:', userId, '| shop:', shopDomain)
     return json({ success: true, shopName })
   } catch (error) {
-    console.error('Unexpected error in connect-shopify')
+    console.error('Unexpected error in connect-shopify', error)
     return json({ success: false, error: 'Error interno del servidor' }, 500)
   }
 })
