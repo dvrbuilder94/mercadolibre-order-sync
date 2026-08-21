@@ -1,6 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { jwtVerify } from 'https://esm.sh/jose@5.2.0';
-import { getMeliAccount } from '../_shared/meli-account.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -172,7 +171,7 @@ Deno.serve(async (req) => {
     console.log('Expires At:', expiresAt.toISOString());
 
     // Update account with tokens
-    const { error: updateError } = await supabaseClient
+    const { data: updatedRows, error: updateError } = await admin
       .from('meli_accounts')
       .update({
         access_token: tokenData.access_token,
@@ -180,9 +179,10 @@ Deno.serve(async (req) => {
         expires_at: expiresAt.toISOString(),
         seller_id: userInfo.id.toString(),
       })
-      .eq('id', meliAccount.id);
+      .eq('id', meliAccount.id)
+      .select('id');
 
-    if (updateError) {
+    if (updateError || !updatedRows?.length) {
       console.error('Error updating account:', updateError);
       return new Response(
         JSON.stringify({ error: 'Failed to save tokens' }),
@@ -191,7 +191,7 @@ Deno.serve(async (req) => {
     }
 
     // Verify what was saved in database
-    const { data: savedAccount, error: fetchError } = await supabaseClient
+    const { data: savedAccount, error: fetchError } = await admin
       .from('meli_accounts')
       .select('*')
       .eq('id', meliAccount.id)
