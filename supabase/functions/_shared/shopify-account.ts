@@ -87,8 +87,8 @@ export async function getValidAccessToken(
   account: ShopifyAccount,
   force = false,
 ): Promise<string> {
-  // Token permanente de Custom App (shpat_): no expira ni se renueva.
-  if (account.access_token && !account.token_expires_at && !account.client_id) {
+  // Token offline de OAuth (o token permanente legacy): no expira ni se renueva.
+  if (account.access_token && !account.token_expires_at) {
     return account.access_token;
   }
 
