@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { MP_AUTH, mpAppCredentials } from '../_shared/mercadopago-account.ts';
+import { orgAdminErrorStatus, requireOrgAdmin } from '../_shared/org-admin.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -15,8 +16,6 @@ const json = (body: unknown, status = 200) =>
 const base64url = (bytes: Uint8Array) =>
   btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-// Paso 1 del OAuth de Mercado Pago (Authorization Code + PKCE). Genera el
-// state anti-CSRF y el code_verifier, los guarda y devuelve la URL de consentimiento.
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
@@ -26,15 +25,14 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader?.startsWith('Bearer ')) return json({ error: 'No autorizado' }, 401);
-    const { data: claims, error: claimsError } = await supabase.auth.getUser(
-      authHeader.replace('Bearer ', ''),
-    );
-    if (claimsError || !claims.user) return json({ error: 'No autorizado' }, 401);
+    let adminContext;
+    try {
+      adminContext = await requireOrgAdmin(supabase, req.headers.get('Authorization'));
+    } catch (error) {
+      return json({ error: 'No autorizado para administrar conexiones' }, orgAdminErrorStatus(error));
+    }
 
     const { clientId, redirectUri } = mpAppCredentials();
-
     const state = base64url(crypto.getRandomValues(new Uint8Array(32)));
     const codeVerifier = base64url(crypto.getRandomValues(new Uint8Array(64)));
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier));
@@ -42,13 +40,12 @@ Deno.serve(async (req) => {
 
     const { error: stateError } = await supabase.from('mercadopago_oauth_states').insert({
       state,
-      user_id: claims.user.id,
+      user_id: adminContext.ownerUserId,
       code_verifier: codeVerifier,
       redirect_uri: redirectUri,
     });
     if (stateError) throw stateError;
 
-    // Limpieza oportunista de solicitudes vencidas.
     await supabase
       .from('mercadopago_oauth_states')
       .delete()

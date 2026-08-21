@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { orgAdminErrorStatus, requireOrgAdmin } from '../_shared/org-admin.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,9 +12,6 @@ const json = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 
-// Conexión de Mercado Pago mediante Access Token de producción (Tus integraciones
-// → Credenciales de producción). Se valida contra /users/me antes de guardar y se
-// usa siempre en modo lectura: pagos, liquidaciones y reportes.
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
 
@@ -23,15 +21,12 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     )
 
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader?.startsWith('Bearer ')) {
-      return json({ success: false, error: 'No autorizado' }, 401)
+    let adminContext
+    try {
+      adminContext = await requireOrgAdmin(supabase, req.headers.get('Authorization'))
+    } catch (error) {
+      return json({ success: false, error: 'No autorizado para administrar conexiones' }, orgAdminErrorStatus(error))
     }
-    const { data: claims, error: claimsError } = await supabase.auth.getUser(
-      authHeader.replace('Bearer ', ''),
-    )
-    if (claimsError || !claims.user) return json({ success: false, error: 'No autorizado' }, 401)
-    const userId = claims.user.id
 
     const { access_token } = await req.json().catch(() => ({}))
     if (!access_token || typeof access_token !== 'string' || !access_token.trim()) {
@@ -40,10 +35,7 @@ Deno.serve(async (req) => {
     const accessToken = access_token.trim()
 
     if (accessToken.startsWith('TEST-')) {
-      return json({
-        success: false,
-        error: 'Ese es un token de prueba (TEST-). Usa las credenciales de producción (APP_USR-).',
-      }, 400)
+      return json({ success: false, error: 'Ese es un token de prueba (TEST-). Usa las credenciales de producción (APP_USR-).' }, 400)
     }
 
     const meResponse = await fetch('https://api.mercadopago.com/users/me', {
@@ -54,18 +46,16 @@ Deno.serve(async (req) => {
       console.error('MP /users/me error:', meResponse.status, detail)
       return json({
         success: false,
-        error: meResponse.status === 401
-          ? 'Token inválido o revocado en Mercado Pago.'
-          : 'No se pudo validar el token con Mercado Pago.',
+        error: meResponse.status === 401 ? 'Token inválido o revocado en Mercado Pago.' : 'No se pudo validar el token con Mercado Pago.',
       }, 400)
     }
 
     const me = await meResponse.json()
-
     const { error: upsertError } = await supabase
       .from('mercadopago_accounts')
       .upsert({
-        user_id: userId,
+        user_id: adminContext.ownerUserId,
+        organization_id: adminContext.organizationId,
         access_token: accessToken,
         mp_user_id: String(me.id),
         nickname: me.nickname ?? null,
