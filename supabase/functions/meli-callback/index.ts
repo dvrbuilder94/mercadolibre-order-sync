@@ -76,17 +76,42 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Get user's Mercado Libre account configuration
-    const { data: meliAccount, error: accountError } = await getMeliAccount(supabaseClient, user.id, {
-      accountId,
-    });
+    // Admin client: the account row may be owned by the organization owner
+    // (not necessarily the signed-in admin), so RLS-scoped writes silently
+    // affect 0 rows. Ownership is verified below via organization membership.
+    const admin = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+    );
 
-    if (accountError || !meliAccount) {
+    const { data: memberships } = await admin
+      .from('organization_members')
+      .select('organization_id, role')
+      .eq('user_id', user.id);
+
+    const orgIds = (memberships ?? [])
+      .filter((m) => ['owner', 'admin'].includes(String(m.role)))
+      .map((m) => m.organization_id);
+
+    let accountQuery = admin.from('meli_accounts').select('*');
+    accountQuery = accountId
+      ? accountQuery.eq('id', accountId)
+      : accountQuery.order('updated_at', { ascending: false }).limit(1);
+
+    const { data: meliAccount, error: accountError } = await accountQuery.maybeSingle();
+
+    const ownsAccount = !!meliAccount && (
+      meliAccount.user_id === user.id ||
+      (meliAccount.organization_id && orgIds.includes(meliAccount.organization_id))
+    );
+
+    if (accountError || !meliAccount || !ownsAccount) {
       return new Response(
         JSON.stringify({ error: 'No Mercado Libre account configured' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+
 
     // Exchange code for access token
     const tokenResponse = await fetch('https://api.mercadolibre.com/oauth/token', {
