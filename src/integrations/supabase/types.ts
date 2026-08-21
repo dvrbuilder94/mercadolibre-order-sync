@@ -2065,7 +2065,29 @@ export type Database = {
       current_org_id: { Args: never; Returns: string }
       current_org_role: { Args: never; Returns: string }
       current_user_organization_id: { Args: never; Returns: string }
+      document_channel: {
+        Args: { p_detected: string; p_raw: Json }
+        Returns: string
+      }
       enqueue_sync_runner: { Args: { p_run_id: string }; Returns: number }
+      get_documentos_page: {
+        Args: {
+          p_channel?: string
+          p_doc_type?: string
+          p_limit?: number
+          p_link_filter?: string
+          p_offset?: number
+          p_pay_filter?: string
+          p_period: string
+          p_search?: string
+          p_status?: string
+        }
+        Returns: Json
+      }
+      get_documentos_summary: {
+        Args: { p_channel?: string; p_period: string }
+        Returns: Json
+      }
       get_meli_billing_summary: {
         Args: { p_period: string }
         Returns: {
