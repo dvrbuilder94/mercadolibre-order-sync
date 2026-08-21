@@ -9,11 +9,6 @@ import { Label } from "@/components/ui/label";
 import { Copy, ExternalLink, Loader2, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
-// Asistente de conexión con MercadoLibre.
-// MercadoLibre exige que cada vendedor cree su propia aplicación en el DevCenter:
-// de ahí salen el App ID y la Clave secreta que usamos para el OAuth. Este
-// asistente guía ese paso antes de mandar al usuario a autorizar.
-
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -30,6 +25,7 @@ export function MeliConnectWizard({ open, onOpenChange }: Props) {
   useEffect(() => {
     if (!open) return;
     setStep(1);
+    setClientSecret("");
     supabase
       .from("meli_accounts")
       .select("client_id")
@@ -51,34 +47,34 @@ export function MeliConnectWizard({ open, onOpenChange }: Props) {
       toast.error("Ingresa el App ID y la Clave secreta de tu aplicación");
       return;
     }
+
     setSaving(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+      const { data: saved, error: saveError } = await supabase.functions.invoke("save-meli-app-credentials", {
+        body: {
+          client_id: clientId.trim(),
+          client_secret: clientSecret.trim(),
+          redirect_uri: redirectUri,
+          site_id: "MLC",
+        },
+      });
 
-      const { data: existing } = await supabase
-        .from("meli_accounts")
-        .select("id")
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      if (saveError || !saved?.success || !saved?.account_id) {
+        let detail = saved?.error || saveError?.message || "No se pudieron guardar las credenciales";
+        try {
+          const body = await (saveError as { context?: Response } | null)?.context?.json();
+          detail = body?.error || detail;
+        } catch { /* body opcional */ }
+        throw new Error(detail);
+      }
 
-      const credentials = {
-        client_id: clientId.trim(),
-        client_secret: clientSecret.trim(),
-        redirect_uri: redirectUri,
-        site_id: "MLC",
-      };
+      // El secret termina aquí: nunca se vuelve a consultar desde el navegador.
+      setClientSecret("");
 
-      const { error: saveError } = existing
-        ? await supabase.from("meli_accounts").update(credentials).eq("id", existing.id)
-        : await supabase.from("meli_accounts").insert({ ...credentials, user_id: user.id });
-
-      if (saveError) throw new Error(saveError.message);
-
-      const { data, error } = await supabase.functions.invoke("get-meli-auth-url");
+      const { data, error } = await supabase.functions.invoke("get-meli-auth-url", {
+        body: { account_id: saved.account_id },
+      });
       if (error) {
-        // Los errores de edge functions traen el detalle en el body, no en el mensaje.
         let detail = "";
         try {
           const body = await (error as { context?: Response }).context?.json();
@@ -86,6 +82,7 @@ export function MeliConnectWizard({ open, onOpenChange }: Props) {
         } catch { /* sin body legible */ }
         throw new Error(detail || "No se pudo generar la URL de autorización");
       }
+
       const authUrl = data?.authUrl || data?.auth_url;
       if (!authUrl) throw new Error(data?.error || "MercadoLibre no devolvió una URL de autorización");
       window.location.assign(authUrl);
@@ -111,8 +108,7 @@ export function MeliConnectWizard({ open, onOpenChange }: Props) {
           <div className="space-y-4 text-sm">
             <ol className="space-y-3 list-decimal pl-5 text-muted-foreground">
               <li>
-                Entra al DevCenter con la misma cuenta con la que vendes y crea una aplicación
-                nueva.
+                Entra al DevCenter con la misma cuenta con la que vendes y crea una aplicación nueva.
               </li>
               <li>
                 En <strong>URIs de redirect</strong> pega exactamente esta dirección:
@@ -126,12 +122,7 @@ export function MeliConnectWizard({ open, onOpenChange }: Props) {
               <li>
                 En <strong>Scopes</strong> deja marcados <code className="rounded bg-muted px-1">read</code>,{" "}
                 <code className="rounded bg-muted px-1">offline_access</code> y{" "}
-                <code className="rounded bg-muted px-1">write</code>: sin{" "}
-                <code className="rounded bg-muted px-1">offline_access</code> MercadoLibre no entrega el
-                refresh token y la conexión se cae cada 6 horas.
-              </li>
-              <li>
-                En <strong>Tópicos de notificación</strong> puedes dejar todo sin marcar por ahora.
+                <code className="rounded bg-muted px-1">write</code>.
               </li>
               <li>
                 Guarda y copia el <strong>App ID</strong> y la <strong>Clave secreta</strong>.
@@ -140,7 +131,7 @@ export function MeliConnectWizard({ open, onOpenChange }: Props) {
 
             <p className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
               La URI de redirect debe coincidir carácter por carácter (incluido https y sin barra final),
-              o MercadoLibre responde <code>invalid_grant</code> al autorizar.
+              o MercadoLibre rechaza la autorización.
             </p>
 
             <a
@@ -183,8 +174,7 @@ export function MeliConnectWizard({ open, onOpenChange }: Props) {
 
             <p className="flex items-start gap-2 text-xs text-muted-foreground">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
-              Las credenciales quedan guardadas solo en tu cuenta y se usan únicamente para
-              autorizar el acceso a tus ventas.
+              La clave se envía directamente al backend y nunca puede ser leída nuevamente desde el navegador.
             </p>
 
             <div className="flex justify-between gap-2 pt-2">
