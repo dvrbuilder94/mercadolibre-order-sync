@@ -1740,6 +1740,44 @@ export type Database = {
           },
         ]
       }
+      shopify_oauth_states: {
+        Row: {
+          consumed_at: string | null
+          created_at: string
+          expires_at: string
+          organization_id: string
+          shop_domain: string
+          state: string
+          user_id: string
+        }
+        Insert: {
+          consumed_at?: string | null
+          created_at?: string
+          expires_at?: string
+          organization_id: string
+          shop_domain: string
+          state: string
+          user_id: string
+        }
+        Update: {
+          consumed_at?: string | null
+          created_at?: string
+          expires_at?: string
+          organization_id?: string
+          shop_domain?: string
+          state?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shopify_oauth_states_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       shopify_products: {
         Row: {
           barcode: string | null
