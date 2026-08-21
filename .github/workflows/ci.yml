@@ -48,6 +48,7 @@ jobs:
           supabase/functions/sync-mercadopago-payments/index.ts
           supabase/functions/start-sync-run/index.ts
           supabase/functions/sync-runner/index.ts
+          supabase/functions/save-meli-app-credentials/index.ts
 
       - name: Production build
         run: npm run build
