@@ -1,9 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { supabase } from "@/integrations/supabase/client";
-import { chileMonthDateRange } from "@/lib/chileDate";
-import { signedTaxDocumentAmount } from "@/lib/financialRules";
-import { isRealSale } from "@/lib/orderStatus";
 import { CHANNEL_LABEL } from "@/lib/constants";
 
 const CLP = (n: number | null | undefined) =>
@@ -22,77 +19,6 @@ const DOC_LABEL: Record<string, string> = {
 };
 
 const PIE_COLORS = ["#0ea5e9", "#14b8a6", "#f59e0b", "#a855f7", "#ef4444", "#64748b", "#84cc16", "#f97316"];
-const UNKNOWN_PAYMENT = "Sin información";
-
-function detectChannelFromText(text: string | null): string | null {
-  if (!text) return null;
-  const u = text.toUpperCase();
-  if (u.includes("MERCADO LIBRE") || u.includes("MERCADOLIBRE") || u.includes("MERCADO PAGO") || u.includes("MERCADOPAGO")) return "meli";
-  if (u.includes("FALABELLA") || u.includes("CMR")) return "falabella";
-  if (u.includes("PARIS") || u.includes("CENCOSUD")) return "paris";
-  if (u.includes("RIPLEY")) return "ripley";
-  if (u.includes("AMAZON")) return "amazon";
-  if (u.includes("SHOPIFY")) return "shopify";
-  if (u.includes("LINIO")) return "linio";
-  if (u.includes("RAPPI")) return "rappi";
-  if (u.includes("WALMART") || u.includes("LIDER") || u.includes("LÍDER")) return "walmart";
-  return null;
-}
-
-function inferChannel(detected: string | null, rawData: any): string | null {
-  if (detected) return detected;
-  const hit = detectChannelFromText(rawData?.reference_reason);
-  if (hit) return hit;
-  const refs: any[] = rawData?.references?.items ?? [];
-  for (const ref of refs) {
-    const h = detectChannelFromText(ref.reason) ?? detectChannelFromText(String(ref.number ?? ""));
-    if (h) return h;
-  }
-  return null;
-}
-
-function paymentNames(rawData: any): string[] {
-  const names = rawData?.payment_method_names;
-  if (!Array.isArray(names)) return [];
-  return Array.from(new Set(names.map((name: any) => String(name || "").trim()).filter(Boolean)));
-}
-
-/**
- * Distribuye el monto del DTE entre formas de pago sin duplicarlo.
- * - Si Bsale trae `payments[].amount`, usa esa proporción y escala al total del DTE.
- * - Si sólo hay una forma conocida, usa el total completo del DTE.
- * - Si no hay desglose suficiente, clasifica el monto como "Sin información".
- * Las NC se excluyen: son ajustes tributarios, no medios de pago.
- */
-function addPaymentAmounts(doc: any, map: Map<string, number>) {
-  if (doc.document_type === "nota_credito") return;
-  const docTotal = Math.max(0, Number(doc.total_amount || 0));
-  if (docTotal <= 0) return;
-
-  const rawData = doc.raw_data || {};
-  const rawPayments = Array.isArray(rawData.payments) ? rawData.payments : [];
-  const amountRows = rawPayments
-    .map((payment: any) => ({
-      name: String(payment?.payment_type_name || "").trim() || UNKNOWN_PAYMENT,
-      amount: Number(payment?.amount),
-    }))
-    .filter((payment: { name: string; amount: number }) => Number.isFinite(payment.amount) && payment.amount > 0);
-
-  if (amountRows.length > 0) {
-    const sourceTotal = amountRows.reduce((sum: number, payment: { amount: number }) => sum + payment.amount, 0);
-    if (sourceTotal > 0) {
-      for (const payment of amountRows) {
-        const allocated = docTotal * (payment.amount / sourceTotal);
-        map.set(payment.name, (map.get(payment.name) || 0) + allocated);
-      }
-      return;
-    }
-  }
-
-  const names = paymentNames(rawData);
-  const name = names.length === 1 ? names[0] : UNKNOWN_PAYMENT;
-  map.set(name, (map.get(name) || 0) + docTotal);
-}
 
 type Props = {
   period: string;
@@ -129,6 +55,32 @@ const EMPTY: SummaryState = {
   paymentMethods: [],
 };
 
+const number = (value: unknown) => Number(value || 0);
+
+function normalizeSummary(data: any): SummaryState {
+  if (!data || typeof data !== "object") return EMPTY;
+  return {
+    documentsIssued: number(data.documentsIssued),
+    sales: number(data.sales),
+    documentedSales: number(data.documentedSales),
+    undocumentedSales: number(data.undocumentedSales),
+    net: number(data.net),
+    tax: number(data.tax),
+    total: number(data.total),
+    creditNotes: number(data.creditNotes),
+    creditNotesAmount: number(data.creditNotesAmount),
+    composition: Array.isArray(data.composition)
+      ? data.composition.map((row: any) => ({ type: String(row.type || ""), count: number(row.count), amount: number(row.amount) }))
+      : [],
+    channels: Array.isArray(data.channels)
+      ? data.channels.map((row: any) => ({ channel: String(row.channel || "sin_detectar"), count: number(row.count), amount: number(row.amount) }))
+      : [],
+    paymentMethods: Array.isArray(data.paymentMethods)
+      ? data.paymentMethods.map((row: any) => ({ name: String(row.name || "Sin información"), amount: number(row.amount) }))
+      : [],
+  };
+}
+
 export default function DocumentosResumen({ period, channelFilter }: Props) {
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<SummaryState>(EMPTY);
@@ -139,123 +91,12 @@ export default function DocumentosResumen({ period, channelFilter }: Props) {
     const load = async () => {
       setLoading(true);
       try {
-        const { from, to } = chileMonthDateRange(period);
-
-        const allDocs: any[] = [];
-        const DOC_COLS = "id, document_type, document_date, net_amount, tax_amount, total_amount, status, detected_channel, raw_data";
-        for (let page = 0; page < 50; page++) {
-          const { data, error } = await (supabase.from("tax_documents") as any)
-            .select(DOC_COLS)
-            .gte("document_date", from)
-            .lte("document_date", to)
-            .order("document_date", { ascending: false })
-            .range(page * 1000, page * 1000 + 999);
-          if (error) throw error;
-          const batch = data || [];
-          allDocs.push(...batch);
-          if (batch.length < 1000) break;
-        }
-
-        const docsFiltered = allDocs.filter((doc: any) => {
-          if (channelFilter === "todos") return true;
-          return inferChannel(doc.detected_channel, doc.raw_data) === channelFilter;
+        const { data, error } = await (supabase as any).rpc("get_documentos_summary", {
+          p_period: period,
+          p_channel: channelFilter,
         });
-        const vigenteDocs = docsFiltered.filter((doc: any) => doc.status !== "voided");
-
-        const allOrders: any[] = [];
-        for (let page = 0; page < 50; page++) {
-          let query = supabase
-            .from("orders")
-            .select("id, status, channel, order_date")
-            .gte("order_date", `${from}T00:00:00-04:00`)
-            .lt("order_date", `${to}T23:59:59.999-04:00`)
-            .order("order_date", { ascending: false })
-            .range(page * 1000, page * 1000 + 999);
-          if (channelFilter !== "todos") query = query.eq("channel", channelFilter as any);
-          const { data, error } = await query;
-          if (error) throw error;
-          const batch = data || [];
-          allOrders.push(...batch);
-          if (batch.length < 1000) break;
-        }
-
-        const sales = allOrders.filter((order: any) => isRealSale(order.status));
-        const saleIds = sales.map((order: any) => order.id);
-        const documentedIds = new Set<string>();
-
-        for (let i = 0; i < saleIds.length; i += 300) {
-          const { data: links, error } = await supabase
-            .from("order_tax_documents")
-            .select("order_id, tax_documents(status)")
-            .in("order_id", saleIds.slice(i, i + 300));
-          if (error) throw error;
-          for (const link of links || []) {
-            const td: any = Array.isArray((link as any).tax_documents)
-              ? (link as any).tax_documents[0]
-              : (link as any).tax_documents;
-            if (td && td.status !== "voided") documentedIds.add((link as any).order_id);
-          }
-        }
-
-        const compositionMap = new Map<string, { count: number; amount: number }>();
-        const channelMap = new Map<string, { count: number; amount: number }>();
-        const paymentMethodMap = new Map<string, number>();
-        let net = 0;
-        let tax = 0;
-        let total = 0;
-        let creditNotes = 0;
-        let creditNotesAmount = 0;
-
-        for (const doc of vigenteDocs) {
-          const signedNet = signedTaxDocumentAmount(doc.document_type, Number(doc.net_amount || 0));
-          const signedTax = signedTaxDocumentAmount(doc.document_type, Number(doc.tax_amount || 0));
-          const signedTotal = signedTaxDocumentAmount(doc.document_type, Number(doc.total_amount || 0));
-          net += signedNet;
-          tax += signedTax;
-          total += signedTotal;
-
-          const comp = compositionMap.get(doc.document_type) || { count: 0, amount: 0 };
-          comp.count += 1;
-          comp.amount += signedTotal;
-          compositionMap.set(doc.document_type, comp);
-
-          if (doc.document_type === "nota_credito") {
-            creditNotes += 1;
-            creditNotesAmount += Math.abs(signedTotal);
-          }
-
-          const channel = inferChannel(doc.detected_channel, doc.raw_data) || "sin_detectar";
-          const cur = channelMap.get(channel) || { count: 0, amount: 0 };
-          cur.count += 1;
-          cur.amount += signedTotal;
-          channelMap.set(channel, cur);
-
-          addPaymentAmounts(doc, paymentMethodMap);
-        }
-
-        if (!cancelled) {
-          setSummary({
-            documentsIssued: vigenteDocs.length,
-            sales: sales.length,
-            documentedSales: documentedIds.size,
-            undocumentedSales: Math.max(0, sales.length - documentedIds.size),
-            net,
-            tax,
-            total,
-            creditNotes,
-            creditNotesAmount,
-            composition: Array.from(compositionMap.entries())
-              .map(([type, value]) => ({ type, ...value }))
-              .sort((a, b) => b.count - a.count),
-            channels: Array.from(channelMap.entries())
-              .map(([channel, value]) => ({ channel, ...value }))
-              .sort((a, b) => b.count - a.count),
-            paymentMethods: Array.from(paymentMethodMap.entries())
-              .map(([name, amount]) => ({ name, amount }))
-              .filter((row) => row.amount > 0)
-              .sort((a, b) => b.amount - a.amount),
-          });
-        }
+        if (error) throw error;
+        if (!cancelled) setSummary(normalizeSummary(data));
       } catch (error) {
         console.error("Error cargando resumen documental:", error);
         if (!cancelled) setSummary(EMPTY);
@@ -348,14 +189,7 @@ export default function DocumentosResumen({ period, channelFilter }: Props) {
               <div className="relative h-[220px] mt-2">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
-                    <Pie
-                      data={paymentPieData}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius={48}
-                      outerRadius={78}
-                      paddingAngle={2}
-                    >
+                    <Pie data={paymentPieData} dataKey="value" nameKey="name" innerRadius={48} outerRadius={78} paddingAngle={2}>
                       {paymentPieData.map((_, index) => (
                         <Cell key={index} fill={PIE_COLORS[index % PIE_COLORS.length]} />
                       ))}

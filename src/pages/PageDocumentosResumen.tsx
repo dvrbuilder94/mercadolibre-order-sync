@@ -5,6 +5,7 @@ import { es } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
 import { Nav } from "@/components/Nav";
 import DocumentosResumen from "@/components/documentos/DocumentosResumen";
+import { DocumentosModuleNav } from "@/components/documentos/DocumentosModuleNav";
 import { supabase } from "@/integrations/supabase/client";
 import { chilePeriodNow } from "@/lib/chileDate";
 import { CHANNEL_LABEL } from "@/lib/constants";
@@ -57,10 +58,7 @@ export default function PageDocumentosResumen() {
         </div>
 
         <div className="flex items-center justify-between gap-3 flex-wrap mb-5">
-          <div className="inline-flex bg-slate-100 rounded-lg p-1">
-            <button className="px-4 py-2 text-sm font-medium rounded-md bg-white shadow-sm text-slate-900">Resumen</button>
-            <button onClick={() => navigate("/documentos/listado")} className="px-4 py-2 text-sm font-medium rounded-md text-slate-500 hover:text-slate-800">Documentos</button>
-          </div>
+          <DocumentosModuleNav />
 
           <div className="flex items-center gap-1 flex-wrap">
             {["todos", ...ALL_CHANNELS].map((ch) => (
