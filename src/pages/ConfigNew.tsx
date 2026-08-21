@@ -454,67 +454,40 @@ export default function ConfigNew() {
           }
         />
 
-        {/* Shopify — pasos según shopify.dev (custom app + Admin API token) */}
+        {/* Shopify — OAuth: el comerciante autoriza en su tienda, sin credenciales */}
         <ConnectGuideDialog
           open={showShopifyForm}
           onOpenChange={(o) => { setShowShopifyForm(o); if (!o) setShopifyError(null); }}
           title="Conectar Shopify"
-          subtitle="Creá la app en el Dev Dashboard, instalala en tu tienda y pegá el Client ID + Secret."
-          docsUrl="https://shopify.dev/docs/apps/build/authentication-authorization/client-credentials"
-          docsLabel="Ver guía oficial (client credentials)"
+          subtitle="Ingresá el dominio de tu tienda y autorizá el acceso en Shopify. No pedimos credenciales."
+          docsUrl="https://shopify.dev/docs/apps/build/authentication-authorization"
+          docsLabel="Ver documentación de Shopify"
           steps={[
-            { title: "Creá la app", body: <>En el <strong>Dev Dashboard</strong> de Shopify creá una app y ponele “Quadra”.</> },
-            { title: "Permisos de solo lectura", body: <>En <strong>Configuration → Admin API scopes</strong> marcá:<CopyableValue label="Copiar scopes" value="read_orders, read_all_orders, read_products, read_customers, read_fulfillments" /></> },
-            { title: "Instalá la app en la tienda", body: <>Paso obligatorio: en la app, elegí tu tienda y hacé clic en <strong>Install</strong>. Sin instalar, Shopify devuelve un token pero rechaza todas las consultas. Si te redirige a otra página, volvé acá: la instalación ya quedó hecha.</> },
-            { title: "Copiá Client ID y Client Secret", body: <>Están en <strong>Overview / API credentials</strong>. El secret empieza con <code className="rounded bg-muted px-1">shpss_</code>. Quadra genera solo el token de 24 h.</> },
-            { title: "Usá el dominio .myshopify.com", body: <>En el shop domain va el dominio interno (<code className="rounded bg-muted px-1">mitienda.myshopify.com</code>), no tu dominio público.</> },
+            { title: "Ingresá el dominio interno", body: <>Es el dominio <code className="rounded bg-muted px-1">.myshopify.com</code> de tu tienda (por ejemplo <code className="rounded bg-muted px-1">mitienda.myshopify.com</code>), no tu dominio público.</> },
+            { title: "Autorizá en Shopify", body: <>Te llevamos a la pantalla oficial de Shopify para aprobar el acceso con tu usuario de la tienda.</> },
+            { title: "Permisos solicitados (solo lectura)", body: <>Quadra pide únicamente:<CopyableValue label="Copiar permisos" value="read_orders, read_all_orders, read_products, read_inventory" /></> },
+            { title: "Volvés automáticamente", body: <>Al aprobar, Shopify te devuelve a esta página y la conexión queda marcada como <strong>Conectada</strong> luego de una consulta real a la tienda.</> },
           ]}
-          note={<>El token se envía directo al backend, que es el único que habla con Shopify, y nunca vuelve al navegador. La conexión se marca <strong>Conectada</strong> solo después de una consulta real a la tienda.</>}
+          note={<>Quadra nunca ve ni te pide Client ID ni Client Secret: el acceso lo otorga tu tienda y el token queda solo en el backend. Podés revocarlo desde <strong>Configuración → Apps</strong> en tu panel de Shopify.</>}
           error={shopifyError}
           submitting={connectingShopify}
           onSubmit={connectShopify}
           form={
-            <>
-              <div className="space-y-1.5">
-                <label htmlFor="shopify-domain" className="text-xs text-slate-600">Shop domain</label>
-                <input
-                  id="shopify-domain"
-                  type="text"
-                  value={shopifyDomain}
-                  onChange={(e) => setShopifyDomain(e.target.value)}
-                  placeholder="mitienda.myshopify.com"
-                  className="w-full rounded-md border px-3 py-1.5 text-sm"
-                />
-                <p className="text-xs text-muted-foreground">Debe terminar en <code className="rounded bg-muted px-1">.myshopify.com</code>.</p>
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="shopify-client-id" className="text-xs text-slate-600">Client ID</label>
-                <input
-                  id="shopify-client-id"
-                  type="text"
-                  value={shopifyClientId}
-                  onChange={(e) => setShopifyClientId(e.target.value)}
-                  placeholder="Client ID de la app"
-                  autoComplete="off"
-                  className="w-full rounded-md border px-3 py-1.5 text-sm"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="shopify-client-secret" className="text-xs text-slate-600">Client Secret</label>
-                <input
-                  id="shopify-client-secret"
-                  type="password"
-                  value={shopifyClientSecret}
-                  onChange={(e) => setShopifyClientSecret(e.target.value)}
-                  placeholder="shpss_..."
-                  autoComplete="off"
-                  className="w-full rounded-md border px-3 py-1.5 text-sm"
-                />
-                <p className="text-xs text-muted-foreground">Pegá aquí el valor <code className="rounded bg-muted px-1">shpss_…</code>. Quadra obtiene automáticamente el access token de 24 horas; no tenés que buscar ni pegar un <code className="rounded bg-muted px-1">shpat_</code>.</p>
-              </div>
-            </>
+            <div className="space-y-1.5">
+              <label htmlFor="shopify-domain" className="text-xs text-slate-600">Dominio de la tienda</label>
+              <input
+                id="shopify-domain"
+                type="text"
+                value={shopifyDomain}
+                onChange={(e) => setShopifyDomain(e.target.value)}
+                placeholder="mitienda.myshopify.com"
+                className="w-full rounded-md border px-3 py-1.5 text-sm"
+              />
+              <p className="text-xs text-muted-foreground">Debe terminar en <code className="rounded bg-muted px-1">.myshopify.com</code>.</p>
+            </div>
           }
         />
+
 
         {/* Mercado Pago — access token de producción (developers.mercadopago.cl) */}
         <ConnectGuideDialog
