@@ -56,8 +56,6 @@ export default function ConfigNew() {
   const [bsaleError, setBsaleError] = useState<string | null>(null);
   const [showShopifyForm, setShowShopifyForm] = useState(false);
   const [shopifyDomain, setShopifyDomain] = useState("");
-  const [shopifyClientId, setShopifyClientId] = useState("");
-  const [shopifyClientSecret, setShopifyClientSecret] = useState("");
   const [connectingShopify, setConnectingShopify] = useState(false);
   const [shopifyError, setShopifyError] = useState<string | null>(null);
   const [mercadopago, setMercadopago] = useState<{ connected: boolean; detail: string }>({ connected: false, detail: "No conectado" });
