@@ -13,6 +13,7 @@ import NotFound from "./pages/NotFound";
 
 const PageSyncCanonical = lazy(() => import("./pages/PageSyncCanonical"));
 const PageVentas = lazy(() => import("./pages/PageVentas"));
+const PageVentasResumen = lazy(() => import("./pages/PageVentasResumen"));
 const ConfigNew = lazy(() => import("./pages/ConfigNew"));
 const PageTesoreria = lazy(() => import("./pages/PageTesoreria"));
 const PageDevoluciones = lazy(() => import("./pages/PageDevoluciones"));
@@ -41,7 +42,8 @@ const App = () => (
             <Route path="/auth" element={<Auth />} />
 
             <Route path="/resumen" element={<Navigate to="/tesoreria" replace />} />
-            <Route path="/ventas" element={<PageVentas />} />
+            <Route path="/ventas" element={<PageVentasResumen />} />
+            <Route path="/ventas/listado" element={<PageVentas />} />
             <Route path="/documentos" element={<PageDocumentosResumen />} />
             <Route path="/documentos/listado" element={<PageDocumentos />} />
             <Route path="/conciliacion" element={<Navigate to="/ventas" replace />} />
@@ -68,17 +70,17 @@ const App = () => (
 
             <Route path="/dashboard" element={<Navigate to="/tesoreria" replace />} />
             <Route path="/sandbox-mp" element={<Navigate to="/tesoreria" replace />} />
-            <Route path="/mercadolibre" element={<Navigate to="/ventas" replace />} />
+            <Route path="/mercadolibre" element={<Navigate to="/ventas/listado" replace />} />
             <Route path="/bsale" element={<Navigate to="/documentos" replace />} />
             <Route path="/flujo" element={<Navigate to="/tesoreria" replace />} />
-            <Route path="/sales" element={<Navigate to="/ventas" replace />} />
+            <Route path="/sales" element={<Navigate to="/ventas/listado" replace />} />
             <Route path="/payments" element={<Navigate to="/tesoreria" replace />} />
             <Route path="/payments/:id" element={<Navigate to="/tesoreria" replace />} />
-            <Route path="/orders/:id" element={<Navigate to="/ventas" replace />} />
+            <Route path="/orders/:id" element={<Navigate to="/ventas/listado" replace />} />
             <Route path="/bsale-documents" element={<Navigate to="/documentos/listado" replace />} />
             <Route path="/reports/*" element={<Navigate to="/sync" replace />} />
-            <Route path="/pending-sales" element={<Navigate to="/ventas" replace />} />
-            <Route path="/sales/issues" element={<Navigate to="/ventas" replace />} />
+            <Route path="/pending-sales" element={<Navigate to="/ventas/listado" replace />} />
+            <Route path="/sales/issues" element={<Navigate to="/ventas/listado" replace />} />
             <Route path="/closing" element={<Navigate to="/sync" replace />} />
             <Route path="/ledger" element={<Navigate to="/sync" replace />} />
 
