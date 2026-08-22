@@ -11,9 +11,7 @@ import { fetchOrderDetail } from "@/lib/orderDetail";
 import { TesoreriaResumen } from "@/components/tesoreria/TesoreriaResumen";
 import { TesoreriaDetalle } from "@/components/tesoreria/TesoreriaDetalle";
 import { TesoreriaCargos } from "@/components/tesoreria/TesoreriaCargos";
-import {
-  clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw,
-} from "@/lib/tesoreria";
+import { clp, onlyRealMpPayments, toTesoreriaPayment, TesoreriaPaymentRaw } from "@/lib/tesoreria";
 import { chileMonthIsoRange, chilePeriodNow } from "@/lib/chileDate";
 
 const periodLabel = (p: string) => {
@@ -50,11 +48,7 @@ export default function PageTesoreria() {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<TesoreriaPaymentRaw[]>([]);
   const [upcomingRows, setUpcomingRows] = useState<TesoreriaPaymentRaw[]>([]);
-  const [unpaidOrders, setUnpaidOrders] = useState<Array<{
-    id: string;
-    order_id: string;
-    gross_amount: number | null;
-  }>>([]);
+  const [unpaidOrders, setUnpaidOrders] = useState<Array<{ id: string; order_id: string; gross_amount: number | null }>>([]);
   const [detailOrder, setDetailOrder] = useState<any | null>(null);
 
   useEffect(() => {
@@ -87,8 +81,6 @@ export default function PageTesoreria() {
       }
       setRows(onlyRealMpPayments(acc));
 
-      // Para el MVP, Mercado Pago es la caja operativa. Estas son ventas MELI
-      // del período que todavía no tienen un pago aprobado con neto real.
       const { data: unpaid, error: unpaidError } = await supabase
         .from("orders")
         .select("id, order_id, gross_amount")
@@ -99,13 +91,8 @@ export default function PageTesoreria() {
         .lt("order_date", rangeIso.toExclusive)
         .order("order_date", { ascending: false });
       if (unpaidError) throw unpaidError;
-      setUnpaidOrders((unpaid || []) as Array<{
-        id: string;
-        order_id: string;
-        gross_amount: number | null;
-      }>);
+      setUnpaidOrders((unpaid || []) as Array<{ id: string; order_id: string; gross_amount: number | null }>);
 
-      // Upcoming releases: scan payments globally (no period filter) for the next 30 days
       const today = format(new Date(), "yyyy-MM-dd'T'00:00:00");
       const in30 = format(new Date(Date.now() + 30 * 86400000), "yyyy-MM-dd'T'23:59:59");
       const { data: futureLinks } = await supabase
@@ -155,64 +142,19 @@ export default function PageTesoreria() {
     }
   }, [period, rangeIso]);
 
-  const refreshTreasury = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { error } = await supabase.functions.invoke("check-orphan-payments", {
-        body: {
-          date_from: rangeIso.from,
-          date_to: rangeIso.to,
-        },
-      });
-      if (error) console.error("Error sincronizando caja Mercado Pago:", error);
-    } catch (error) {
-      console.error("Error sincronizando caja Mercado Pago:", error);
-    }
-    // Always reload the ledger: an MP request failure should not hide the data
-    // that was already persisted successfully.
-    await fetchData();
-  }, [fetchData, rangeIso]);
-
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const payments = useMemo(() => rows.map(toTesoreriaPayment), [rows]);
-  const cashMovements = useMemo(
-    () => payments.filter((payment) => payment.net !== 0),
-    [payments],
-  );
-
-  // Refunds and chargebacks are negative movements. Keep approved and released
-  // amounts separate: approval confirms the payment; release makes it available.
-  const approvedNetTotal = useMemo(
-    () => cashMovements.reduce((sum, payment) => sum + payment.net, 0),
-    [cashMovements],
-  );
-  const releasedNetTotal = useMemo(
-    () => cashMovements
-      .filter((payment) => payment.liberado)
-      .reduce((sum, payment) => sum + payment.net, 0),
-    [cashMovements],
-  );
+  const cashMovements = useMemo(() => payments.filter((payment) => payment.net !== 0), [payments]);
+  const approvedNetTotal = useMemo(() => cashMovements.reduce((sum, payment) => sum + payment.net, 0), [cashMovements]);
+  const releasedNetTotal = useMemo(() => cashMovements.filter((payment) => payment.liberado).reduce((sum, payment) => sum + payment.net, 0), [cashMovements]);
   const pendingReleaseTotal = approvedNetTotal - releasedNetTotal;
-  const unpaidTotal = useMemo(
-    () => unpaidOrders.reduce((sum, order) => sum + (order.gross_amount || 0), 0),
-    [unpaidOrders],
-  );
-  const orphanPayments = useMemo(
-    () => payments.filter((payment) => payment.matchState === "orphan"),
-    [payments],
-  );
-  const partialPayments = useMemo(
-    () => payments.filter((payment) => payment.matchState === "partial"),
-    [payments],
-  );
+  const unpaidTotal = useMemo(() => unpaidOrders.reduce((sum, order) => sum + (order.gross_amount || 0), 0), [unpaidOrders]);
+  const orphanPayments = useMemo(() => payments.filter((payment) => payment.matchState === "orphan"), [payments]);
+  const partialPayments = useMemo(() => payments.filter((payment) => payment.matchState === "partial"), [payments]);
   const paidWithoutDte = useMemo(() => {
     const orderIds = new Set<string>();
-    for (const payment of payments) {
-      for (const sale of payment.sales) {
-        if (!sale.hasDoc) orderIds.add(sale.id);
-      }
-    }
+    for (const payment of payments) for (const sale of payment.sales) if (!sale.hasDoc) orderIds.add(sale.id);
     return orderIds.size;
   }, [payments]);
 
@@ -227,9 +169,7 @@ export default function PageTesoreria() {
       cur.count += 1;
       map.set(day, cur);
     }
-    return Array.from(map.entries())
-      .map(([date, v]) => ({ date, ...v }))
-      .sort((a, b) => a.date.localeCompare(b.date));
+    return Array.from(map.entries()).map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date));
   }, [upcomingRows]);
 
   const changePeriod = (delta: number) => {
@@ -260,103 +200,45 @@ export default function PageTesoreria() {
         <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Tesorería</h1>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Tu caja operativa en Mercado Pago: qué ventas entraron, cuáles faltan y qué pagos no se pueden explicar.
-            </p>
+            <p className="text-xs text-slate-400 mt-0.5">Tu caja operativa: qué pagos entraron, cuáles faltan y qué movimientos no se pueden explicar.</p>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => changePeriod(-1)} className="p-1.5 hover:bg-slate-100 rounded">
-              <ChevronLeft className="h-4 w-4" />
+            <button onClick={() => navigate(`/sync?domain=pagos&period=${period}`)} className="flex items-center gap-2 px-3 py-2 bg-white border rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50">
+              <RefreshCw className="h-4 w-4" /> Sync Pagos
             </button>
+            <button onClick={() => changePeriod(-1)} className="p-1.5 hover:bg-slate-100 rounded"><ChevronLeft className="h-4 w-4" /></button>
             <span className="text-sm font-medium capitalize w-36 text-center">{periodLabel(period)}</span>
-            <button onClick={() => changePeriod(1)} className="p-1.5 hover:bg-slate-100 rounded">
-              <ChevronRight className="h-4 w-4" />
-            </button>
-            <button onClick={refreshTreasury} disabled={loading} title="Sincronizar caja desde Mercado Pago" className="p-1.5 hover:bg-slate-100 rounded text-slate-400 disabled:opacity-40 ml-1">
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            </button>
+            <button onClick={() => changePeriod(1)} className="p-1.5 hover:bg-slate-100 rounded"><ChevronRight className="h-4 w-4" /></button>
           </div>
         </div>
 
-        {/* Mercado Pago es la caja operativa del MVP. Aprobado y liberado se
-            muestran separados para no llamar "caja disponible" a plata retenida. */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
-          <div className="bg-white border rounded-lg p-4">
-            <p className="text-[11px] uppercase tracking-wider text-slate-400">Neto aprobado MP</p>
-            <p className="text-xl font-bold text-slate-900 mt-1">{clp(approvedNetTotal)}</p>
-            <p className="text-[11px] text-slate-400 mt-1">{cashMovements.length} movimientos confirmados</p>
-          </div>
-          <div className="bg-white border rounded-lg p-4">
-            <p className="text-[11px] uppercase tracking-wider text-slate-400">Neto liberado por MP</p>
-            <p className="text-xl font-bold text-emerald-600 mt-1">{clp(releasedNetTotal)}</p>
-            <p className="text-[11px] text-slate-400 mt-1">{clp(pendingReleaseTotal)} pendiente de liberar</p>
-          </div>
-          <div className="bg-white border rounded-lg p-4">
-            <p className="text-[11px] uppercase tracking-wider text-slate-400">Pagos sin venta</p>
-            <p className={`text-xl font-bold mt-1 ${orphanPayments.length > 0 ? "text-red-600" : "text-emerald-600"}`}>
-              {orphanPayments.length}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-1">
-              {partialPayments.length > 0 ? `${partialPayments.length} pagos parcialmente asignados` : "sin huérfanos detectados"}
-            </p>
-          </div>
-          <div className="bg-white border rounded-lg p-4">
-            <p className="text-[11px] uppercase tracking-wider text-slate-400">Ventas por explicar</p>
-            <p className={`text-xl font-bold mt-1 ${unpaidOrders.length > 0 ? "text-amber-600" : "text-emerald-600"}`}>
-              {unpaidOrders.length}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-1">
-              {clp(unpaidTotal)} bruto sin pago confirmado · {paidWithoutDte} pagadas sin DTE
-            </p>
-          </div>
+          <div className="bg-white border rounded-lg p-4"><p className="text-[11px] uppercase tracking-wider text-slate-400">Neto aprobado MP</p><p className="text-xl font-bold text-slate-900 mt-1">{clp(approvedNetTotal)}</p><p className="text-[11px] text-slate-400 mt-1">{cashMovements.length} movimientos confirmados</p></div>
+          <div className="bg-white border rounded-lg p-4"><p className="text-[11px] uppercase tracking-wider text-slate-400">Neto liberado por MP</p><p className="text-xl font-bold text-emerald-600 mt-1">{clp(releasedNetTotal)}</p><p className="text-[11px] text-slate-400 mt-1">{clp(pendingReleaseTotal)} pendiente de liberar</p></div>
+          <div className="bg-white border rounded-lg p-4"><p className="text-[11px] uppercase tracking-wider text-slate-400">Pagos sin venta</p><p className={`text-xl font-bold mt-1 ${orphanPayments.length > 0 ? "text-red-600" : "text-emerald-600"}`}>{orphanPayments.length}</p><p className="text-[11px] text-slate-400 mt-1">{partialPayments.length > 0 ? `${partialPayments.length} pagos parcialmente asignados` : "sin huérfanos detectados"}</p></div>
+          <div className="bg-white border rounded-lg p-4"><p className="text-[11px] uppercase tracking-wider text-slate-400">Ventas por explicar</p><p className={`text-xl font-bold mt-1 ${unpaidOrders.length > 0 ? "text-amber-600" : "text-emerald-600"}`}>{unpaidOrders.length}</p><p className="text-[11px] text-slate-400 mt-1">{clp(unpaidTotal)} bruto sin pago confirmado · {paidWithoutDte} pagadas sin DTE</p></div>
         </div>
 
         <Tabs value={tab} onValueChange={changeTab}>
           <TabsList className="mb-4">
             <TabsTrigger value="resumen">Resumen</TabsTrigger>
-            <TabsTrigger value="detalle">
-              Movimientos <span className="ml-1.5 text-[10px] text-slate-400">({payments.length})</span>
-            </TabsTrigger>
+            <TabsTrigger value="detalle">Movimientos <span className="ml-1.5 text-[10px] text-slate-400">({payments.length})</span></TabsTrigger>
             <TabsTrigger value="cargos">Cargos y comisiones</TabsTrigger>
           </TabsList>
 
           {loading && tab !== "cargos" ? (
-            <div className="flex items-center justify-center py-24 text-slate-400 text-sm">
-              <Loader2 className="h-4 w-4 animate-spin mr-2" /> Cargando tesorería…
-            </div>
+            <div className="flex items-center justify-center py-24 text-slate-400 text-sm"><Loader2 className="h-4 w-4 animate-spin mr-2" /> Cargando tesorería…</div>
           ) : (
             <>
-              <TabsContent value="resumen">
-                <TesoreriaResumen
-                  payments={payments}
-                  upcomingReleases={upcoming}
-                  period={period}
-                  rangeIso={rangeIso}
-                  onJumpToDetail={jumpToDetailFiltered}
-                />
-              </TabsContent>
-              <TabsContent value="detalle">
-                <TesoreriaDetalle
-                  payments={payments}
-                  initialMatchFilter={matchFilter}
-                  onOpenOrder={openOrderDetail}
-                />
-              </TabsContent>
-              <TabsContent value="cargos">
-                <TesoreriaCargos period={period} />
-              </TabsContent>
+              <TabsContent value="resumen"><TesoreriaResumen payments={payments} upcomingReleases={upcoming} period={period} rangeIso={rangeIso} onJumpToDetail={jumpToDetailFiltered} /></TabsContent>
+              <TabsContent value="detalle"><TesoreriaDetalle payments={payments} initialMatchFilter={matchFilter} onOpenOrder={openOrderDetail} /></TabsContent>
+              <TabsContent value="cargos"><TesoreriaCargos period={period} /></TabsContent>
             </>
           )}
         </Tabs>
       </main>
 
-      {detailOrder && (
-        <DetailPanel
-          title={`Orden ${detailOrder.order_id ?? ""}`}
-          data={detailOrder}
-          onClose={() => setDetailOrder(null)}
-        />
-      )}
+      {detailOrder && <DetailPanel title={`Orden ${detailOrder.order_id ?? ""}`} data={detailOrder} onClose={() => setDetailOrder(null)} />}
     </div>
   );
 }
