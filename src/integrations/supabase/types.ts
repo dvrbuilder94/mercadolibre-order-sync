@@ -2215,6 +2215,31 @@ export type Database = {
           udt_name: string
         }[]
       }
+      get_tesoreria_page: {
+        Args: {
+          p_channel?: string
+          p_limit?: number
+          p_match?: string
+          p_method?: string
+          p_offset?: number
+          p_period: string
+          p_provider?: string
+          p_search?: string
+        }
+        Returns: Json
+      }
+      get_tesoreria_summary: { Args: { p_period: string }; Returns: Json }
+      get_ventas_page: {
+        Args: {
+          p_channel?: string
+          p_doc_filter?: string
+          p_limit?: number
+          p_offset?: number
+          p_period: string
+          p_search?: string
+        }
+        Returns: Json
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
